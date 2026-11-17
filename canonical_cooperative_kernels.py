@@ -63,10 +63,31 @@ def _cooperative__apply_euclidean_deterministically(self, seed, rng):
     yield from self._cooperative_apply_euclidean_and_idealized_rhythms()
 
 def _cooperative__apply_goava_deterministically(self, seed, rng):
-    """Deterministic GOAVA application"""
+    """Apply GOAVA in bounded playlist slices so activation never monopolizes the UI."""
     yield None
     self.goava_note_events = self._build_goava_composition()
-    self._apply_goava_to_canonical_playlist()
+    rows = max(1, min(65536, int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else len(self.master_playlist_data) or 1))
+    chunk = 64
+    if not getattr(self, "goava_active", False):
+        # Remove engine-owned bank records once, then reverse playlist rows in
+        # bounded slices; user-owned material is never rewritten.
+        self._remove_goava_canonical_writes(0, 0, clear_banks=True, finalize=False)
+        for start in range(0, rows, chunk):
+            self._remove_goava_canonical_writes(start, min(rows, start + chunk), clear_banks=False, finalize=False)
+            yield None
+        self._goava_write_ledger = []
+        try:
+            self._sync_playlist_paint_table_from_memory()
+        except Exception:
+            pass
+        return
+    for start in range(0, rows, chunk):
+        self._apply_goava_to_canonical_playlist(start, min(rows, start + chunk), reset_ledger=(start == 0), sync=False)
+        yield None
+    try:
+        self._sync_playlist_paint_table_from_memory()
+    except Exception:
+        pass
 
 def _cooperative__apply_live_engine_once(self, which, force=False):
     yield None
@@ -347,7 +368,7 @@ def _cooperative__canonical_sequence_reconcile(self, trigger_source=None):
             else:
                 jitter = int(round(4 * series_sin(inst_seed_i * MEUM_INV)))
                 n = base_len + jitter
-            n = max(1, min(1024, n))
+            n = max(1, min(STRUCT_MAX_STEPS, n))
             mem = {'sequence_id': idx, 'pattern_length': n, 'canonical_owner': f'canonical:{source}', 'user_owned': False, 'steps': [False] * n, 'gates': [True] * n, 'amplitudes': [1.0] * n, 'pitches': [1.0] * n, 'probabilities': [100] * n, 'offsets': [0.0] * n, 'engine_step_sources': {}, 'touched': set()}
             rng = np.random.default_rng((inst_seed_i ^ channel) & 2147483647)
             phase_on = 'phase_lock' in active
@@ -462,7 +483,7 @@ def _cooperative__engine_resize_untouched_sequences(self):
                 continue
             owner = str(mem.get('canonical_owner', ''))
             n = int(mem.get('pattern_length', adopt) or adopt) if owner.startswith('canonical:') else adopt
-            n = max(1, min(1024, n))
+            n = max(1, min(STRUCT_MAX_STEPS, n))
             mem['pattern_length'] = n
             self._ensure_seq_mem_length(mem, n)
         sel = (getattr(self, 'instrument_selected_sequence', {}) or {}).get(name)
@@ -705,22 +726,19 @@ def _cooperative__finish_canonical_sequence_projection(self, active_order):
     self._refresh_sequence_dependent_panels()
 
 def _cooperative__paint_operator_pattern_to_playlist(self, source='randomizer', rng=None):
-    """Deterministically paint the complete playlist schema (Script/Domain/Synth/Patch + timeline).
-
-        User cells (``@u:`` instances) are immutable. Engine-owned material is
-        regenerated from the seed + source and is fully tagged, so Randomizer /
-        Phase-Lock can be removed without leaving stale cells or automation.
-        Every generated row receives a value for every playlist column; inactive
-        rows are explicit ``none``/zero values rather than undefined cells.
-        """
     yield None
+    try:
+        self._pulse_multidim_viz(0.2)
+    except Exception:
+        pass
+    'Deterministically paint the complete playlist schema (Script/Domain/Synth/Patch + timeline).\n\n        User cells (``@u:`` instances) are immutable. Engine-owned material is\n        regenerated from the seed + source and is fully tagged, so Randomizer /\n        Phase-Lock can be removed without leaving stale cells or automation.\n        Every generated row receives a value for every playlist column; inactive\n        rows are explicit ``none``/zero values rather than undefined cells.\n        '
     source = 'phase_lock' if str(source) == 'phase-lock' else str(source)
     seed = int(self.get_numeric_seed() or 1)
     if rng is None:
         channel = 81 if 'random' in source else 167 if 'phase' in source else 211
         rng = np.random.default_rng((seed ^ channel) & 2147483647)
     rows = int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS
-    rows = max(1, min(1024, rows))
+    rows = max(1, min(STRUCT_MAX_STEPS, rows))
     if hasattr(self, 'spin_playlist_length'):
         try:
             self.spin_playlist_length.blockSignals(True)
@@ -1044,7 +1062,7 @@ def _cooperative__rebuild_active_canonical_playlist(self, reason='toggle'):
         except Exception:
             pass
         import copy
-        rows = max(1, min(1024, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS))
+        rows = max(1, min(STRUCT_MAX_STEPS, int(self.spin_playlist_length.value()) if hasattr(self, 'spin_playlist_length') else DEFAULT_PLAYLIST_ROWS))
         if not hasattr(self, 'master_playlist_data') or self.master_playlist_data is None:
             self.master_playlist_data = []
         while len(self.master_playlist_data) < rows:
@@ -1055,13 +1073,13 @@ def _cooperative__rebuild_active_canonical_playlist(self, reason='toggle'):
         while len(self.playlist_automation) < rows:
             yield None
             self.playlist_automation.append({})
-        raw_baseline = copy.deepcopy(self.master_playlist_data[:rows])
+        raw_baseline = _fast_copy(self.master_playlist_data[:rows])
         generated_fields = {'operator', 'operators', 'operators_csv', 'sequence_refs', 'phase_offsets', 'multi_seq', 'direction', 'direction_vector', 'coverage', 'blend_partner', 'goava_sequence', 'paint_target', 'paint_source', 'paint_sequence', 'paint_instrument', 'time_marker', 'time_offset', 'velocity', 'pitch', 'probability', 'generated_by_engine', 'generated_source', 'canonical_weight'}
         baseline = []
         names_for_baseline = list(getattr(self, 'instrument_names_48', []) or ['Operator'])
         for r, src in enumerate(raw_baseline):
             yield None
-            e = copy.deepcopy(src) if isinstance(src, dict) else {}
+            e = src if isinstance(src, dict) else {}
             users = e.get('user_instances') or []
             for k in generated_fields:
                 yield None
@@ -1089,7 +1107,7 @@ def _cooperative__rebuild_active_canonical_playlist(self, reason='toggle'):
             baseline.append(e)
         self.master_playlist_data = copy.deepcopy(baseline)
         yield from self._cooperative__canonical_sequence_reconcile(reason)
-        baseline = copy.deepcopy(self.master_playlist_data[:rows])
+        baseline = _fast_copy(self.master_playlist_data[:rows])
         baseline_sequence_banks = copy.deepcopy(getattr(self, 'instrument_sequence_banks', {}) or {})
         baseline_sequencer_memory = copy.deepcopy(getattr(self, 'instrument_sequencer_memory', {}) or {})
         baseline_selected_sequences = copy.deepcopy(getattr(self, 'instrument_selected_sequence', {}) or {})
@@ -1121,8 +1139,26 @@ def _cooperative__rebuild_active_canonical_playlist(self, reason='toggle'):
                 source_seed = self._canonical_seed_for_source(source)
                 rng = np.random.default_rng((_safe_int_seed(source_seed) ^ sum(map(ord, source)) ^ rows ^ _carrier_salt ^ _unison_salt) & 2147483647)
                 yield from self._cooperative__canonical_playlist_paint(rng=rng, mode=source, strength=0.55 * self._canonical_level(source))
-            candidates.append((source, copy.deepcopy(self.master_playlist_data[:rows])))
-        self._canonical_unity_consensus(baseline, candidates, rows)
+            candidates.append((source, _fast_copy(self.master_playlist_data[:rows])))
+        _cons_tbl = getattr(self, 'active_paint_table', None)
+        _cons_blk = _cons_upd = None
+        try:
+            if _cons_tbl is not None:
+                _cons_blk = _cons_tbl.blockSignals(True)
+                _cons_upd = _cons_tbl.updatesEnabled()
+                _cons_tbl.setUpdatesEnabled(False)
+        except RuntimeError:
+            _cons_tbl = None
+        try:
+            self._canonical_unity_consensus(baseline, candidates, rows)
+        finally:
+            try:
+                if _cons_tbl is not None:
+                    _cons_tbl.blockSignals(bool(_cons_blk))
+                    _cons_tbl.setUpdatesEnabled(bool(_cons_upd) if _cons_upd is not None else True)
+                    _cons_tbl.viewport().update()
+            except RuntimeError:
+                pass
         self.instrument_sequence_banks = copy.deepcopy(baseline_sequence_banks)
         self.instrument_sequencer_memory = copy.deepcopy(baseline_sequencer_memory)
         self.instrument_selected_sequence = copy.deepcopy(baseline_selected_sequences)
@@ -1148,6 +1184,7 @@ def _cooperative__rebuild_active_canonical_playlist(self, reason='toggle'):
                 if _evs:
                     _ev = _evs[_r % len(_evs)]
                     _e['goava_sequence'] = f"GOAVA step={_r + 1} seed={_ev['seed']:.9g} raw={_ev['raw']:.9g} hz={_ev['frequency']:.6f} pitch={_ev['pitch']:.6f} on={int(_ev['enabled'])}"
+        roster = [str(x).strip() for x in getattr(self, 'instrument_names_48', []) or [] if str(x).strip()]
         for _r, _e in enumerate(self.master_playlist_data[:rows]):
             yield None
             if not isinstance(_e, dict):
@@ -1159,13 +1196,7 @@ def _cooperative__rebuild_active_canonical_playlist(self, reason='toggle'):
             if isinstance(ops, str):
                 ops = [x.strip() for x in ops.split(',') if x.strip()]
             ops = list(dict.fromkeys([str(x).strip() for x in ops if str(x).strip()]))
-            ref_ops = []
-            for _ref in refs:
-                yield None
-                _name = str(_ref).split('#S', 1)[0].strip()
-                if _name and _name not in ref_ops:
-                    ref_ops.append(_name)
-            roster = [str(x).strip() for x in getattr(self, 'instrument_names_48', []) or [] if str(x).strip()]
+            ref_ops = list(dict.fromkeys((_nm for _nm in (str(_ref).split('#S', 1)[0].strip() for _ref in refs) if _nm)))
             final_ops = list(dict.fromkeys(ref_ops + ops + roster))
             if final_ops:
                 _e['operators'] = final_ops

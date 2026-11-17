@@ -53,15 +53,47 @@ def effective(app, scope, name=""):
 def _effective_raw(app, scope, name=""):
     st = getattr(app, "r32_fx_state", None) or {}
     rec = (st.get("global") if scope == "global" else (st.get("local", {}) or {}).get(name)) or {}
-    mode = rec.get("mode", "user")
+    mode = str(rec.get("mode", "user") or "user").lower()
     user = {k: float(rec.get(k, 0.0)) for k, *_ in KEYS}
-    if mode == "user":
-        return user
-    slot = 999 if scope == "global" else (abs(hash(name)) % 997 if not name else sum(map(ord, name)) % 997)
+    slot = 999 if scope == "global" else (sum(map(ord, str(name))) % 997)
     can = _canonical(app, slot)
-    if mode == "canonical":
-        return can
-    return {k: 0.5 * user[k] + 0.5 * can[k] for k in user}
+    # FX writers use the same directional policy as Multidim/tuning. The
+    # selected mode controls which sources are present; ownership policy
+    # controls whether the incoming canonical write blends or overwrites.
+    if mode == "user":
+        sources = [("user", user)]
+    elif mode == "canonical":
+        sources = [("canonical", can)]
+    else:
+        sources = [("seed", can), ("canonical", can), ("user", user)]
+    try:
+        import canonical_ownership as ownership
+        policy = ownership.normalize_policy(getattr(app, "canonical_ownership_policy", None))
+        resolved = {}
+        provenance = {}
+        for key, *_ in KEYS:
+            value = None
+            owner = "seed"
+            for source, values in sources:
+                value = ownership.apply_write(value, values[key], owner, source, policy, neutral=0.0)
+                owner = source
+            resolved[key] = float(value if value is not None else 0.0)
+            _source_values = {src: float(values.get(key, 0.0)) for src, values in sources}
+            provenance[key] = {"value": resolved[key], "effective": resolved[key],
+                               "seed": _source_values.get("seed"), "canonical": _source_values.get("canonical"),
+                               "user": _source_values.get("user"),
+                               "has_seed": "seed" in _source_values, "has_canonical": "canonical" in _source_values,
+                               "has_user": "user" in _source_values, "sources": [src for src, _ in sources],
+                               "policy": policy, "scope": scope, "instrument": str(name)}
+        reports = getattr(app, "_fx_contribution_report", None)
+        if not isinstance(reports, dict):
+            reports = {}; app._fx_contribution_report = reports
+        reports[f"{scope}:{name or 'global'}"] = provenance
+        return resolved
+    except Exception:
+        if mode == "canonical": return can
+        if mode == "mix": return {k: 0.5 * user[k] + 0.5 * can[k] for k in user}
+        return user
 
 
 def active(v):
@@ -147,6 +179,20 @@ def make_panel(app, scope):
         mode.blockSignals(True); mode.setCurrentIndex(MODES.index(r.get("mode", "user"))); mode.blockSignals(False)
         for k, sl in sliders.items():
             sl.blockSignals(True); sl.setValue(int(round(float(r.get(k, 0.0)) * 100))); sl.blockSignals(False)
+        refresh_provenance()
+
+    def refresh_provenance():
+        try:
+            import parameter_provenance_ui as pui
+            name = app.instrument_selector_dropdown.currentText() if scope == "local" and hasattr(app, "instrument_selector_dropdown") else ""
+            raw = _effective_raw(app, scope, name)
+            report = getattr(app, "_fx_contribution_report", {}).get(f"{scope}:{name or 'global'}", {})
+            for key, widget in sliders.items():
+                d = dict(report.get(key) or {})
+                d["effective"] = raw.get(key, 0.0)
+                pui.attach(widget, d)
+        except Exception:
+            pass
 
     def changed(*_):
         r = rec()
@@ -159,6 +205,7 @@ def make_panel(app, scope):
                 f()
             except Exception:
                 pass
+        refresh_provenance()
 
     for i, (k, cap, lo, hi) in enumerate(KEYS, 1):
         sl = QSlider(Qt.Orientation.Horizontal); sl.setRange(int(lo * 100), int(hi * 100)); sl.valueChanged.connect(changed)
@@ -254,11 +301,42 @@ def _time_effective(app, scope, name=""):
 
 def _time_effective_raw(app, scope, name=""):
     rec = dict(_time_state(app, scope, name))
-    if rec.get("mode") == "canonical":
-        c = _canonical(app, 555 if scope == "global" else sum(map(ord, name)) % 997)
-        rec.update({"chorus": c["fractal"], "flanger": c["hyper"], "reverb": c["eqr"], "reverb_size": 0.5,
-                    "reverb_decay": 0.5, "reverb_dir": 1 if c["tilt"] >= 0 else -1})
-    return rec
+    mode = str(rec.get("mode", "user") or "user").lower()
+    c = _canonical(app, 555 if scope == "global" else sum(map(ord, str(name))) % 997)
+    canonical = {"chorus": c["fractal"], "flanger": c["hyper"], "reverb": c["eqr"],
+                 "chorus_rate": 0.6, "flanger_rate": 0.25, "flanger_fb": 0.4,
+                 "reverb_size": 0.5, "reverb_decay": 0.5, "reverb_dir": 1 if c["tilt"] >= 0 else -1}
+    user = {k: float(rec.get(k, 0.0) or 0.0) for k, *_ in TIME_KEYS}
+    if mode == "canonical": sources = [("canonical", canonical)]
+    elif mode == "mix": sources = [("seed", canonical), ("canonical", canonical), ("user", user)]
+    else: sources = [("user", user)]
+    try:
+        import canonical_ownership as ownership
+        policy = ownership.normalize_policy(getattr(app, "canonical_ownership_policy", None))
+        out = {}
+        for key, *_ in TIME_KEYS:
+            value = None; owner = "seed"
+            for source, values in sources:
+                value = ownership.apply_write(value, values.get(key, 0.0), owner, source, policy, neutral=0.0)
+                owner = source
+            out[key] = float(value if value is not None else 0.0)
+        reports = getattr(app, "_fx_contribution_report", None)
+        if not isinstance(reports, dict): reports = {}; app._fx_contribution_report = reports
+        reports[f"time:{scope}:{name or 'global'}"] = {k: {
+            "value": v, "effective": v,
+            "seed": next((float(vals.get(k, 0.0)) for src, vals in sources if src == "seed"), None),
+            "canonical": next((float(vals.get(k, 0.0)) for src, vals in sources if src == "canonical"), None),
+            "user": next((float(vals.get(k, 0.0)) for src, vals in sources if src == "user"), None),
+            "has_seed": any(src == "seed" for src, _ in sources),
+            "has_canonical": any(src == "canonical" for src, _ in sources),
+            "has_user": any(src == "user" for src, _ in sources),
+            "sources": [src for src, _ in sources], "policy": policy}
+            for k, v in out.items()}
+        return out
+    except Exception:
+        if mode == "canonical": return canonical
+        if mode == "mix": return {k: 0.5 * user.get(k, 0.0) + 0.5 * canonical.get(k, 0.0) for k in canonical}
+        return user
 
 
 def _time_active(rec):
@@ -326,6 +404,20 @@ def make_time_panel(app):
         for k, w in sl.items():
             dflt = {"chorus_rate": .6, "flanger_rate": .25, "flanger_fb": .4, "reverb_size": .5, "reverb_decay": .5, "reverb_dir": 1}.get(k, 0)
             w.blockSignals(True); w.setValue(int(round(float(r.get(k, dflt)) * scale(k)))); w.blockSignals(False)
+        refresh_provenance()
+
+    def refresh_provenance():
+        try:
+            import parameter_provenance_ui as pui
+            sc = "global" if scope.currentIndex() == 1 else "local"
+            name = app.instrument_selector_dropdown.currentText() if sc == "local" and hasattr(app, "instrument_selector_dropdown") else ""
+            effective_values = _time_effective(app, sc, name)
+            report = getattr(app, "_fx_contribution_report", {}).get(f"time:{sc}:{name or 'global'}", {})
+            for key, widget in sl.items():
+                d = dict(report.get(key) or {}); d["effective"] = effective_values.get(key, 0.0)
+                pui.attach(widget, d)
+        except Exception:
+            pass
 
     def changed(*_):
         r = rec(); r["mode"] = "canonical" if mode.currentIndex() == 1 else "user"
@@ -335,6 +427,7 @@ def make_time_panel(app):
         if callable(f):
             try: f()
             except Exception: pass
+        refresh_provenance()
 
     for i, (k, cap, lo, hi) in enumerate(TIME_KEYS, 2):
         w = QSlider(Qt.Orientation.Horizontal); w.setRange(lo, hi); w.valueChanged.connect(changed)

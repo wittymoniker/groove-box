@@ -619,8 +619,20 @@ def _ffmpeg_for(host):
 
 
 def decode_audio_file(host, path, sr):
-    """Any audio/video file → mono float32 at ``sr`` (ffmpeg; .MCC media via mcc_media)."""
+    """Any audio/video file → mono float32 at ``sr`` (ffmpeg; .MCC media via mcc_media; RAW Groovebox .mgr directly;
+    headerless raw PCM: .f32 = float32 mono 48 kHz, .raw / .pcm = 16-bit stereo 44.1 kHz)."""
     import subprocess, os
+    low = str(path).lower()
+    if low.endswith(".mgr") or ".mgr." in low:
+        import live_buffer as _lb
+        x, r = _lb.read_raw(path)
+        x = x.mean(axis=1) if x.ndim > 1 else x
+        if int(r) != int(sr):
+            import audio_os_backend as aob
+            x = aob._resample_for_hardware(x, int(r), int(sr))
+        return np.asarray(x, dtype=np.float32)
+    _raw_fmt = {".f32": ["-f", "f32le", "-ar", "48000", "-ac", "1"], ".raw": ["-f", "s16le", "-ar", "44100", "-ac", "2"],
+                ".pcm": ["-f", "s16le", "-ar", "44100", "-ac", "2"]}.get(os.path.splitext(low)[1])
     if str(path).lower().endswith(".mcc"):
         try:
             import mcc_media
@@ -637,7 +649,7 @@ def decode_audio_file(host, path, sr):
     ff = _ffmpeg_for(host)
     if not ff:
         raise RuntimeError("loading media needs ffmpeg")
-    r = subprocess.run([ff, "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(int(sr)),
+    r = subprocess.run([ff, "-v", "error", *(_raw_fmt or []), "-i", str(path), "-vn", "-ac", "1", "-ar", str(int(sr)),
                         "-f", "f32le", "-"], capture_output=True, timeout=600)
     if r.returncode != 0 and not r.stdout:
         raise RuntimeError((r.stderr or b"").decode(errors="replace").strip()[-200:] or "decode failed")
@@ -845,11 +857,20 @@ class LiveEngine:
                     self.row_started_at = self.played + w
                 buf = self.cur[1]
                 take = min(frames - w, len(buf) - self.pos)
-                mix[w:w + take] = buf[self.pos:self.pos + take]
+                seg = buf[self.pos:self.pos + take]
+                if getattr(seg, "ndim", 1) > 1:          # a stereo row never silences the output
+                    seg = seg.mean(axis=1)
+                mix[w:w + take] = seg
                 self.pos += take
                 w += take
             if self.comp_gain != 1.0:
                 mix *= np.float32(self.comp_gain)
+            _meters = {}
+            try:
+                import audio_diagnostics as _ad
+                _meters["comp"] = _ad.measure(mix)
+            except Exception:
+                _ad = None
             try:
                 n_ = min(frames, self.comp_scope.size)
                 self.comp_scope = np.roll(self.comp_scope, -n_); self.comp_scope[-n_:] = mix[-n_:]
@@ -865,6 +886,7 @@ class LiveEngine:
                     except Exception:
                         pass
                 mix += ms
+                if _ad is not None: _meters["media"] = _ad.measure(ms)
             with self.lock:
                 keys, self.keys = self.keys, []
             alive = []
@@ -884,6 +906,7 @@ class LiveEngine:
             if alive:
                 with self.lock:
                     self.keys = alive + self.keys
+            if _ad is not None and keys: _meters["keys"] = {"peak": 1.0 if keys else 0.0, "rms": 0.0, "clip": 0, "nan": 0}
             self.played += frames
             fx = self.fx
             if fx is not None and fx.active():
@@ -900,6 +923,11 @@ class LiveEngine:
                     mix = take_mix
             # LIVE_SOUND_R7: the speakers come first -- monitoring is written before the
             # record tap and scope, and a tap failure can never mute what you hear.
+            if _ad is not None:
+                _meters["final"] = _ad.measure(mix)
+                if mic is not None: _meters["mic"] = _ad.measure(take_mix - mix) if take_mix is not mix else _meters.get("mic", {"peak": 0.0})
+                if self.rec is not None: _meters["rec"] = _ad.measure(take_mix)
+                self.meters = _meters
             mix = soft_clip(np.nan_to_num(mix, nan=0.0, posinf=0.0, neginf=0.0))
             outdata[:] = mix.reshape(-1, 1) if outdata.shape[1] == 1 else np.repeat(mix.reshape(-1, 1), outdata.shape[1], axis=1)
             rec = self.rec
@@ -917,8 +945,10 @@ class LiveEngine:
                 self.scope[-n:] = take_mix[-n:]
             except Exception:
                 pass
-        except Exception:
+        except Exception as _cb_exc:
             outdata.fill(0.0)
+            self.cb_errors = int(getattr(self, "cb_errors", 0)) + 1
+            self.cb_last_error = "%s: %s" % (type(_cb_exc).__name__, _cb_exc)
         finally:
             self._callback_active = max(0, self._callback_active - 1)
 
@@ -1915,7 +1945,7 @@ class LiveRecorder:
 # ---------------------------------------------------------------------------
 # Visual
 # ---------------------------------------------------------------------------
-LAYERS = (("rig", "Main video rig / scenograph", True),
+LAYERS = (("rig", "Main Scenograph + project OBJ / sample meshes", True),
           ("orbit", "Instrument orbit (rosette)", False),
           ("ring", "Waveform ring", False), ("labels", "Instrument names", False),
           ("strip", "Playlist strip", False), ("media", "Loaded media video", False),
@@ -2703,7 +2733,8 @@ class ScenographBroadcast(QWidget):
                 eng = self.player.engine
                 wave_ = np.array(eng.scope, dtype=np.float32) if eng is not None else np.zeros(1024, np.float32)
                 if self.eng is not None:
-                    self.eng.set_waveform(wave_, playhead=0.5, sr=getattr(eng, "sr", None))
+                    _ph = float(getattr(eng, "playhead", 0.5) or 0.5) if eng is not None else 0.5
+                    self.eng.set_waveform(wave_, playhead=_ph, sr=getattr(eng, "sr", None))
                     self.eng.t = (time.monotonic() - self._t0) * self._norm
                     rgb = np.ascontiguousarray(np.asarray(self.eng.render_frame(w, h, export=True, frame_index=fi), dtype=np.uint8)[:, :, :3])
                     img = QImage(rgb.data, rgb.shape[1], rgb.shape[0], 3 * rgb.shape[1], QImage.Format.Format_RGB888).copy()
@@ -2743,6 +2774,7 @@ class ScenographBroadcast(QWidget):
 
 
 class LivePlayerWindow(QDialog):
+    _master_progress = pyqtSignal(float, str)
     def __init__(self, host):
         super().__init__(host)
         self.host = host
@@ -2773,11 +2805,47 @@ class LivePlayerWindow(QDialog):
         self.visual = None   # guard: assigned later after all signals are connected
         lay = QVBoxLayout(self)
 
+        # Row 0: MASTER THE WHOLE LIVE PLAY TRACK — after a take, its full mix (composition + live keys + imported
+        # media + FX) is mastered and the video is rendered again offline at full quality and frame rate.
+        _mrow = QHBoxLayout()
+        self.chk_master_track = QCheckBox("🎚 Master full Live Play track")
+        self.chk_master_track.setChecked(False)
+        self.chk_master_track.setToolTip("After you stop recording a take: master its whole audio (keys, imports, FX, the "
+                                         "composition — everything that played), then render every video frame again "
+                                         "offline at full quality and a steady frame rate from that audio, and save one "
+                                         "full-length MP4 (+ 24-bit master WAV). Runs in the background.")
+        try:
+            import live_master as _lm_ui
+            _sizes = list(_lm_ui.SIZES)
+        except Exception:
+            _sizes = ["1080p"]
+        self.cmb_master_size = QComboBox(); self.cmb_master_size.addItems(_sizes)
+        self.cmb_master_size.setToolTip("Size of the mastered video")
+        self.cmb_master_fps = QComboBox(); self.cmb_master_fps.addItems(["30 fps", "60 fps", "24 fps"])
+        self.cmb_master_video = QComboBox(); self.cmb_master_video.addItems(["remaster recorded video", "re-render offline"])
+        self.cmb_master_video.setToolTip("Remaster: the recorded live video itself (camera, media, everything on screen) "
+                                         "with every frame filled in. Re-render: a fresh full-quality render from the "
+                                         "mastered audio (used automatically for audio-only takes).")
+        self.lbl_master = QLabel("")
+        self.lbl_master.setStyleSheet("color:#9fe6d8;")
+        self.cmb_focus = QComboBox(); self.cmb_focus.addItems(["All controls", "Audio focus", "Video focus", "Performance"])
+        self.cmb_focus.setToolTip("Show only what the moment needs: Audio focus hides the video rig / layers / looks; "
+                                  "Video focus hides the FX and mic / morph controls; Performance keeps transport, keys, "
+                                  "FX on and recording. Nothing is switched off — only hidden.")
+        self.cmb_focus.currentIndexChanged.connect(self._apply_focus)
+        for _w in (QLabel("Focus"), self.cmb_focus, self.chk_master_track, self.cmb_master_size, self.cmb_master_fps,
+                   self.cmb_master_video, self.lbl_master):
+            _mrow.addWidget(_w)
+        _mrow.addStretch(1)
+        lay.addLayout(_mrow)
+        self._master_progress.connect(self._on_master_progress)
+
         # Row 1: transport
         top = QHBoxLayout()
         self.btn_play = QPushButton("▶ Play live")
         self.btn_stop = QPushButton("⏹ Stop")
-        self.chk_loop = QCheckBox("Loop"); self.chk_loop.setChecked(True)
+        self.chk_loop = QCheckBox("Loop"); self.chk_loop.setChecked(False)
+        self.chk_loop.setToolTip("Loop is off by default. Enable only when you want the Live Player transport to repeat.")
         self.spin_start = QSpinBox(); self.spin_start.setPrefix("from row "); self.spin_start.setRange(1, 9999)
         self.sld_key_bend = QSlider(Qt.Orientation.Horizontal)
         self.sld_key_bend.setRange(-12, 12); self.sld_key_bend.setValue(0); self.sld_key_bend.setFixedWidth(116)
@@ -2938,7 +3006,14 @@ class LivePlayerWindow(QDialog):
         self.btn_reset_morph = QPushButton("↺ Reset canonical")
         self.btn_reset_morph.setToolTip("Disable canonical morph and key/sample participation; restore the quiet default settings.")
         self.btn_reset_morph.clicked.connect(self._reset_morph)
-        for wdg in (self.chk_morph, self.sld_morph, self.lbl_morph, self.chk_morph_keys, self.chk_morph_media):
+        self.chk_canon_visuals = QCheckBox("🎨 Visuals follow canonicals")
+        self.chk_canon_visuals.setChecked(bool(getattr(host, "live_visuals_follow_canonicals", True)))
+        self.chk_canon_visuals.setToolTip("The overlay visuals (OBJ, sample meshes, GOAVA / L-system shapes) change their "
+                                          "transparency, movement, spin and size with the active canonical engines.")
+        self.chk_canon_visuals.toggled.connect(lambda on: setattr(host, "live_visuals_follow_canonicals", bool(on)))
+        host.live_visuals_follow_canonicals = self.chk_canon_visuals.isChecked()
+        for wdg in (self.chk_morph, self.sld_morph, self.lbl_morph, self.chk_morph_keys, self.chk_morph_media,
+                    self.chk_canon_visuals):
             mor.addWidget(wdg)
         mor.addSpacing(12); mor.addWidget(QLabel("⏱ Place triggers:")); mor.addWidget(self.cmb_place)
         mor.addWidget(self.lbl_place); mor.addWidget(self.btn_randomize_morph); mor.addWidget(self.btn_reset_morph)
@@ -2956,14 +3031,31 @@ class LivePlayerWindow(QDialog):
         self.btn_media.setToolTip("Any audio or video file (MP3 / WAV / FLAC / MP4 / MKV / .MCC …) plays under the "
                                   "composition; video becomes a layer. Keys, mic, DJ FX and Record work on top.")
         self.btn_media.clicked.connect(self._load_media_dialog)
+        self.btn_live_buffer = QPushButton("📼 Live buffer")
+        self.btn_live_buffer.setToolTip("Play the project's pre-rendered live buffer (RAW) as the media track — instant, "
+                                        "no render build-up")
+
+        def _play_live_buffer():
+            try:
+                import live_buffer as _lb
+                pth = _lb.current_path(self.host)
+                if pth:
+                    self.load_media(pth)
+                else:
+                    _lb.schedule(self.host)
+                    self.status.setText("The live buffer is being rendered in the background; try again in a moment.")
+            except Exception as exc:
+                self.status.setText("Live buffer: %s" % exc)
+        self.btn_live_buffer.clicked.connect(_play_live_buffer)
         self.btn_media_clear = QPushButton("✕"); self.btn_media_clear.setFixedWidth(30)
         self.btn_media_clear.setToolTip("Unload the media"); self.btn_media_clear.clicked.connect(self._clear_media)
         self.lbl_media = QLabel("no media"); self.lbl_media.setMinimumWidth(140)
-        self.chk_media_loop = QCheckBox("loop"); self.chk_media_loop.setChecked(True)
+        self.chk_media_loop = QCheckBox("loop"); self.chk_media_loop.setChecked(False)
+        self.chk_media_loop.setToolTip("Imported media looping is off by default; enable it explicitly when needed.")
         self.chk_media_loop.toggled.connect(lambda on: setattr(self._media, "loop", bool(on)) if self._media else None)
         self.chk_comp = QCheckBox("Composition"); self.chk_comp.setChecked(True)
         self.chk_comp.setToolTip("Off = play only the media (+ keys / mic) — e.g. jam over a track")
-        for wdg in (self.btn_media, self.btn_media_clear, self.lbl_media, self.chk_media_loop, self.chk_comp):
+        for wdg in (self.btn_media, self.btn_live_buffer, self.btn_media_clear, self.lbl_media, self.chk_media_loop, self.chk_comp):
             med.addWidget(wdg)
         med.addStretch(1)
         lay.addLayout(med)
@@ -3000,7 +3092,9 @@ class LivePlayerWindow(QDialog):
         for _fxkey, _fxlabel in (("filter_enabled", "Fractal"), ("echo_enabled", "EQR"),
                                  ("stutter_enabled", "Repeat"), ("crush_enabled", "∞M Drive"),
                                  ("gate_enabled", "PKP")):
-            _cb = QCheckBox(_fxlabel); _cb.setChecked(True)
+            # Every effect starts OFF (a clean pass-through); only the main "FX on" switch is on.
+            _cb = QCheckBox(_fxlabel); _cb.setChecked(False)
+            self._fx_set(_fxkey, False)
             _cb.toggled.connect(lambda on, key=_fxkey: self._fx_set(key, bool(on)))
             djr.addWidget(_cb); self._fx_bypass_checks[_fxkey] = _cb
         self.sld_filter = QSlider(Qt.Orientation.Horizontal); self.sld_filter.setRange(-100, 100); self.sld_filter.setValue(0)
@@ -3041,8 +3135,13 @@ class LivePlayerWindow(QDialog):
         recr = QHBoxLayout()
         self.chk_rec = QCheckBox("⏺ Record live play")
         self.chk_finish = QCheckBox("finish take")
-        self.chk_finish.setChecked(True)
-        self.chk_finish.setToolTip("After the take: trim silence, remove DC, peak-normalize, short fade, and report before/after loudness.")
+        self.chk_finish.setChecked(False)
+        self.chk_finish.setToolTip("Optional post-take processing: trim silence, remove DC, peak-normalize, short fade, and report before/after loudness. Off by default; raw take is preserved unless enabled.")
+        self.chk_concurrent_export = QCheckBox("Make Concurrent Export")
+        self.chk_concurrent_export.setChecked(False)
+        self.chk_concurrent_export.setToolTip("Optional: choose a destination now, then queue a project MCC snapshot when recording starts. The snapshot is written on the dedicated project-I/O lane while the live take continues; this is a project snapshot, not a second real-time video encoder.")
+        self._concurrent_export_path = None
+        self.chk_concurrent_export.toggled.connect(self._concurrent_export_toggled)
         self.chk_rec.setToolTip("Save exactly what you hear (composition + keys + mic) and, with 'video', exactly "
                                 "what the live view shows (all enabled layers incl. camera). A quick take — use "
                                 "Export for the high-quality file.")
@@ -3053,7 +3152,7 @@ class LivePlayerWindow(QDialog):
         self.cmb_rec_video = QComboBox(); self.cmb_rec_video.addItems(LiveRecorder.VIDEO_FORMATS)
         self.cmb_rec_video.setToolTip("Video take format (MCC = lossless RGB + audio)")
         self.lbl_rec = QLabel("")
-        for wdg in (self.chk_rec, self.chk_finish, QLabel("audio"), self.cmb_rec_audio, self.chk_rec_video, self.cmb_rec_video, self.lbl_rec):
+        for wdg in (self.chk_rec, self.chk_finish, self.chk_concurrent_export, QLabel("audio"), self.cmb_rec_audio, self.chk_rec_video, self.cmb_rec_video, self.lbl_rec):
             recr.addWidget(wdg)
         recr.addStretch(1)
         lay.addLayout(recr)
@@ -3156,6 +3255,14 @@ class LivePlayerWindow(QDialog):
             self.btn_controls.setToolTip("Open advanced recording, layers, mic, camera, mix, effects and performance controls.")
             self.btn_controls.setMinimumHeight(38)
             self.btn_controls.toggled.connect(self._advanced_scroll.setVisible)
+            # Transport next to RECORD (outside Controls & editing).
+            for _tb in (self.btn_play, self.btn_stop):
+                try:
+                    top.removeWidget(_tb)
+                except Exception:
+                    pass
+                _tb.setMinimumHeight(38)
+                quick.addWidget(_tb)
             quick.addWidget(self.btn_quick_record)
             # Reparent the existing media picker into the quick-action strip.
             quick.addWidget(self.btn_media)
@@ -3253,7 +3360,7 @@ class LivePlayerWindow(QDialog):
             cb = self._layer_actions.get(key)
             if cb is not None:
                 cb.setChecked(key == "rig")
-        self.status.setText("Main video rig / scenograph only.")
+        self.status.setText("Main Scenograph · project OBJ and sample-mesh overlays follow the export render path.")
 
     def _randomize_morph(self):
         import random
@@ -3678,7 +3785,8 @@ class LivePlayerWindow(QDialog):
         from PyQt6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(self, "Load media into the Live Player", "",
                                               "Media (*.mp3 *.wav *.flac *.ogg *.opus *.m4a *.aac *.aif *.aiff "
-                                              "*.mp4 *.mkv *.webm *.mov *.avi *.m4v *.MCC *.mcc);;All files (*)")
+                                              "*.mp4 *.mkv *.webm *.mov *.avi *.m4v *.MCC *.mcc *.mgr *.f32 *.raw *.pcm);;"
+                                              "RAW Groovebox (*.mgr);;All files (*)")
         if path:
             self.load_media(path)
 
@@ -3916,6 +4024,45 @@ class LivePlayerWindow(QDialog):
             self._start_rec()
 
     # -- record --------------------------------------------------------------
+    def _concurrent_export_toggled(self, enabled):
+        """Select a one-shot concurrent project snapshot target; never auto-export at boot."""
+        if not enabled:
+            self._concurrent_export_path = None
+            return
+        try:
+            from PyQt6.QtWidgets import QFileDialog
+            host = self.host
+            initial = host._export_name("live-player-concurrent", ".MCC", host._projects_dir())
+            path, _ = QFileDialog.getSaveFileName(self, "Concurrent project snapshot (.MCC)", initial,
+                                                   "Mathematician's Groovebox Composition (*.MCC)")
+            if not path:
+                self.chk_concurrent_export.blockSignals(True)
+                self.chk_concurrent_export.setChecked(False)
+                self.chk_concurrent_export.blockSignals(False)
+                self._concurrent_export_path = None
+                return
+            if not str(path).lower().endswith(".mcc"):
+                path = str(path) + ".MCC"
+            self._concurrent_export_path = str(path)
+            self.status.setText("Concurrent project snapshot armed · it will start with the next take")
+        except Exception as exc:
+            self._concurrent_export_path = None
+            self.chk_concurrent_export.blockSignals(True)
+            self.chk_concurrent_export.setChecked(False)
+            self.chk_concurrent_export.blockSignals(False)
+            self.status.setText(f"Concurrent export unavailable: {exc}")
+
+    def _queue_concurrent_project_snapshot(self):
+        path = getattr(self, "_concurrent_export_path", None)
+        if not path or not getattr(self, "chk_concurrent_export", None) or not self.chk_concurrent_export.isChecked():
+            return
+        try:
+            queued = self.host.export_project_mcc(path, make_current=False, confirm=False)
+            if queued:
+                self.status.setText("Live take running · concurrent project MCC snapshot queued")
+        except Exception as exc:
+            self.status.setText(f"Concurrent project snapshot failed to queue: {exc}")
+
     def _rec_toggled(self, on):
         if on and self.engine is not None and self.engine.stream is not None and self.recorder is None:
             self._start_rec()
@@ -3924,6 +4071,11 @@ class LivePlayerWindow(QDialog):
 
     def _start_rec(self):
         try:
+            if getattr(self, "chk_master_track", None) is not None and self.chk_master_track.isChecked():
+                # Mastering reads the take audio: record it as WAV (MCC is Groovebox-only media).
+                i = self.cmb_rec_audio.findText("WAV")
+                if i >= 0:
+                    self.cmb_rec_audio.setCurrentIndex(i)
             self.recorder = LiveRecorder(self.host, self.engine, self.cmb_rec_audio.currentText(),
                                          self.cmb_rec_video.currentText(), self.chk_rec_video.isChecked())
             if getattr(self, "_full_cpu_cfg", {}).get("force_1080"):
@@ -3933,6 +4085,8 @@ class LivePlayerWindow(QDialog):
                 self.visual.tw["bg_light"] = 46
                 self.visual.tw["bg_sat"] = 0
             self.recorder.start()
+            # Save the project state concurrently through the dedicated project-I/O lane.
+            self._queue_concurrent_project_snapshot()
             # Prime the take with its first actual live-view frame rather than
             # waiting for the next 16 ms UI tick (important for short takes).
             self._record_frames()
@@ -4070,6 +4224,53 @@ class LivePlayerWindow(QDialog):
         except Exception as exc:
             print(f"[LivePlayer] MCC export: {exc}")
 
+    def _start_master(self, paths):
+        """Master the finished take on a background thread (audio mastering + full-quality offline video)."""
+        import threading
+        size = self.cmb_master_size.currentText()
+        fps = int(self.cmb_master_fps.currentText().split()[0])
+        vmode = "rerender" if self.cmb_master_video.currentIndex() == 1 else "auto"
+        host = self.host
+
+        def work():
+            try:
+                import live_master as _lm
+                r = _lm.master_take(host, paths, size=size, fps=fps, video_mode=vmode,
+                                    progress=lambda f, t: self._master_progress.emit(float(f), str(t)))
+                self._master_progress.emit(1.0, "✔ mastered: " + os.path.basename(r.get("video") or r.get("wav") or ""))
+            except Exception as exc:
+                self._master_progress.emit(-1.0, "⚠ mastering failed: %s" % exc)
+        threading.Thread(target=work, name="live-master", daemon=True).start()
+        self.lbl_master.setText("mastering the take…")
+
+    def _apply_focus(self, index):
+        g = lambda *names: [getattr(self, n, None) for n in names]
+        video = g("chk_rig", "cmb_rig_size", "cmb_rig_scale", "btn_tweak", "tweak_panel", "chk_cam", "chk_camera_layer",
+                  "chk_camera_full_layer", "btn_randomize_layers", "btn_reset_layers")
+        video += list((getattr(self, "_layer_actions", {}) or {}).values())
+        fx = g("sld_filter", "sld_echo", "cmb_echo") + list((getattr(self, "_fx_bypass_checks", {}) or {}).values())
+        fx += list(getattr(self, "_stutter_btns", []) or [])
+        extra = g("chk_mic", "sld_mic", "chk_mic_mon", "lbl_mic", "chk_morph", "sld_morph", "lbl_morph", "chk_morph_keys",
+                  "chk_morph_media", "cmb_place", "btn_randomize_morph", "btn_reset_morph")
+        hide = {1: video, 2: fx + extra, 3: video + fx + extra}.get(int(index), [])
+        hidden = {id(w) for w in hide if w is not None}
+        for w in video + fx + extra:
+            if w is None:
+                continue
+            try:
+                if w is getattr(self, "tweak_panel", None) and id(w) not in hidden:
+                    w.setVisible(bool(getattr(self, "btn_tweak", None) and self.btn_tweak.isChecked()))
+                else:
+                    w.setVisible(id(w) not in hidden)
+            except RuntimeError:
+                pass
+
+    def _on_master_progress(self, frac, text):
+        try:
+            self.lbl_master.setText(("%d %% · " % int(100 * frac) if 0 <= frac < 1 else "") + text)
+        except RuntimeError:
+            pass
+
     def _finish_rec(self):
         rec, self.recorder = self.recorder, None
         self.lbl_rec.setText("")
@@ -4107,6 +4308,8 @@ class LivePlayerWindow(QDialog):
                             self.status.setText((self.status.text() or "") + msg_extra)
                 except Exception as exc:
                     print(f"[LivePlayer] take finisher: {exc}")
+            if getattr(self, "chk_master_track", None) is not None and self.chk_master_track.isChecked() and paths:
+                self._start_master(list(paths))
             msg = ("● Saved live take: " + " + ".join(paths)) if paths else "Live take was empty."
             if rec.frames_dropped:
                 msg += f" ({rec.frames_dropped} video frames held as repeats — disk was busy; sync kept)"
@@ -4170,7 +4373,8 @@ class LivePlayerWindow(QDialog):
                         if "MCC" in str(self.cmb_rec_video.itemText(i)).upper():
                             self.cmb_rec_video.setCurrentIndex(i); break
             self._scode_pool_visual = bool(cfg.get("scode_pool_visual"))
-            self._export_mcc_after = bool(cfg.get("export_mcc"))
+            # R65: preset selection must never silently enable project export.
+            self._export_mcc_after = False
         except Exception as _fc_exc:
             print(f"[LivePlayer] full-cpu mode: {_fc_exc}")
             self._full_cpu_cfg = FULL_CPU_LIVE_PLAY_MODES["play"]
@@ -4446,7 +4650,11 @@ class LivePlayerWindow(QDialog):
                     i = 0
                     continue
                 try:
-                    eng.q.put(chunks[i], timeout=0.1)
+                    _ci, _cb = chunks[i]
+                    _cb = np.asarray(_cb, dtype=np.float32)
+                    if _cb.ndim > 1:
+                        _cb = _cb.mean(axis=1).astype(np.float32)
+                    eng.q.put((_ci, np.nan_to_num(_cb, nan=0.0, posinf=0.0, neginf=0.0)), timeout=0.1)
                 except queue.Full:
                     continue
                 i += 1
@@ -4709,6 +4917,25 @@ class LivePlayerWindow(QDialog):
         for v in self._views():
             v.tick()
         eng = self.engine
+        try:
+            if eng is not None and getattr(eng, "meters", None) and hasattr(self, "lbl_rec"):
+                import audio_diagnostics as _ad
+                self.setToolTip(_ad.line(eng.meters))
+                if not hasattr(self, "_lbl_meters"):
+                    from PyQt6.QtWidgets import QLabel as _QL
+                    self._lbl_meters = _QL(""); self._lbl_meters.setStyleSheet("color:#bfffd0;font-family:monospace;")
+                    try: self.layout().addWidget(self._lbl_meters)
+                    except Exception: pass
+                self._lbl_meters.setText(_ad.line(eng.meters))
+        except Exception:
+            pass
+        try:   # an audio-callback failure is shown, never silent
+            _ne = int(getattr(eng, "cb_errors", 0) or 0) if eng is not None else 0
+            if _ne and _ne != getattr(self, "_cb_errors_shown", 0):
+                self._cb_errors_shown = _ne
+                self.status.setText("⚠ audio callback: %s" % getattr(eng, "cb_last_error", "?"))
+        except Exception:
+            pass
         if eng is not None and eng.mic is not None:
             lv = eng.mic.level
             self.lbl_mic.setText("▮" * max(0, min(8, int(lv * 8 + 0.5))) or "·")

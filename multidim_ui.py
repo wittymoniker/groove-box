@@ -119,12 +119,14 @@ def _style_role_slider(slider, base, value, lo, hi):
         c = _rescale_pt(base, t)
         light = c.lighter(160)
         dark = c.darker(260)
-        slider.setStyleSheet(
-            "QSlider::groove:horizontal { background:#1a2230; height:5px; border-radius:2px; }"
-            f"QSlider::sub-page:horizontal {{ background:{c.name()}; border-radius:2px; }}"
-            f"QSlider::handle:horizontal {{ background:{light.name()}; border:1px solid {dark.name()};"
-            " width:12px; margin:-4px 0; border-radius:6px; }"
-        )
+        ss = ("QSlider::groove:horizontal { background:#1a2230; height:5px; border-radius:2px; }"
+              f"QSlider::sub-page:horizontal {{ background:{c.name()}; border-radius:2px; }}"
+              f"QSlider::handle:horizontal {{ background:{light.name()}; border:1px solid {dark.name()};"
+              " width:12px; margin:-4px 0; border-radius:6px; }")
+        # R33: re-applying an identical stylesheet re-polishes and repaints the whole subtree; this ran ~136×/s
+        # while idle and was the largest single cause of the idle UI stalls.
+        if slider.styleSheet() != ss:
+            slider.setStyleSheet(ss)
     except Exception:
         pass
 
@@ -452,42 +454,60 @@ class MD3DView(QWidget):
 
     # ---- R31 MD_SCENE_HOST_LAYERS: the main window's Panel, Vector and Fractal/EQR/PKP state ----
     def attach_host(self, host):
-        """Called by the main-window panel. Reads only cheap scalar state while painting; the panel
-        voice cycle is rendered on a worker every 1.5 s, never in paintEvent."""
+        """Bind the scene to instrument UI settings, never to the audio output stream.
+
+        The panel ring is a deterministic visual simulation of the selected voice's
+        editable controls. It does not call the audio renderer or inspect PCM.
+        """
         self.host = host
         self._panel_wave = None
-        self._panel_busy = False
+        self._panel_note_hz = 432.0
         from PyQt6.QtCore import QTimer as _QT
-        self._panel_timer = _QT(self); self._panel_timer.setInterval(1500)
+        self._panel_timer = _QT(self); self._panel_timer.setInterval(250)
         self._panel_timer.timeout.connect(self._refresh_panel_wave)
         self._panel_timer.start()
-        _QT.singleShot(300, self._refresh_panel_wave)
+        _QT.singleShot(0, self._refresh_panel_wave)
 
     def _refresh_panel_wave(self):
         host = getattr(self, "host", None)
-        if host is None or self._panel_busy or not self.isVisible():
+        if host is None:
             return
         try:
             name = host._current_instrument_name()
-            base = float(host.spin_base_frequency.value()) if hasattr(host, "spin_base_frequency") else 432.0
+            state = dict((getattr(host, "instrument_param_state", {}) or {}).get(name, {}) or {})
+            ctx = state.get("meum_modulation", state)
+            if not isinstance(ctx, dict): ctx = state
+            import synth_engine_panel as _sep
+            eng = _sep.effective(host, str(name))
+            base = float(getattr(host, "_multidim_visual_note_hz", 432.0) or 432.0)
+            n = 192
+            phase = np.linspace(0.0, math.tau, n, endpoint=False)
+            am = max(0.0, min(1.0, float(ctx.get("am_depth", 0.0) or 0.0)))
+            fm = max(0.0, min(1.0, float(ctx.get("fm_depth", 0.0) or 0.0)))
+            pm = max(0.0, min(1.0, float(ctx.get("pm_depth", 0.0) or 0.0)))
+            md = max(0.0, min(1.0, float(ctx.get("meum_depth", 0.0) or 0.0)))
+            unison = max(1, min(7, int(eng.get("unison", 1) or 1)))
+            detune = max(0.0, min(50.0, float(eng.get("detune", 0.0) or 0.0)))
+            fold = max(0.0, min(1.0, float(eng.get("fold", 0.0) or 0.0)))
+            # UI controls drive a normalized visual field; no audio buffers are read.
+            wave = np.zeros(n, dtype=np.float64)
+            for voice in range(unison):
+                cents = ((voice / max(1, unison - 1)) * 2.0 - 1.0) * detune if unison > 1 else 0.0
+                ratio = 2.0 ** (cents / 1200.0)
+                wave += np.sin(phase * ratio + pm * np.sin(phase * 2.0 + voice * 0.3))
+            wave /= math.sqrt(unison)
+            wave += (0.22 * fm) * np.sin(phase * 2.0 + md * np.sin(phase * 3.0))
+            wave *= (1.0 - 0.35 * am) + 0.35 * am * (0.5 + 0.5 * np.sin(phase * 3.0))
+            if fold > 0.0:
+                wave = np.sin(wave * (1.0 + 5.0 * fold) * math.pi / 2.0)
+            peak = float(np.max(np.abs(wave))) if wave.size else 0.0
+            self._panel_wave = wave / peak if peak > 1e-12 else wave
+            self._host_snap_name = str(name)
+            self._panel_controls = {"base_hz":base,"am":am,"fm":fm,"pm":pm,"meum":md,
+                                    "unison":unison,"detune":detune,"fold":fold}
+            self.update()
         except Exception:
             return
-        self._panel_busy = True
-        import threading as _th
-
-        def work():
-            try:
-                sr = 48000.0
-                n = int(max(64, min(4096, sr / max(20.0, base))))         # one cycle of the voice
-                t = np.arange(n, dtype=np.float64) / sr
-                v = np.asarray(host._audition_voice(name, base, t, sr), dtype=np.float64).reshape(-1)
-                m = float(np.max(np.abs(v))) if v.size else 0.0
-                self._panel_wave = (v / m) if m > 0 else v
-            except Exception:
-                pass
-            finally:
-                self._panel_busy = False
-        _th.Thread(target=work, name="md-scene-panel-wave", daemon=True).start()
 
     def _host_state(self):
         host = getattr(self, "host", None)
@@ -1509,7 +1529,7 @@ class MultidimControlMatrix(QWidget):
         self._get_user = get_user
         self._set_user_key = set_user_key
         self._loading = False
-        self.setStyleSheet("background:#0e1624;")
+        self.setStyleSheet("background:rgba(14,22,36,120);")   # translucent: Party / math background show through
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(3)
@@ -2026,19 +2046,36 @@ class MultidimWindow(QDialog):
                       "Controls you set mix 50 / 50 with the canonical programme (U50).")
         note.setWordWrap(True); note.setStyleSheet("color:#8da5b8;")
         outer.addWidget(note)
+        provenance_legend = QLabel(
+            '<span style="color:#78b9ff;font-weight:900">S</span> Seed baseline'
+            ' &nbsp; <span style="color:#d7a6ff;font-weight:900">C</span> Canonical write'
+            ' &nbsp; <span style="color:#7ee0a1;font-weight:900">U</span> Explicit user edit'
+            ' &nbsp; <span style="color:#ffc96b;font-weight:900">P</span> Step override'
+            ' &nbsp; · &nbsp; Hover any marker for source values and effective net value.'
+        )
+        provenance_legend.setWordWrap(True)
+        provenance_legend.setTextFormat(Qt.TextFormat.RichText)
+        provenance_legend.setStyleSheet("QLabel{background:rgba(9,18,28,170);border:1px solid #49647c;border-radius:5px;padding:5px;color:#dceaf5;font-size:8pt;font-weight:700;}")
+        outer.addWidget(provenance_legend)
         self._timer = QTimer(self); self._timer.setInterval(33)
         self._timer.timeout.connect(lambda: self.view.tick(0.033))
-        self._timer.start()
+        # The animation clock only runs while visible; hidden windows must not
+        # keep repainting the 3-D canvas or consuming a UI-thread slice.
+        self._provenance_timer = QTimer(self); self._provenance_timer.setInterval(600)
+        self._provenance_timer.timeout.connect(self._refresh_contribution_badges)
         self._master_panel: SynthsMasterPanel | None = None
         self._load()
 
     def set_activity_enabled(self, enabled):
         if not hasattr(self, "_timer"):
             return
-        if bool(enabled) and self.isVisible():
+        active = bool(enabled) and self.isVisible()
+        if active:
             if not self._timer.isActive(): self._timer.start(33)
+            if hasattr(self, "_provenance_timer") and not self._provenance_timer.isActive(): self._provenance_timer.start()
         else:
             self._timer.stop()
+            if hasattr(self, "_provenance_timer"): self._provenance_timer.stop()
 
     def wheelEvent(self, e):
         e.ignore()
@@ -2102,8 +2139,69 @@ class MultidimWindow(QDialog):
                 "io" if goava_mode in ("io", "input", "signal") else "seeded")))
             self._load_xmod_bindings(u, p)
             self._refresh(p, seed_int, slot)
+            self._apply_contribution_badges(p, u)
         finally:
             self._loading = False
+
+    def _apply_contribution_badges(self, p=None, user=None):
+        """Draw source-only overlays; the control's actual editable value is untouched."""
+        try:
+            import parameter_provenance_ui as _pui
+            p = p if isinstance(p, dict) else self._merged()[0]
+            user = user if isinstance(user, dict) else self._user()
+            provenance = p.get("_provenance", {}) if isinstance(p.get("_provenance"), dict) else {}
+            items = []
+            def add(widget, key):
+                if widget is None: return
+                data = dict(provenance.get(key, {}) or {})
+                if key == "preset":
+                    data = {"seed": p.get("preset"), "canonical": p.get("preset"),
+                            "user": user.get("preset") if "preset" in user else None,
+                            "effective": p.get("preset"), "has_seed": True,
+                            "has_canonical": bool(p.get("_engines")), "has_user": "preset" in user}
+                _pui.attach(widget, data)
+                items.append((widget, key))
+            add(self.cmb_preset, "preset")
+            add(self.ed_script, "script")
+            add(self.ed_domain, "domain")
+            add(self.spin_rule, "ca_rule")
+            add(self.cmb_res, "resonators")
+            for key, slider in self.patch_sl.items(): add(slider, "patch." + key)
+            for i, slider in enumerate(self.vec_sl): add(slider, f"vector.{i}")
+            for key, (slider, _scale) in self.num_sl.items(): add(slider, key)
+            for key, (slider, _scale, _default) in self.field_sl.items(): add(slider, key)
+            routes = list(p.get("xmod_bindings") or ())
+            _canonical_routes = [r for r in routes if str(r.get("owner", "canonical")) in ("canonical", "canonical+user")]
+            _user_routes = [r for r in routes if str(r.get("owner", "")) in ("user", "canonical+user")]
+            _route_net = sum(float(r.get("amount", 0.0) or 0.0) for r in routes)
+            _route_data = {"seed": None, "canonical": len(_canonical_routes),
+                           "user": len(_user_routes), "effective": _route_net,
+                           "has_seed": False, "has_canonical": bool(_canonical_routes),
+                           "has_user": bool(_user_routes)}
+            _pui.attach(getattr(self, "spin_xmod_amount", None), _route_data)
+            _pui.attach(getattr(self, "list_xmod_bindings", None), _route_data)
+            self._contribution_badge_items = items
+        except Exception:
+            pass
+
+    def _refresh_contribution_badges(self):
+        if not self.isVisible():
+            return
+        try:
+            p, _seed, _slot = self._merged()
+            self._apply_contribution_badges(p, self._user())
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, "_timer") and not self._timer.isActive(): self._timer.start(33)
+        if hasattr(self, "_provenance_timer") and not self._provenance_timer.isActive(): self._provenance_timer.start()
+
+    def hideEvent(self, event):
+        if hasattr(self, "_timer"): self._timer.stop()
+        if hasattr(self, "_provenance_timer"): self._provenance_timer.stop()
+        super().hideEvent(event)
 
     def _refresh(self, p=None, seed_int=None, slot=None):
         if p is None:
@@ -2483,12 +2581,11 @@ class MainMDPanel(QWidget):
     def __init__(self, host, parent=None):
         super().__init__(parent if parent is not None else host)
         self.host = host
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        self.setAutoFillBackground(True)
-        _pal = self.palette(); _pal.setColor(self.backgroundRole(), QColor("#0b111b")); self.setPalette(_pal)
-        self.setStyleSheet("background-color:#0b111b;")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background-color:rgba(11,17,27,112);")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.view = MD3DView(self)
@@ -2504,7 +2601,7 @@ class MainMDPanel(QWidget):
         self.control_rack = QFrame(self)
         self.control_rack.setObjectName("mainDimensionalControlRack")
         self.control_rack.setStyleSheet(
-            "QFrame#mainDimensionalControlRack { background:#15172f; border:2px solid #6c55b8; border-radius:10px; }"
+            "QFrame#mainDimensionalControlRack { background:rgba(21,23,47,174); border:2px solid rgba(108,85,184,220); border-radius:10px; }"
             "QLabel { color:#c8f7ed; font-size:8pt; font-weight:900; background:transparent; border:0; }"
             "QLabel[role='value'] { color:#ffd977; font-size:7pt; font-weight:900; }"
         )
@@ -3436,6 +3533,8 @@ class ArcSequencerView(QWidget):
         if not _alive(self):
             self._sync_timer.stop()
             return
+        if not self.isVisible():
+            return                                      # hidden / minimised: no polling work at all
         host = self._host()
         if host is None:
             return
@@ -3453,10 +3552,18 @@ class ArcSequencerView(QWidget):
             self._head = -1
         try:
             name = host.instrument_selector_dropdown.currentText()
-            slot = host._instance_slot(name)
-            p, _seed = host._md_params(name, slot)
             _u = ((getattr(host, "instrument_param_state", {}) or {}).get(name, {}) or {}).get("multidim")
             _u = _u if isinstance(_u, dict) else {}
+            # Slider pass only when something it shows changed (or once a second for canonical drift): it re-derived
+            # the parameters and re-styled every slider 10× a second.
+            import time as _tm
+            _now = _tm.monotonic()
+            _sig = (name, tuple(sorted((k, repr(v)) for k, v in _u.items())), int(getattr(host, "_composition_generation_counter", 0) or 0))
+            if _sig == getattr(self, "_md_sync_sig", None) and _now - getattr(self, "_md_sync_t", 0.0) < 1.0:
+                raise StopIteration
+            self._md_sync_sig, self._md_sync_t = _sig, _now
+            slot = host._instance_slot(name)
+            p, _seed = host._md_params(name, slot)
             self._syncing_params = True
             for key, (sl, scale, base, lo, hi, _lab) in self._param_sliders.items():
                 try:
@@ -3467,10 +3574,20 @@ class ArcSequencerView(QWidget):
                     self._apply_slider_color(sl, base, sl.value(), lo, hi)
                 except Exception:
                     pass
+        except StopIteration:
+            pass
         except Exception:
             pass
         finally:
             self._syncing_params = False
+        try:
+            _vis = (self._n, tuple(bool(x) for x in self._on), tuple(repr(x) for x in self._amp[:256]), self._head,
+                    getattr(self, "_md_sync_sig", None))
+        except Exception:
+            _vis = None
+        if _vis is not None and _vis == getattr(self, "_md_vis_sig", None):
+            return                                      # nothing on screen changed: no repaint
+        self._md_vis_sig = _vis
         try:
             self.update()
         except RuntimeError:

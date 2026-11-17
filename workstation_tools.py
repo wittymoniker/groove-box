@@ -183,15 +183,35 @@ def install_workstation_tools(host, layout):
 
     action("Multidimensional", multidim, "Open the existing multidimensional synth editor")
     action("Canonical data", host._open_canonical_data, "Inspect canonical source data and ownership")
-    action("Performance", host._open_performance_tab, "Open the existing performance controls")
-    action("3D Studio", lambda: __import__("obj_scene").open_window(host),
+    action("Performance", lambda: host._open_performance_tab(""), "Open the existing performance controls")
+    action("3D Studio", lambda: __import__("studio_3d").open_window(host),
            "Wrap media on an OBJ, tint it, and place it in a scene")
     action("Export Jobs", lambda: host._open_export_jobs() if hasattr(host, "_open_export_jobs") else None,
            "The export queue: progress, retry, remove")
     action("File Studio", lambda: __import__("file_studio").open_window(host),
            "Browse, copy and manage project media")
-    action("Takes", lambda: __import__("take_finisher").open_window(host),
+    def _finish_takes():
+        # R33: take_finisher has no window of its own; pick takes, finish them, report.
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        paths, _f = QFileDialog.getOpenFileNames(host, "Finish takes (trim · DC · normalise · seed stamp)",
+                                                 str(host._audio_exports_dir()) if hasattr(host, "_audio_exports_dir") else "",
+                                                 "Audio (*.wav)")
+        if not paths:
+            return
+        rows = __import__("take_finisher").finish_paths(list(paths))
+        QMessageBox.information(host, "Takes", "\n".join("%s → %s" % (r.get("path", "?").rsplit("/", 1)[-1], r.get("out", r.get("error", "done")))
+                                                          for r in rows)[:3000] or "Nothing to finish.")
+    action("Takes", _finish_takes,
            "Finish a take: trim, stamp the seed, keep the good one")
+    action("Recovery", lambda: __import__("runtime_tools_ui").open_recovery(host),
+           "Whole-project checkpoints (automatic every 10 minutes) and restore")
+    action("Explain", lambda: __import__("runtime_tools_ui").open_explain(host),
+           "Search the Help, or click any control to see what it does")
+    action("Self-test", lambda: __import__("runtime_tools_ui").open_selftest(host),
+           "Local checks: runtime services, seed language, mathematics, drive guard, audio devices")
+    action("Theremin", lambda: __import__("theremin_sensors").open_window(host),
+           "Theremin mode (pointer or any sensor → pitch / volume), live sensors (gravity, magnetometer, gyroscope, "
+           "light) and raw-signal projection over Wi-Fi / LAN")
     action("Seed", lambda: __import__("seed_inspector").open_window(host),
            "Current seed fingerprint and the last export that carries it")
     action("Snapshot", lambda: __import__("session_snapshot").open_window(host),

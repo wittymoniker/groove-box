@@ -30,8 +30,21 @@ def _read_int(path):
         return 0
 
 
+_QUOTA_CACHE = [0.0, -1.0]   # [value, monotonic time read]
+
+
 def _cpu_quota_cores():
-    """Return the fractional cgroup CPU quota, or 0 if it is unlimited."""
+    """Return the fractional cgroup CPU quota (0 = unlimited); re-read at most every 5 s."""
+    import time as _t
+    now = _t.monotonic()
+    if _QUOTA_CACHE[1] >= 0 and now - _QUOTA_CACHE[1] < 5.0:
+        return _QUOTA_CACHE[0]
+    _QUOTA_CACHE[0] = _cpu_quota_cores_read()
+    _QUOTA_CACHE[1] = now
+    return _QUOTA_CACHE[0]
+
+
+def _cpu_quota_cores_read():
     try:
         fields = open("/sys/fs/cgroup/cpu.max", "r", encoding="ascii").read().split()
         if len(fields) >= 2 and fields[0] != "max":

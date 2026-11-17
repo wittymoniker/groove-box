@@ -314,6 +314,22 @@ def open_math_composition_lab(parent=None):
     dlg_layout.addWidget(scroll)
     intro = QLabel("Generate editable mathematical patterns. Preview/export are non-destructive. Commit stores the pattern in project userdata; protect it from Canonical Overwrite by default.")
     intro.setWordWrap(True); root.addWidget(intro)
+    # Fast hand-off to the project and instrument macro authors without closing the lab.
+    quick = QHBoxLayout()
+    b_blueprint = QPushButton("📐 Project Blueprint · whole-program macros")
+    b_designer = QPushButton("🎹 Instrument Designer · per-voice macros")
+    b_blueprint.setToolTip("Open the master project generator for character, energy, tempo, seed and instrument count.")
+    b_designer.setToolTip("Open the percussion / pad / keys designer; it can also fill the selected sequence.")
+    def _open_blueprint():
+        try:
+            if parent is not None: __import__("project_blueprint").open_window(parent)
+        except Exception as exc: QMessageBox.warning(dlg, "Project Blueprint", str(exc))
+    def _open_designer():
+        try:
+            if parent is not None: __import__("instrument_designer").open_window(parent)
+        except Exception as exc: QMessageBox.warning(dlg, "Instrument Designer", str(exc))
+    b_blueprint.clicked.connect(_open_blueprint); b_designer.clicked.connect(_open_designer)
+    quick.addWidget(b_blueprint); quick.addWidget(b_designer); root.addLayout(quick)
     form = QFormLayout(); root.addLayout(form)
     kind = QComboBox(); kind.addItems(["Euclidean rhythm", "Polyrhythm overlay", "Fibonacci contour", "Fractal / recursive", "Seeded deterministic density"]); form.addRow("Pattern family", kind)
     kind.setToolTip("All structures are deterministic. The seed only rotates mathematical structure. Generated hits carry a certain 100% trigger gate; no stochastic/probability trial is introduced in playback.")

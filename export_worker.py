@@ -17,6 +17,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+try:
+    import export_artifacts as _export_artifacts
+except Exception:
+    _export_artifacts = None
+try:
+    import quiet_log as _quiet_log
+except Exception:
+    _quiet_log = None
 
 
 def _say(*parts):
@@ -92,6 +100,14 @@ def _write_float_pcm_wav(path, sample_rate, samples, bit_depth=24, chunk_samples
         raise
 
 
+
+def _verify_export_outputs(paths, *, min_bytes=64):
+    """Fail the job unless every committed output passes structural/hash checks."""
+    import export_integrity
+    report = export_integrity.verify_outputs(paths, min_bytes=min_bytes)
+    return report
+
+
 def _reset_between_jobs(app, job):
     """WARM_WORKER_R31: undo per-job state so the next job starts clean."""
     if app is None:
@@ -123,6 +139,12 @@ def run(job: dict, app=None) -> int:
             except Exception:
                 pass
         export_mux.run(o)
+        _mux_out = str(o.get("out_file") or "")
+        if _mux_out:
+            _integrity = _verify_export_outputs([_mux_out], min_bytes=128)
+            if job.get("out_meta"):
+                with open(job["out_meta"], "w", encoding="utf-8") as f:
+                    json.dump({"file_path": _mux_out, "integrity": _integrity}, f)
         return 0
     import numpy as np
     if app is None:
@@ -172,29 +194,51 @@ def run(job: dict, app=None) -> int:
             # project, synth engine, or full-song NumPy buffer.
             _say("PROGRESS", 82, "preparing export soundtrack")
             duration_s = float(o.get("duration_s") or 0.0)
-            n_audio = min(int(arr.shape[0]), int(round(duration_s * int(rate)))) if duration_s > 0 else int(arr.shape[0])
-            audio_clip = np.asarray(arr[:max(1, n_audio)], dtype=np.float32)
-            audio_clip, _clip_report = app._master_hardclip(audio_clip, rate, apply_master_vol=True)
-            audio_clip = np.asarray(audio_clip, dtype=np.float32).reshape(-1)
-            # RMS is accumulated in 1M-sample blocks; no full float64 copy.
-            rms_sum = 0.0
-            for _i in range(0, int(audio_clip.size), 1_048_576):
-                _x = np.asarray(audio_clip[_i:_i + 1_048_576], dtype=np.float64)
-                if _x.size:
-                    rms_sum += float(np.dot(_x, _x))
-            master_rms = float(np.sqrt(rms_sum / max(1, int(audio_clip.size)))) if audio_clip.size else 0.0
             bit_depth = 24 if int(o.get("bit_depth", 24) or 24) >= 24 else 16
-            _write_float_pcm_wav(audio_path, int(rate), audio_clip, bit_depth=bit_depth)
-            del audio_clip
+            cache_entry = None
+            cache_key = None
+            try:
+                import export_stage_cache as _esc
+                cache_key = _esc.key_for_buffer(arr, rate, job["project"], {
+                    "duration_s": duration_s, "bit_depth": bit_depth,
+                    "master_volume": getattr(app, "master_volume", None),
+                    "dj_write": getattr(app, "dj_write_enabled", None),
+                })
+                cache_entry = _esc.lookup(cache_key)
+            except Exception:
+                _esc = None
+            if cache_entry is not None and _esc.copy_cached(cache_entry, audio_path):
+                master_rms = float(cache_entry[1])
+                _say("PROGRESS", 94, "reused cached master audio")
+            else:
+                n_audio = min(int(arr.shape[0]), int(round(duration_s * int(rate)))) if duration_s > 0 else int(arr.shape[0])
+                audio_clip = np.asarray(arr[:max(1, n_audio)], dtype=np.float32)
+                audio_clip, _clip_report = app._master_hardclip(audio_clip, rate, apply_master_vol=True)
+                audio_clip = np.asarray(audio_clip, dtype=np.float32).reshape(-1)
+                # RMS is accumulated in 1M-sample blocks; no full float64 copy.
+                rms_sum = 0.0
+                for _i in range(0, int(audio_clip.size), 1_048_576):
+                    _x = np.asarray(audio_clip[_i:_i + 1_048_576], dtype=np.float64)
+                    if _x.size:
+                        rms_sum += float(np.dot(_x, _x))
+                master_rms = float(np.sqrt(rms_sum / max(1, int(audio_clip.size)))) if audio_clip.size else 0.0
+                _write_float_pcm_wav(audio_path, int(rate), audio_clip, bit_depth=bit_depth)
+                del audio_clip
+                if cache_key and _esc is not None:
+                    try:
+                        _esc.store(cache_key, audio_path, master_rms)
+                    except Exception:
+                        pass
+        _integrity = _verify_export_outputs([dst] + ([audio_path] if audio_path and os.path.isfile(audio_path) else []))
         with open(dst + ".json", "w", encoding="utf-8") as f:
             json.dump({"sample_rate": int(rate), "frames": int(arr.shape[0]),
-                       "dj_baked": True, "finite": True,
+                       "dj_baked": True, "finite": True, "integrity": _integrity,
                        "audio_path": audio_path if os.path.isfile(audio_path) else "",
                        "master_rms": float(master_rms)}, f)
         with open(job["out_meta"], "w", encoding="utf-8") as f:
             json.dump({"file_path": "", "part_paths": [], "peak": 0.0, "sample_rate": int(rate),
                        "audio_path": audio_path if os.path.isfile(audio_path) else "",
-                       "master_rms": float(master_rms)}, f)
+                       "master_rms": float(master_rms), "integrity": _integrity}, f)
         _say("DONE", dst)
         return 0
     if job.get("kind") == "video_file":
@@ -207,9 +251,10 @@ def run(job: dict, app=None) -> int:
         _say("PROGRESS", 30, "rendering the song")
         app._snapshot_render_inputs()
         r = project_obj.export_project(app, str(job["out_file"]))
+        _integrity = _verify_export_outputs([r["path"]])
         with open(job["out_meta"], "w", encoding="utf-8") as f:
             json.dump({"file_path": r["path"], "samples": r["samples"], "sample_rate": r["sr"],
-                       "vertices": r["vertices"], "bytes": r["bytes"]}, f)
+                       "vertices": r["vertices"], "bytes": r["bytes"], "integrity": _integrity}, f)
         _say("DONE", r["path"])
         return 0
     if job.get("kind") == "bake_compare":
@@ -248,9 +293,10 @@ def run(job: dict, app=None) -> int:
         buf, _info = app._master_hardclip(buf, rate, apply_master_vol=True)
         buf = np.ascontiguousarray(np.asarray(buf, dtype=np.float32))
     np.save(job["out_npy"], buf)
+    _integrity = _verify_export_outputs([job["out_npy"]])
     with open(job["out_meta"], "w", encoding="utf-8") as f:
         json.dump({"sample_rate": int(rate), "frames": int(buf.shape[0]), "channels": 1 if buf.ndim == 1 else int(buf.shape[1]),
-                   "final": bool(job.get("final"))}, f)
+                   "final": bool(job.get("final")), "integrity": _integrity}, f)
     _say("DONE", job["out_npy"])
     return 0
 
@@ -321,9 +367,13 @@ def _write_audio_file(app, job, buf, rate, np):
         _say("FAIL", sig.error)
         return 3
     res = sig.result or {}
+    _final_path = str(res.get("file_path") or job["out_file"])
+    _part_paths = list(res.get("part_paths") or [])
+    _integrity = _verify_export_outputs([_final_path] + _part_paths)
     with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": str(res.get("file_path") or ""), "part_paths": list(res.get("part_paths") or []),
-                   "peak": float(res.get("peak", 0.0) or 0.0), "sample_rate": int(res.get("sample_rate") or 0)}, f)
+        json.dump({"file_path": _final_path, "part_paths": _part_paths,
+                   "peak": float(res.get("peak", 0.0) or 0.0), "sample_rate": int(res.get("sample_rate") or 0),
+                   "integrity": _integrity}, f)
     _say("DONE", res.get("file_path") or job["out_file"])
     return 0
 
@@ -368,8 +418,10 @@ def _write_unbounded_audio(app, job, master, rate, o, np):
         data = np.rint(np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
     wavfile.write(path, out_sr, data)
     peak = float(np.max(np.abs(x))) if x.size else 0.0
+    _integrity = _verify_export_outputs([path])
     with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": path, "part_paths": [], "peak": peak, "sample_rate": out_sr}, f)
+        json.dump({"file_path": path, "part_paths": [], "peak": peak, "sample_rate": out_sr,
+                   "integrity": _integrity}, f)
     _say("DONE", path)
     return 0
 
@@ -386,9 +438,10 @@ def _write_stem_file(app, job, np):
     _say("PROGRESS", 92, "master hard clip")
     pcm, _info = app._master_hardclip(np.asarray(buf, dtype=np.float32), sr)
     write_wav(str(job["out_file"]), int(sr), np.asarray(pcm, dtype=np.float32))
+    _integrity = _verify_export_outputs([job["out_file"]])
     with open(job["out_meta"], "w", encoding="utf-8") as f:
         json.dump({"file_path": str(job["out_file"]), "part_paths": [], "peak": float(np.max(np.abs(pcm))) if np.size(pcm) else 0.0,
-                   "sample_rate": int(sr)}, f)
+                   "sample_rate": int(sr), "integrity": _integrity}, f)
     _say("DONE", job["out_file"])
     return 0
 
@@ -423,18 +476,22 @@ def _write_video_file(app, job):
         # PARALLEL_PARTS_R31: a part-set job succeeds when each of its .partNN segments exists.
         d = os.path.dirname(os.path.abspath(out)); stem = os.path.splitext(os.path.basename(out))[0]
         cont = str(o.get("container", "mp4"))
-        missing = [i for i in pre["only_parts"] if not (os.path.isfile(os.path.join(d, f"{stem}.part{int(i):02d}.{cont}"))
-                   and os.path.getsize(os.path.join(d, f"{stem}.part{int(i):02d}.{cont}")) > 64)]
+        part_paths = [os.path.join(d, f"{stem}.part{int(i):02d}.{cont}") for i in pre["only_parts"]]
+        missing = [i for i, path in zip(pre["only_parts"], part_paths) if not (os.path.isfile(path) and os.path.getsize(path) > 64)]
         if missing:
             _say("FAIL", "part(s) not written: %s" % ", ".join(str(m) for m in missing)); return 6
+        _integrity = _verify_export_outputs(part_paths, min_bytes=128)
         with open(job["out_meta"], "w", encoding="utf-8") as f:
-            json.dump({"file_path": "", "part_paths": [], "peak": 0.0, "sample_rate": 0}, f)
+            json.dump({"file_path": "", "part_paths": part_paths, "peak": 0.0, "sample_rate": 0,
+                       "integrity": _integrity}, f)
         _say("DONE", "parts %s" % ",".join(str(i) for i in pre["only_parts"]))
         return 0
     if not (os.path.isfile(out) and os.path.getsize(out) > 0):
         _say("FAIL", "the video file was not written"); return 5
+    _integrity = _verify_export_outputs([out], min_bytes=128)
     with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": out, "part_paths": [], "peak": 0.0, "sample_rate": 0}, f)
+        json.dump({"file_path": out, "part_paths": [], "peak": 0.0, "sample_rate": 0,
+                   "integrity": _integrity}, f)
     _say("DONE", out)
     return 0
 
@@ -471,6 +528,11 @@ def serve(max_jobs=8) -> int:
         except Exception:
             pass
         _say("JOBEND", rc)
+        try:   # a warm worker serves several jobs: return each job's freed memory before the next one
+            import memory_tools as _mt
+            _mt.trim()
+        except Exception:
+            pass
         done += 1
         if done >= max_jobs:
             break

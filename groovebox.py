@@ -2727,7 +2727,7 @@ def eqr_tensor_step(sample, neighbours, t=0.0):
         dn = abs(v - s)
         sum_p += book_isn_inv((book_isn(dn) + book_isn(t)) * 0.5)
         e_num = book_isn(v)
-        sum_e += ot_safe_div(e_num, dn)
+        sum_e += (e_num / dn) if dn != 0.0 else 0.0
     P = ot_safe_div(sum_p, float(k))
     E = ot_safe_div(sum_e, float(k))
     D = 0.0
@@ -2954,6 +2954,14 @@ def safe_divide(a, b, *, zero_policy="zero", equation_result=None):
         return _division_zero_result(a, zero_policy, equation_result)
     return a / b
 
+
+
+def _gb_set_text_ss(w, text, css):
+    """Set text / stylesheet only when they change (an identical setStyleSheet still re-polishes the subtree)."""
+    if text is not None and w.text() != text:
+        w.setText(text)
+    if w.styleSheet() != css:
+        w.setStyleSheet(css)
 
 def ot_safe_div(a, b):
     """OT rule: 0/0 = 1; non-zero / 0 follows the inf policy. Use this for any bare division."""
@@ -5818,6 +5826,13 @@ def _seed_script_env(t_scalar=0.0, canonical_context=None):
             _v=float(env[_key]); env[_key]=max(_lo,min(_hi,_v)) if math.isfinite(_v) else _lo
         except Exception:
             env[_key]=_lo
+    # ONE VOCABULARY: the OT helpers and the extended library (beat, bar, tri, mtof, gcd, …) are part of the shared
+    # environment itself, so the parser, every evaluator path, the 🎲 generator, Script Studio and the workers all
+    # know exactly the same names (the parser used to flag `beat` as unknown while another path accepted it).
+    try:
+        __import__("ot_script_math").install(env)
+    except Exception:
+        pass
     return env
 
 
@@ -7818,11 +7833,21 @@ _EQ_BLEND_CACHE = {}
 _EQ_JSON = __import__("json")
 
 
+import pickle as _EQ_PICKLE
+
+
 def _eq_exact_key(poles):
     """Hash scalar contents directly, preserving nested legacy payloads.
 
     R31 ENGINE_SPEED: an exact JSON encoding first (C-speed; keeps 1 / 1.0 / True / "1" distinct and
     key order sorted); anything JSON cannot encode exactly falls back to the original tuple key."""
+    # Pickle protocol 5 first: C-speed and type-exact (1 / 1.0 / True / "1" encode differently), ~7× faster than the
+    # sorted JSON encoding on a 128-pole list (48 µs vs 348 µs). Equal bytes ⇒ equal content, so the cache stays
+    # exact; a different key order can only cause a cache miss, never a wrong hit.
+    try:
+        return ("p", _EQ_PICKLE.dumps(poles, 5))
+    except Exception:
+        pass
     try:
         return ("j", _EQ_JSON.dumps(poles, sort_keys=True, allow_nan=True, separators=(",", ":")))
     except (TypeError, ValueError):
@@ -12569,8 +12594,10 @@ class VideoSynthEngine:
             xyz.append((x, y, z))
             if isinstance(c, (list, tuple)) and len(c) >= 7:
                 try:
-                    cols.append((float(c[3]), float(c[4]), float(c[5])))
-                    alphas.append(float(np.clip(float(c[6]) / 255.0, 0.0, 1.0)))
+                    col=np.asarray([float(c[3])/255.0,float(c[4])/255.0,float(c[5])/255.0],dtype=np.float32)
+                    cols.append(tuple(np.clip(col, 0.0, 1.0)))
+                    voxel_alpha=float(np.clip(float(c[6])/255.0,0.0,1.0))
+                    alphas.append(voxel_alpha)
                 except Exception:
                     cols.append(self._hsv((190.0 + 130.0 * (z / max(n - 1, 1))) % 360.0, PHI_INV, 0.86))
                     alphas.append(0.86)
@@ -13879,6 +13906,14 @@ class SynthRackUnitWidget(QFrame):
         if not hasattr(self,"eq_pole_table"): return
         normalized=_normalize_eq_poles(poles)
         self._eq_table_loading=True
+        _eq_upd = self.eq_pole_table.updatesEnabled()
+        self.eq_pole_table.setUpdatesEnabled(False)     # R33: one layout pass for the whole table, not one per row
+        # R33: ResizeToContents columns re-measure every row on each setCellWidget (quadratic in rows); fill with
+        # fixed columns, then restore the modes so the measuring happens once.
+        _eq_hh = self.eq_pole_table.horizontalHeader()
+        _eq_modes = [_eq_hh.sectionResizeMode(c) for c in range(_eq_hh.count())]
+        for _c in range(_eq_hh.count()):
+            _eq_hh.setSectionResizeMode(_c, QHeaderView.ResizeMode.Fixed)
         try:
             self.eq_pole_table.setRowCount(0)
             for row,pole in enumerate(normalized):
@@ -13901,6 +13936,9 @@ class SynthRackUnitWidget(QFrame):
                 freq.valueChanged.connect(self._eq_table_changed); gain.valueChanged.connect(self._eq_table_changed); q.valueChanged.connect(self._eq_table_changed)
                 auto.toggled.connect(self._eq_table_changed); adepth.valueChanged.connect(self._eq_table_changed); label.textChanged.connect(self._eq_table_changed)
         finally:
+            for _c, _m in enumerate(_eq_modes):
+                _eq_hh.setSectionResizeMode(_c, _m)
+            self.eq_pole_table.setUpdatesEnabled(bool(_eq_upd) or True)
             self._eq_table_loading=False
         if mark_custom and hasattr(self,"eq_shape"):
             self.eq_shape.blockSignals(True); self.eq_shape.setCurrentText("Custom"); self.eq_shape.blockSignals(False)
@@ -14484,7 +14522,8 @@ def attach_math_decor(host_window, app=None, light=False):
             QGroupBox { background-color: rgba(12, 18, 26, 230); }
             QTableWidget { background-color: rgba(10, 14, 20, 240); }
             """
-        host_window.setStyleSheet(style)
+        if host_window.styleSheet() != style:      # R33: re-applying it re-polishes every widget in a built window
+            host_window.setStyleSheet(style)
     except Exception:
         pass
     try:
@@ -14594,8 +14633,18 @@ def _ensure_single_math_background(app, host):
     return bg
 
 
+def _window_background_image():
+    """The user's window background image / GIF path ('' = the mathematical field)."""
+    try:
+        import compat_settings as _cs_bg
+        pth = str(_cs_bg.load().get("window_background_image", "") or "")
+        return pth if pth and os.path.isfile(pth) else ""
+    except Exception:
+        return ""
+
+
 def _math_background_enabled():
-    """MAT_BG_OPTIN_R64: global decorative underlay switch; default OFF."""
+    """Global window-background switch; default ON (the field is rendered off the UI thread)."""
     if os.environ.get("GROOVEBOX_NO_WINDOW_BG", "").strip() == "1":
         return False
     override = os.environ.get("GROOVEBOX_WINDOW_BG")
@@ -14603,9 +14652,9 @@ def _math_background_enabled():
         return override.strip().lower() in ("1", "true", "yes", "on")
     try:
         import compat_settings as _cs_bg
-        return bool(_cs_bg.load().get("math_background_enabled", False))
+        return bool(_cs_bg.load().get("math_background_enabled", True))
     except Exception:
-        return False
+        return True
 
 
 def set_window_backgrounds_enabled(enabled, app=None):
@@ -14634,6 +14683,21 @@ def set_window_backgrounds_enabled(enabled, app=None):
         except Exception:
             pass
     return True
+
+
+def refresh_window_backgrounds(app=None):
+    """Apply a changed background choice (math field / image / GIF / off) to every open window at once."""
+    on = _math_background_enabled()
+    set_window_backgrounds_enabled(on, app)
+    for bg in list(ParametricMathBackground._instances):
+        try:
+            bg._user_img = None
+            bg._load_user_background()
+            bg._bg_frame = None
+            bg.update()
+        except RuntimeError:
+            pass
+    return on
 
 
 def attach_math_background(win, app=None):
@@ -14673,10 +14737,19 @@ class _WindowBackgroundFilter(QObject):
     def eventFilter(self, obj, ev):
         try:
             t = ev.type()
-            if t not in (QEvent.Type.Show, QEvent.Type.Resize) or not isinstance(obj, QWidget) or not obj.isWindow():
+            if t not in (QEvent.Type.Show, QEvent.Type.Resize) or not isinstance(obj, QWidget):
+                return False
+            if not obj.isWindow():
+                # Tab bars that overflow get a "▾ all tabs" dropdown (same filter: no second app-wide filter).
+                if isinstance(obj, QTabWidget):
+                    import toolbar_fit as _tbf_
+                    (_tbf_._tab_menu if t == QEvent.Type.Show else _tbf_._sync_tab_menu)(obj)
                 return False
             if isinstance(obj, ParametricMathBackground) or obj.metaObject().className() in self._SKIP:
                 return False
+            if t == QEvent.Type.Show:
+                import toolbar_fit as _tbf_
+                _tbf_._clamp_window(obj)            # never larger than the screen's free area
             flags = obj.windowFlags()
             if flags & Qt.WindowType.Popup == Qt.WindowType.Popup or flags & Qt.WindowType.ToolTip == Qt.WindowType.ToolTip:
                 return False
@@ -14750,6 +14823,9 @@ class ParametricMathBackground(QWidget):
     WAVE_COUNT = 16
     SHAPE_COUNT = 16
     _instances = weakref.WeakSet()
+    _frame_ready = pyqtSignal(object, int)
+    _wave_ready = pyqtSignal(object)
+    _RENDER_POOL = [None]
 
     def __init__(self, app, host=None):
         self.app = app
@@ -14781,6 +14857,227 @@ class ParametricMathBackground(QWidget):
         # R31: backgrounds in secondary windows are "lite" (slow, few shapes, paused when inactive).
         self._secondary = host is not app
         self._sec_tick = 0
+        # OFF-UI-THREAD FIELD: every animation frame is painted into a private QImage on a background thread; the
+        # UI thread only blits the finished image (no antialiased wave/shape/equation work on the UI thread).
+        self._bg_frame = None
+        self._bg_busy = False
+        self._bg_token = 0
+        self._paint_target = None
+        self._user_img = None          # (path, QImage | None, QMovie | None) for an image / GIF background
+        self._frame_ready.connect(self._on_frame_ready)
+        self._wave_ready.connect(self._on_wave_ready)
+        self._ov = None                # export playback overlay: {"player", "img", "wave", "pos", "t"}
+        self._load_user_background()
+
+    def _load_user_background(self):
+        """An image or animated GIF chosen in System Settings → Window background replaces the math field."""
+        path = _window_background_image()
+        if not path:
+            self._user_img = None
+            return
+        if self._user_img is not None and self._user_img[0] == path:
+            return
+        try:
+            from PyQt6.QtGui import QMovie, QImage as _QI
+            if path.lower().endswith((".gif", ".webp", ".apng", ".mng")):
+                mv = QMovie(path, parent=self)
+                mv.setCacheMode(QMovie.CacheMode.CacheAll)
+                mv.frameChanged.connect(lambda _i: self.update())
+                self._user_img = (path, None, mv)
+                mv.start()
+            else:
+                img = _QI(path)
+                self._user_img = (path, img if not img.isNull() else None, None)
+        except Exception as exc:
+            print(f"[Background] could not load {path}: {exc}")
+            self._user_img = None
+
+    def _request_frame(self):
+        """Ask the render thread for the next field frame (at most one in flight per window)."""
+        if self._bg_busy or self._user_img is not None or self.width() < 10 or self.height() < 10:
+            return
+        if self._param_cache[2] != self._cycle or not self._param_cache[1]:
+            self._reseed()                                  # widget reads stay on the UI thread
+        vid = scope = None
+        if not getattr(self, "_secondary", False) and bool(getattr(self.app, "is_playing", False)):
+            if not getattr(self.app, "_audio_only_mode", False):
+                vid = getattr(getattr(self.app, "video_synth_viewer", None), "_frame", None)   # scenograph at 50 %
+            scope = getattr(self.app, "_last_scope_chunk", None)                            # track waveform
+        self._bg_busy = True
+        self._bg_token += 1
+        w, h, tok = self.width(), self.height(), self._bg_token
+        pool = self._RENDER_POOL[0]
+        if pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = self._RENDER_POOL[0] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bg-field")
+        ref = weakref.ref(self)
+        def _job():
+            me = ref()
+            if me is None:
+                return
+            try:
+                img = me._render_image(w, h, vid, scope)
+            except Exception:
+                img = None
+            try:
+                me._frame_ready.emit(img, tok)
+            except RuntimeError:
+                pass
+        try:
+            pool.submit(_job)
+        except Exception:
+            self._bg_busy = False
+
+    def _render_image(self, w, h, vid=None, scope=None):
+        from PyQt6.QtGui import QImage as _QI
+        # Secondary windows render at half resolution, a large main window at ¾ (the field is soft and translucent;
+        # the blit scales it up): 4× / 1.8× less memory and paint work per frame.
+        k = 0.5 if getattr(self, "_secondary", False) else (0.75 if w * h > 1400000 else 1.0)
+        self._paint_scale = k
+        img = _QI(max(1, int(w * k)), max(1, int(h * k)), _QI.Format.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        self._paint_target = img
+        try:
+            self._paint_field(None, (int(w), int(h)))
+        finally:
+            self._paint_target = None
+        if vid is not None or scope is not None:
+            p = QPainter(img)
+            try:
+                if vid is not None and getattr(vid, "ndim", 0) == 3:
+                    import numpy as _np
+                    a = _np.ascontiguousarray(vid[:, :, :3], dtype=_np.uint8)
+                    vi = _QI(a.data, a.shape[1], a.shape[0], 3 * a.shape[1], _QI.Format.Format_RGB888)
+                    p.setOpacity(0.5)
+                    p.drawImage(QRectF(0, 0, img.width(), img.height()), vi)
+                    p.setOpacity(1.0)
+                if scope is not None and len(scope) > 8:
+                    import numpy as _np
+                    sc = _np.asarray(scope, dtype=_np.float32).ravel()
+                    n = min(512, sc.size); sc = sc[_np.linspace(0, sc.size - 1, n).astype(int)]
+                    pk = float(_np.max(_np.abs(sc))) or 1.0
+                    from PyQt6.QtGui import QPolygonF, QPen
+                    W2, H2 = img.width(), img.height()
+                    poly = QPolygonF([QPointF(W2 * i / (n - 1), H2 * (0.5 - 0.38 * float(v) / pk)) for i, v in enumerate(sc)])
+                    pen = QPen(QColor(120, 230, 255, 150)); pen.setWidthF(2.0)
+                    p.setPen(pen); p.drawPolyline(poly)
+            finally:
+                p.end()
+        return img
+
+    # -- export playback overlay (main window) -------------------------------------------------------------------
+    def play_overlay(self, path):
+        """Play a finished export in the background: a video at 50 % over the field (with its sound); an audio file
+        with its waveform drawn across the window and a moving playhead."""
+        from PyQt6.QtCore import QUrl
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
+        except Exception as exc:
+            print(f"[Background] Qt Multimedia unavailable: {exc}")
+            return False
+        self.stop_overlay()
+        pl = QMediaPlayer(self); ao = QAudioOutput(self); ao.setVolume(0.85); pl.setAudioOutput(ao)
+        self._ov = {"player": pl, "audio": ao, "img": None, "wave": None, "pos": 0.0, "t": 0.0}
+        if str(path).lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".m4v")):
+            sink = QVideoSink(self); pl.setVideoSink(sink); self._ov["sink"] = sink
+            sink.videoFrameChanged.connect(self._ov_frame)
+        else:
+            import threading as _th
+            ref = weakref.ref(self)
+
+            def _wave():
+                try:
+                    import live_master as _lm, numpy as _np
+                    _sr, x = _lm._load_audio(str(path))
+                    m = x.mean(axis=1) if x.ndim > 1 else x
+                    cols = 1200; k = max(1, m.size // cols)
+                    m = m[: k * cols].reshape(cols, k)
+                    me = ref()
+                    if me is not None:
+                        me._wave_ready.emit((m.min(axis=1), m.max(axis=1)))
+                except Exception:
+                    pass
+            _th.Thread(target=_wave, name="bg-waveform", daemon=True).start()
+        pl.positionChanged.connect(self._ov_pos)
+        pl.mediaStatusChanged.connect(lambda st: self.stop_overlay() if st == QMediaPlayer.MediaStatus.EndOfMedia else None)
+        pl.setSource(QUrl.fromLocalFile(str(path)))
+        pl.play()
+        return True
+
+    def stop_overlay(self):
+        ov, self._ov = self._ov, None
+        if ov:
+            try:
+                ov["player"].stop(); ov["player"].deleteLater(); ov["audio"].deleteLater()
+                if ov.get("sink") is not None:
+                    ov["sink"].deleteLater()
+            except RuntimeError:
+                pass
+            self.update()
+
+    def _ov_frame(self, frame):
+        ov = self._ov
+        if not ov or time.monotonic() - ov["t"] < 0.1:          # at most 10 conversions a second
+            return
+        ov["t"] = time.monotonic()
+        try:
+            ov["img"] = frame.toImage()
+        except Exception:
+            return
+        self.update()
+
+    def _ov_pos(self, ms):
+        ov = self._ov
+        if not ov:
+            return
+        try:
+            d = max(1, int(ov["player"].duration()))
+            ov["pos"] = float(ms) / d
+        except Exception:
+            pass
+        if ov.get("wave") is not None and time.monotonic() - ov["t"] >= 0.1:
+            ov["t"] = time.monotonic(); self.update()
+
+    def _on_wave_ready(self, mm):
+        if self._ov:
+            self._ov["wave"] = mm; self.update()
+
+    def _paint_overlay(self, p):
+        ov = self._ov
+        if not ov:
+            return
+        img = ov.get("img")
+        if img is not None and not img.isNull():
+            r = QRectF(self.rect()); iw, ih = img.width(), img.height()
+            k = min(r.width() / max(1, iw), r.height() / max(1, ih))
+            tw, th = iw * k, ih * k
+            p.setOpacity(0.5)
+            p.drawImage(QRectF((r.width() - tw) / 2, (r.height() - th) / 2, tw, th), img)
+            p.setOpacity(1.0)
+        wave = ov.get("wave")
+        if wave is not None:
+            lo, hi = wave; n = len(lo); W2, H2 = self.width(), self.height()
+            pk = float(max(abs(float(lo.min())), abs(float(hi.max())), 1e-9))
+            p.setOpacity(0.35); p.setPen(QColor(140, 220, 255))
+            for i in range(0, n, max(1, n // max(1, W2))):
+                x = W2 * i / n
+                p.drawLine(QPointF(x, H2 * (0.5 - 0.42 * hi[i] / pk)), QPointF(x, H2 * (0.5 - 0.42 * lo[i] / pk)))
+            p.setOpacity(0.8); p.setPen(QColor(255, 210, 120))
+            x = W2 * float(ov.get("pos", 0.0)); p.drawLine(QPointF(x, 0), QPointF(x, H2))
+            p.setOpacity(1.0)
+
+    def _on_frame_ready(self, img, tok):
+        self._bg_busy = False
+        if img is not None and tok == self._bg_token:
+            self._bg_frame = img
+            self.update()
+
+    def setVisible(self, visible):
+        # Window backgrounds are ON by default (math_background_enabled); System Settings can turn them off or pick an
+        # image / GIF. While hidden the background does no work (its timer only runs while shown).
+        if visible and not _math_background_enabled():
+            visible = False
+        return super().setVisible(visible)
 
     def showEvent(self, event):
         try:
@@ -14813,6 +15110,8 @@ class ParametricMathBackground(QWidget):
                 self.setGeometry(par.rect()); self.lower()
         except Exception:
             pass
+        if self._user_img is not None:
+            return                                          # image / GIF backgrounds animate themselves (QMovie)
         self._scode_bg_seq += 1
         elapsed = time.monotonic() - self._started
         new_cycle = int(elapsed / (MEUM * PHI + 1.0))
@@ -14825,12 +15124,14 @@ class ParametricMathBackground(QWidget):
         # the user is typing/editing, only a genuine mathematical-cycle boundary
         # may repaint; otherwise the background yields completely to the editor.
         _opt = getattr(self.app, "_scode_optimizer", None)
+        if bool(getattr(self.app, "is_playing", False)) and not getattr(self, "_secondary", False):
+            _opt = None                         # while playing, the background follows the track every tick
         if _opt is not None:
             if _opt.editing_active(self.host) and not cycle_changed:
                 return
             if not cycle_changed and not _opt.cadence_due("background", frame=self._scode_bg_seq):
                 return
-        self.update()
+        self._request_frame()
 
     def _reseed(self):
         name = ""
@@ -15123,16 +15424,54 @@ class ParametricMathBackground(QWidget):
     def paintEvent(self, event):
         if self.width() < 10 or self.height() < 10:
             return
+        ui = self._user_img
+        if ui is not None:
+            img = ui[2].currentImage() if ui[2] is not None else ui[1]
+            p = QPainter(self)
+            try:
+                p.fillRect(self.rect(), QColor(5, 14, 30, 200))
+                if img is not None and not img.isNull():
+                    p.setOpacity(0.55)
+                    p.drawImage(QRectF(self.rect()), img)       # fast (non-smooth) scale; readability veil above
+            finally:
+                p.end()
+            return
+        img = self._bg_frame
+        k = float(getattr(self, "_paint_scale", 1.0) or 1.0)
+        if img is None or abs(img.width() - int(self.width() * k)) > 1 or abs(img.height() - int(self.height() * k)) > 1:
+            self._request_frame()
+            if img is None:
+                p = QPainter(self)
+                try:
+                    p.fillRect(self.rect(), QColor(5, 18, 44, 183))   # until the first threaded frame arrives
+                finally:
+                    p.end()
+                return
+        p = QPainter(self)
+        try:
+            p.drawImage(QRectF(self.rect()), img)
+            self._paint_overlay(p)
+        finally:
+            p.end()
+
+    def _paint_field(self, event=None, size=None):
+        if size is None:
+            size = (self.width(), self.height())
+        if size[0] < 10 or size[1] < 10:
+            return
         _lp = _low_power_mode()
-        with owned_painter(self) as painter:
+        _rect = QRect(0, 0, int(size[0]), int(size[1]))
+        with owned_painter(self._paint_target if self._paint_target is not None else self) as painter:
             if painter is None:
                 return
             try:
+                if self._paint_target is not None and float(getattr(self, "_paint_scale", 1.0)) != 1.0:
+                    painter.scale(self._paint_scale, self._paint_scale)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, not _lp)
                 # NAVY_GRADIENT_MATH_FIELD_V34: the mathematical background is
                 # integrated into the control surface instead of floating on a flat
                 # transparent layer. The gradient remains subtle enough for labels.
-                grad = QLinearGradient(0, 0, self.width(), self.height())
+                grad = QLinearGradient(0, 0, _rect.width(), _rect.height())
                 # V36 BLEND_BOOST: the field must read as an active mathematical layer,
                 # not a nearly opaque navy wash. Keep enough transparency that the
                 # animated waves/equations can blend with the control surface.
@@ -15140,13 +15479,11 @@ class ParametricMathBackground(QWidget):
                 grad.setColorAt(0.38, QColor(10, 38, 82, 171))
                 grad.setColorAt(0.72, QColor(18, 48, 92, 178))
                 grad.setColorAt(1.00, QColor(4, 16, 38, 183))
-                painter.fillRect(self.rect(), QBrush(grad))
-                painter.fillRect(self.rect(), QColor(6, 10, 16, 10))
-                if not self._param_cache[1]:
-                    self._reseed()
+                painter.fillRect(_rect, QBrush(grad))
+                painter.fillRect(_rect, QColor(6, 10, 16, 10))
                 scalars = self._scalars()
                 phase = time.monotonic() - self._started
-                w, h = self.width(), self.height()
+                w, h = size
                 # Strict process-wide family budget. If several decorated windows
                 # exist, their local caps divide the same 24 slots; total visual
                 # instances can never grow as 24 per window. Low-power hardware
@@ -15445,8 +15782,8 @@ SHARED CANONICAL DECISIONS
 AUTOMATION MORPH SPAN (Sequencer automation bar, MORPH SPAN %)
   100% (new projects): an automation point's Morph 0–100% reaches all the way
   from state A to state B — at 100% B replaces the composition step and the
-  instrument's own panel patch. 50% is the earlier fixed coupling (reach 0–50%);
-  projects saved before R31.7 open at 50% so they sound the same.
+  instrument's own panel patch. At 50% the reach is 0–50% of the way to B;
+  older projects keep the reach they were saved with.
 
 NO HARD OUTPUT LIMITS (Audio export options)
   Bit depth "32-bit float" writes IEEE float WAV without quantization.
@@ -15456,7 +15793,7 @@ NO HARD OUTPUT LIMITS (Audio export options)
 
 EXPORTS WHILE YOU KEEP WORKING (EXPORT JOBS)
   Every export button (audio, video, stems, Bake & Compare, Render Queue, state
-  slots) now freezes the project exactly as it is at that moment and queues a
+  slots) freezes the project exactly as it is at that moment and queues a
   job. The job renders in a separate worker process, so the main window, playback
   and editing stay responsive. Change the project and press export again to queue
   another state; each job keeps its own snapshot.
@@ -15465,7 +15802,7 @@ EXPORTS WHILE YOU KEEP WORKING (EXPORT JOBS)
   render in parallel (default from CPU cores and free RAM; each worker gets its
   own share of the math threads and runs at lower priority than the window).
   Audio exports apply the DJ bake once and Master Volume × Clip/Gain + hard clip
-  once, exactly like playback (R30 and earlier applied the master stage twice).
+  once, exactly like playback.
   Limits: FLAC/MP3/OGG/OPUS/video need the Groovebox-local FFmpeg; a failed job
   shows its reason in the Export Jobs window. Bake & Compare opens its report
   when its job finishes.
@@ -15485,7 +15822,7 @@ PIN LOCK, RESET, SESSION NAME, STARTUP CHIME (⚙ Compatibility)
   and prefixes automatic export file names.
   Startup chime: every key-chart note over 5 s at a random Global Convolve %
   (your Global Convolve value is restored afterwards). Untick to silence it.
-  Smart Process Mode off is now remembered (it was reset to on before R31).
+  Turning Smart Process Mode off is remembered.
 
 PERFORM BAR ▸ LIVE TOOLS (above the sequencer)
   ⏮ ⏭      previous / next sequence of the selected instrument; "▶auto" plays it.
@@ -15507,8 +15844,7 @@ CANONICAL MORPH BRIDGE ▸ MULTIDIM MAX NET MODULATION
   ±25%, synth level ±16%, spectrum/harmonic tilt ±25%. 0 = routes have no effect.
   Default 0.5 for new projects: half range keeps several stacked routes from
   pinning every target at its limit and keeps pitch movement within about a
-  semitone. Projects saved before R31 open at 1.0, their previous fixed ceiling,
-  so they sound unchanged. "0.5" resets.
+  semitone. A project keeps the depth it was saved with. "0.5" resets.
 
 LIVE PLAYER
   📡 Broadcast to HDMI: a clean full-screen live view (no cursor or window
@@ -15553,7 +15889,7 @@ LIVE PLAYER
   Stop and Close release the audio device and camera in the background (no
   freeze); a new Play waits until the previous stream is released.
 
-R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
+LOOPER, MUSIC ANALOGIES, BUILD STAMP, MATHEMATICS
   Enter looper: hold Enter to record a loop of the notes you play; release to
   commit it. Press and release Enter without playing any note to clear the
   looper segmentator ("Loop cleared"). Auto-repeat is ignored.
@@ -15564,7 +15900,7 @@ R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
   looks different under different seeds and the same seed always looks the
   same. In a game, /music shows the table; Game settings ▸ "Music drives world"
   (0–1, default 0.8) sets how much the track drives energy, pulses and phase.
-  Version: release_info.py is the single version source. scripts/stamp_release.py
+  Build stamp: release_info.py is the single identity source. scripts/stamp_release.py
   writes RELEASE-STAMP.json, CURRENT-RELEASE.txt and BUILD_ISO/RELEASE-STAMP.env
   and runs before every archive and ISO sync; "+local" in About means the code
   differs from the stamp.
@@ -15586,8 +15922,8 @@ R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
     P(T ≥ μ + kσ) ≤ 1/(1 + k²) on each job's measured run times (finishes
     within the horizon with probability ≥ q for any distribution), and
     virtual_blocks = ceil(horizon / block).
-  Video CPU: the projection scale 2·tan(fov/2) is now computed once per field
-  of view instead of once per vertex (identical pixels).
+  Video CPU: the projection scale 2·tan(fov/2) is computed once per field
+  of view, not once per vertex (identical pixels).
 
 Laptop lid & display power
   Closing the lid blanks the built-in display (saves power). Opening the lid
@@ -15609,7 +15945,7 @@ MULTITRACK CLIP STUDIO
   stays usable and "Bind All Layers" continues when the render is done.
 
 MASTER MULTIDIM SYNTH 3D SCENE
-  The scene now also shows the main window's state: the VECTOR tripod (X red,
+  The scene also shows the main window's state: the VECTOR tripod (X red,
   Y green, Z blue) with the master vector arrow (length = drive); the orange
   PANEL ring, shaped by one cycle of the selected instrument's panel voice
   (refreshed every 1.5 s); and three orbits: violet FRACTAL (wobble depth =
@@ -15832,7 +16168,6 @@ BUILDS, STORAGE SAFETY AND DIAGNOSTICS
   the editor is not permission to erase storage.
   Keep session logs, the LATEST_CRASH_LOG.txt pointer, first traceback and first
   painter-warning stack when reporting a failure. Preserve recovery directories.
-  This launcher/Help revision was not exercised in app/build/hardware tests.
 
 
 THE IDEA THAT RUNS EVERYTHING: CANONICAL vs YOUR DATA
@@ -15886,7 +16221,7 @@ Engines (the canonical writers)
   Each engine has a contribution level in the CANONICAL MORPH BRIDGE.
   Full Unison: with SEEDED + RAND + LOCK + EUCLIDEAN on (GOAVA optional),
   every canonical voice resolves to one parameter set, so the instrument
-  count no longer changes the result.
+  count does not change the result.
 
 Instrument selector
   Picks the instrument (operator) that every instrument panel edits:
@@ -17173,7 +17508,7 @@ the canonical authority layer.
 31. OFFICIAL PROJECT TERMINOLOGY
 --------------------------------------------------------------------------------
 Official software names:
-    Strongly Superdimensional Synthesizer Simulation
+    SSSS — Superdimensional Seed-driven Self-composing Synthesizer
     Mathematician's Groovebox
     Groovebox (short application name)
 
@@ -17625,6 +17960,289 @@ that uses it.
                          a blank patch, all engines on, 120 BPM default.
     ⚡ Quick Jam       — opens with a randomized seed, Randomize All pre-fired,
                          and the sequencer looped on the first four bars.
+
+41. WORKSPACE TOOLS GUIDE
+-------------------------
+41.1 Toolbars that do not fit
+  The Quick Rack, Cloud Command Center and window bar each scroll sideways when the
+  window is narrower than their buttons: use the wheel over the strip, Shift+wheel,
+  or its thin scrollbar. The main window always fits the screen.
+
+41.2 🎯 Canonical (Quick Rack)
+  Canonical engines change values at render time; the controls keep showing your
+  value, so they never jump. This window lists, for every canonical-governed value,
+  what the control shows and what the render actually uses, and which engines are on.
+
+41.3 Per-Seq Vote (playlist column)
+  0-1 per playlist row: how far that row morphs the global workspace variables toward
+  the local variables of the sequences it plays. Blank = the global morph amount.
+  Every playlist column you type into is kept, including Attack, Release and Pitch.
+
+41.4 🧊 OBJ (Quick Rack · Export menu · Export window · All formats · Batch Export)
+  Project → OBJ writes the song as a 3D model (a vase whose rings follow the loudness)
+  that also carries the exact audio and the project. OBJ → audio / project brings
+  them back; any other OBJ is turned into sound. "Use this project as the video OBJ"
+  puts the song's vase in the centre of the video, where it plays along with the
+  song. Small meshes built from the audio, a glowing wireframe layer, GOAVA shapes
+  and L-system shaping are on in the video by default; each can be switched off in
+  the 🧊 OBJ window. The full-song OBJ only appears when you choose it.
+
+41.5 Save to: (Export window · Batch Export · Live Player)
+  Pick a USB stick or SD card, or "Choose a folder…", before exporting or recording.
+  A stick that is plugged in but not mounted is listed with "click to mount". Every
+  Save / Open dialog lists /media, /mnt (and /Volumes) in its sidebar.
+
+41.6 📶 Wi-Fi (Network Hub)
+  Host this Groovebox's own Wi-Fi network (Groovebox Direct, WPA2), find Groovebox
+  networks in range and join one, or open the router-free ad hoc cell. While hosting,
+  the network name, password and browser address are shown for phones and laptops.
+
+41.7 Party Mode (System Settings)
+  On by default and a separate option from window backgrounds. It keeps its own share
+  of the interface's time small (it slows its frame rate when the machine is busy)
+  and, while you are idle, it warms the worker pools and audio routes so the next
+  export or playback starts sooner.
+
+41.8 More reading
+  MATHEMATICS.md — the mathematics, what is proven, and the author's Meum identities.
+  THIRD_PARTY_AND_NASA_NOTES.md — credits. resources/ — the author's book.
+
+42. MORE WORKSPACE TOOLS
+------------------------
+42.1 Window backgrounds
+  Every window has a background by default: the seeded mathematical field, painted
+  on a background thread (the interface only shows finished frames). System
+  Settings ▸ Window background: "Image / GIF…" uses any picture or animated GIF for
+  every window, "Make a GIF…" turns a video, image or folder of frames into a looping
+  GIF (File Converter), "Math field" goes back. Party Mode is a separate option.
+
+42.2 Deck placement
+  The Groovebox deck sits at the top of the main window. Right-click it to put it at
+  the Top, Left, Right or Bottom; the choice is remembered.
+
+42.3 Instrument names
+  Voices are named from the name pool rotated by the seed and the Global Convolve
+  setting, so the first voice is not always the same; resizing or reconvolving
+  renames free voices the same deterministic way. When you edit a voice's synth or
+  script it becomes "User Synth #n". A name you type yourself always stays.
+
+42.4 Noise mixer (Instrument Mixer)
+  Each strip has an N fader: coloured noise (violet, blue, white, pink, brown =
+  1/f^α with α −2 … 2) that follows that instrument's own envelope. White is the
+  default colour. "master" scales every strip and is an automation target;
+  "Canonical noise" lets the active canonicals set the amount. 0 changes nothing.
+
+42.5 Theremin · sensors · raw-signal projection (Workstation ▸ Theremin)
+  Move the pointer over the pad (left–right = pitch, up–down = volume), or choose a
+  sensor: tilt, magnet (field strength), compass, light, proximity, rotation. The
+  window lists the machine's gravity, magnetic field, gyroscope and light readings.
+  "Project raw signal" sends the tone as raw samples over the Wi-Fi / LAN (broadcast
+  or one address); "Receive + play" on another Groovebox plays it.
+
+42.6 Playlist rule
+  A new project starts with an empty playlist. A canonical engine writes playlist
+  rows only while it is active; switching engines off never fills a blank playlist.
+
+42.7 Live Player
+  Every effect starts off except the main "FX on" switch. "🎨 Visuals follow
+  canonicals" (canonical bar) lets the active engines change the overlay's
+  transparency, movement, spin and size. A loaded OBJ is the centrepiece: it drifts
+  slowly around the centre and breathes with the music. GOAVA and L-system shapes
+  are always applied.
+
+42.8 Seed tools
+  🧬 Seed shows and copies the seed's SHA-256, its numeric value and the project
+  fingerprint. The seed language also has gcd, lcm, factorial, comb, fib, prime,
+  gamma, erf, sinc, cbrt, tri, sqr, saw, pulse, euclid(k, n, i), mtof, ftom, db2amp,
+  cents, tempo_lock, mean, median, std, logistic, mandel, noise1, and the workspace
+  variables beat, bar, beat_frac, bar_frac, beat_hz0 and base_freq. 🎲 uses all of them.
+
+42.9 Drives (File Studio ▸ 💽 Drives)
+  Format a USB stick, SD card or USB disk as FAT32, exFAT, ext4, NTFS, Btrfs or F2FS,
+  whole drive or one partition. Type the device name to confirm. The computer's own
+  disk and the drive this system booted from are never listed.
+
+42.10 Audio devices
+  The output that last worked is kept by name, so the choice does not jump when
+  other devices appear or disappear. A USB audio device (interface, DAC, USB audio
+  cable) is used as soon as it is plugged in.
+
+42.11 Recovery · Explain · Self-test (Workstation tools)
+  🛟 Recovery: whole-project checkpoints every 10 minutes (newest 20 kept) and
+  restore (the current state is checkpointed first). ❓ Explain: search the Help or
+  click any control to see what it does. 🧪 Self-test: local checks of the runtime
+  services, seed language, mathematics, drive guard and audio devices.
+
+42.12 Sharing an app overlay (Performance ▸ 🧪 Dev Overlay)
+  📤 Share packs your overlay (src and append, with a SHA-256 manifest) into a
+  .mgoverlay file; 📥 Import checks every path, type, size and digest, backs up your
+  overlay, and installs it. Nothing runs until it is compiled and enabled.
+
+42.13 Tabs and windows
+  A tab bar that does not fit gets a ▾ button listing every tab. A window never
+  opens larger than the screen's free area.
+
+43. ARCHITECTURE NOTES
+----------------------
+SYNTHESIZER ARCHITECTURE
+  A voice is one complete operator voice: its oscillator/source, envelope,
+  modulation inputs, filter/shape stages and output gain are evaluated as one
+  instrument state. Sequence rows select and parameterize voices; they do not
+  silently replace the user's saved synth patch.
+
+SEQUENCE-LEVEL SYNTH STATE
+  Per-step pitch, gate, velocity and supported automation are sequence-level
+  state. Instrument defaults remain the fallback when a step does not override
+  a value. Editing a step should not rewrite unrelated steps or the base patch.
+
+MODULATION AND ROUTING ORDER
+  Modulation sources are resolved before the destination parameter is applied.
+  The signal then follows the selected instrument path into the shared mix bus
+  and master processing. A visible routing label is not evidence of an audio
+  connection unless the corresponding route is enabled and consumed.
+
+AUDIO, VISUAL AND GAME ARE THREE VIEWS
+  Audio playback, visual rendering and generated games share project context,
+  but each has its own renderer and supported event handlers. A parameter affects
+  another view only when an implemented bridge consumes that parameter. Saving
+  project state preserves editable intent; it does not promise every view is a
+  bit-identical simulation of the others.
+
+SCROLL CONTROLS
+  Plain wheel scrolls the nearest vertical panel. Shift + wheel prefers the
+  horizontal range; if that panel has no horizontal range it falls back to the
+  nearest vertical scroll range. Ctrl + wheel remains reserved for controls that
+  explicitly implement a Ctrl-wheel edit gesture.
+
+sCode RAM BUDGET (GROOVEBOX_SCODE_RAM_BUDGET)
+  The sCode workspace pool is bounded by its configured RAM budget and entry
+  limit. Borrowed arrays are private to each caller; the pool does not expose a
+  mutable shared buffer. When the budget is reached, least-recently-used slabs
+  are evicted before new retained storage is admitted. Audio/UI headroom takes
+  priority over background optimization work.
+
+IMPORT FABRIC — CORE, USER APPS AND DEVELOPER APPS
+---------------------------------------------------
+Groovebox maintains one versioned import map for the installed core and the
+configured user/developer application roots. The map is metadata-only: it
+records module paths and import relationships without importing every module.
+It is cached per Python ABI and invalidated when mapped Python sources change.
+
+Startup initializes the map after the thread-budget environment is applied and
+before the main UI/application tree is imported. This gives sCode and the app
+launcher a common module inventory without eagerly loading GUI, hardware, media,
+network, or optional math integrations. Optional integrations load only when
+the feature requests them. Missing optional packages therefore remain feature
+errors, not global startup failures.
+
+User apps may be registered through GROOVEBOX_USER_APP_PATHS and developer app
+roots through GROOVEBOX_DEV_APP_PATHS (path-separated directories). The developer
+overlay exposes dev_overlay.import_map() to include the active overlay src tree
+and the user app directory. import_fabric.application_scope() temporarily adds
+only the selected app's import roots and restores sys.path on exit. App isolation
+still requires the existing worker/process permission boundary: a shared import
+map is not a sandbox and does not make mutable Python module state safe to share.
+
+The map is a discovery/initialization optimization, not a proof that every
+third-party dependency is installed or compatible. Frozen builds must still
+include their declared runtime dependencies; native extensions remain bound to
+the selected interpreter/ABI.
+
+IMPORT MAP — APPLICATION MODULE MAP
+  Groovebox builds a cached map of installed core modules and configured user
+  and developer application roots before loading the main UI. It maps imports
+  without importing every module, and refreshes the cache when Python sources
+  change. Optional integrations load only when the related feature is used.
+  Configure extra app roots with GROOVEBOX_USER_APP_PATHS and
+  GROOVEBOX_DEV_APP_PATHS (path-separated directories). Developer tools can
+  inspect the same map through dev_overlay.import_map(). User scripts are run
+  through the child-process dispatch with their own scoped import path.
+  A module map is not a security sandbox: keep untrusted apps in the isolated
+  worker/process and permission model. Native modules must match the active
+  Python ABI.
+
+
+44. TASK PAD, MASTERING, LIVE BUFFER
+------------------------------------
+44.1 Task pad (main window, under Project Notes · Radio · Status Frame)
+  One click for the important jobs: Make (random seed, configure project, seed ID,
+  Script Studio, Autopilot, Multidim), Play (play / stop, Live Player, Theremin,
+  Mixer + noise, 3D Studio, Network), Export (Export window, music video, mixdown,
+  project OBJ, all formats, export jobs) and Tools (files, drives, recovery, explain,
+  self-test, settings), plus Party Mode, window backgrounds, Save / Restore session
+  and 💾 Save RAW.
+
+44.2 Live Play: master the whole track
+  Tick "🎚 Master full Live Play track" at the top of Live Play. When you stop
+  recording a take, everything that played (composition, live keys, imported media,
+  FX) is mastered: the audio is levelled and peak-limited into a 24-bit master, and
+  the video is remastered — held frames are rebuilt so every frame is filled in,
+  scaled to the chosen size and frame rate — into one full-length MP4. Choose
+  "re-render offline" to render the picture again from the mastered audio instead.
+  Focus (top row) shows only audio, video or performance controls.
+
+44.3 Live buffer and RAW files
+  While you work, the project's mixdown is rendered in the background at medium
+  priority and kept as a RAW Groovebox file. An export, Play or the Live Player with
+  nothing changed uses it at once. 📼 Live buffer in Live Play plays it as the media
+  track. 💾 Save RAW writes the current mixdown as a RAW file immediately. The players
+  open RAW Groovebox audio (.mgr) and headerless raw PCM (.f32, .raw, .pcm).
+
+44.4 Noise: static and 🎲 heuristic (Instrument Mixer)
+  "static" is sample-and-hold crackle that masks rather than tints. 🎲 Noise gives
+  every instrument a noise amount and colour from the chosen source: seeded (seed
+  program), goava (GOAVA curve), rand (entropy captured once and saved, so it
+  replays) or hybrid (their mean).
+
+44.5 Studio session
+  Saves the seeds, Superseed, Starter Patch seed, session name, BPM, base frequency,
+  the open project and the window layout — automatically when Groovebox quits — and
+  restores them (Task pad ▸ Restore session).
+
+44.6 Any hardware as an instrument
+  Theremin ▸ 🔗 Map: a sensor (tilt, compass, magnet, light, proximity, rotation) or
+  the pointer drives any parameter of the project. USB MIDI controls are learned with
+  MIDI learn (Hardware Hub).
+
+44.7 Speed and memory
+  While an export renders or the song plays, the processor's own boost is used fully
+  (turbo, performance preference), and restored afterwards; it is skipped when the
+  CPU is hot. Export workers each get their own block of cores, keeping two cores
+  free for the interface and audio. Memory freed by exports, project loads and
+  canonical work is returned to the system. System Settings ▸ Hardware wait scales how
+  long hardware checks keep trying (each check ends as soon as the device is ready).
+
+44.8 Install media and undo
+  File Studio ▸ 💽 Drives ▸ 💿 Make install media writes a Groovebox ISO to a USB stick
+  (and can add a data partition). Configure Entire Project and the heuristic writers
+  can be undone in one step. Self-test ▸ Export check runs a real short export.
+
+
+44.9 Background playback, waveforms and Play view
+  When an export finishes, the main-window background plays it: a video at 50 %
+  over the field with its sound, an audio file with its waveform across the window
+  and a moving playhead. While a song plays, the background follows it — the
+  scenograph blended in at 50 % (video play) or the live waveform (audio play) — and
+  the window scrolls to the scenograph. The multidimensional editor is translucent
+  so Party Mode and the math field show through.
+
+44.10 Battery and clock
+  The status bar shows the battery and the time; click it to set the clock and the
+  battery protection (warn level, protect level, and notify / autosave /
+  autosave + export). At the protect level the project is saved — and with
+  autosave + export an export is queued — while there is still charge.
+
+44.11 Loudness, true peak, time-stretch (Task pad ▸ 📏 Loudness)
+  Integrated loudness (LUFS, EBU R128), short-term maximum, loudness range, true
+  peak (dBTP) and sample peak of any file or the live buffer; normalise to −14, −16
+  or −23 LUFS with a −1 dBTP ceiling; change tempo without changing pitch, or pitch
+  without changing tempo.
+
+44.12 Edit Synth Per Seq stores the panels too
+  While Edit Synth Per Seq is on, every FX, EQ, Mod Osc, mixer, geometric-panel and
+  synth-engine value you change is stored for the selected sequence and morphed in
+  by each playlist row's Per-Seq Vote at render, like the blue Edit Per-Sequence / Global
+  button.
 """
     def __init__(self, parent=None, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         super().__init__(parent)
@@ -21908,7 +22526,12 @@ class _MainWindowRelaunchFilter(QObject):
                     tb.setMinimumHeight(26)
                     tb.setMaximumHeight(30)
                     strip.setFixedHeight(26)
-                    tb.addWidget(strip)
+                    try:   # R33: sideways-scrolling strip (it alone forced a 1,447 px minimum width)
+                        import toolbar_fit as _tbf
+                        tb.addWidget(_tbf.scroll_strip(strip, tb, 26))
+                        tb.setMaximumHeight(40)
+                    except Exception:
+                        tb.addWidget(strip)
                     main.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
                     self._window_bar_toolbar = tb
                 else:
@@ -22924,6 +23547,15 @@ class PatchMotionPerformanceMatrix(QDialog):
         generate_routes.setToolTip("Deterministically proposes source, destination, depth, rate, direction and clock. It only edits this dialog until Apply / Save to Project is pressed.")
         generate_routes.clicked.connect(self._generate_route_proposals)
         author_form.addWidget(generate_routes,3,0,1,4)
+        quick_row=QHBoxLayout()
+        b_blueprint=QPushButton("📐 Open Project Blueprint")
+        b_blueprint.setToolTip("Generate a complete project program from character, energy, tempo, seed and instrument-count macros.")
+        b_blueprint.clicked.connect(lambda: __import__("project_blueprint").open_window(app))
+        b_instrument=QPushButton("🎹 Open Instrument Designer")
+        b_instrument.setToolTip("Create a percussion, pad or key patch and optionally fill the selected sequence.")
+        b_instrument.clicked.connect(lambda: app._open_instrument_designer())
+        quick_row.addWidget(b_blueprint); quick_row.addWidget(b_instrument)
+        author_form.addLayout(quick_row,4,0,1,4)
         root.addWidget(author_box)
         self.route_rows=[]
         route_box=QGroupBox("MODULATION ROUTES · 8 CANONICAL PATCHES")
@@ -23219,8 +23851,46 @@ class _KeyChartFilter(QObject):
                 # R32.9: releases go to the focused control, not Main — route them here so held
                 # notes get their release (sustain) and the armed loop records them.
                 self._owner._keychart_handle_release(obj, event)
+            elif et == QEvent.Type.ApplicationDeactivate:
+                # Keys let go in another application never send us a release: end every held note now.
+                self._owner._release_all_held_keys()
         except Exception as exc:
             print(f"[KeyChart] ignored key after error: {exc}")
+        return False
+
+
+class _UserEditWatcher(QObject):
+    """Marks the selected voice as a user synth the first time the user really edits it in this window (a released
+    slider / dial / spin, a keystroke in a text field). Programmatic changes are not user input and are ignored."""
+
+    @classmethod
+    def attach(cls, window, app):
+        if getattr(window, "_user_edit_watcher", None) is None:
+            window._user_edit_watcher = cls(window, app)
+            window.installEventFilter(window._user_edit_watcher)
+            for w in window.findChildren(QWidget):
+                w.installEventFilter(window._user_edit_watcher)
+
+    def __init__(self, window, app):
+        super().__init__(window)
+        self._app = weakref.ref(app)
+
+    def eventFilter(self, obj, ev):
+        try:
+            t = ev.type()
+            if t in (QEvent.Type.MouseButtonRelease, QEvent.Type.KeyPress, QEvent.Type.Wheel) and ev.spontaneous():
+                from PyQt6.QtWidgets import QAbstractSlider, QAbstractSpinBox, QLineEdit, QPlainTextEdit, QTextEdit
+                if isinstance(obj, (QAbstractSlider, QAbstractSpinBox, QLineEdit, QPlainTextEdit, QTextEdit)) or (
+                        obj.parent() is not None and isinstance(obj.parent(), (QAbstractSpinBox, QPlainTextEdit, QTextEdit))):
+                    app = self._app()
+                    if app is not None and hasattr(app, "_mark_user_synth"):
+                        app._mark_user_synth()
+            elif t == QEvent.Type.ChildAdded:
+                ch = ev.child()
+                if isinstance(ch, QWidget):
+                    ch.installEventFilter(self)
+        except Exception:
+            pass
         return False
 
 
@@ -23229,12 +23899,13 @@ class _InstrumentKeyCombo(QComboBox):
     canonical instrument key (used by sequences, banks, scripts, identity hash)
     stays unchanged.  currentText()/findText()/setCurrentText() speak KEYS, so
     every existing caller keeps working."""
-    def __init__(self, display_map, parent=None):
+    def __init__(self, display_map, parent=None, auto_map=None):
         super().__init__(parent)
         self._display_map = display_map if isinstance(display_map, dict) else {}
+        self._auto_map = auto_map if isinstance(auto_map, dict) else {}
 
     def _label(self, key):
-        return str(self._display_map.get(key) or key)
+        return str(self._display_map.get(key) or self._auto_map.get(key) or key)
 
     def addItems(self, keys):
         for k in list(keys):
@@ -23823,6 +24494,42 @@ class _GlobalKeyFilter(QObject):
         return False
 
 
+_CHILD_PROCS = []
+
+
+def _track_child_process(proc):
+    """Remember a render / helper QProcess; at interpreter exit any still-running one is disconnected and killed, so
+    its signals never fire into a half-destroyed interpreter (scripts and tests that never call quit())."""
+    import weakref as _wr
+    if not _CHILD_PROCS:
+        import atexit
+
+        def _kill_children_at_exit():
+            try:
+                from PyQt6.QtCore import QProcess as _QP
+            except Exception:
+                return
+            for ref in list(_CHILD_PROCS):
+                p = ref()
+                if p is None:
+                    continue
+                for sig in ("readyReadStandardOutput", "finished", "errorOccurred"):
+                    try:
+                        getattr(p, sig).disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+                try:
+                    if p.state() != _QP.ProcessState.NotRunning:
+                        p.kill(); p.waitForFinished(2000)
+                except RuntimeError:
+                    pass
+            _CHILD_PROCS.clear()
+        atexit.register(_kill_children_at_exit)
+    _CHILD_PROCS[:] = [r for r in _CHILD_PROCS if r() is not None][-32:]
+    _CHILD_PROCS.append(_wr.ref(proc))
+    return proc
+
+
 class MathematiciansGrooveboxApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -24008,7 +24715,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _tb = _QTB("Quick Rack", self); _tb.setObjectName("R32QuickRackBar"); _tb.setMovable(False)
             _tb.setFloatable(False)
             _tb.setAllowedAreas(Qt.ToolBarArea.TopToolBarArea | Qt.ToolBarArea.BottomToolBarArea | Qt.ToolBarArea.LeftToolBarArea | Qt.ToolBarArea.RightToolBarArea)
-            _tb.addWidget(_qr.QuickRack(self, _tb))
+            try:   # R33: the rack scrolls sideways instead of forcing a 3,800 px minimum window width
+                import toolbar_fit as _tbf
+                _tb.addWidget(_tbf.scroll_strip(_qr.QuickRack(self, _tb), _tb))
+            except Exception:
+                _tb.addWidget(_qr.QuickRack(self, _tb))
             self.addToolBar(Qt.ToolBarArea.TopToolBarArea, _tb)
             from PyQt6.QtWidgets import QFrame as _QF
             _rack = next((c for c in _tb.findChildren(_QF) if c.objectName() == "R32QuickRack"), None)
@@ -24049,6 +24760,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         try:
             import r32_finish as _rf
             _rf.start(self)             # R32.8: export resume · live autosave
+            try:
+                import runtime_tools_ui as _rtu
+                _rtu.install_auto_checkpoints(self)      # 🛟 whole-project recovery checkpoints every 10 minutes
+            except Exception as _rtu_exc:
+                print(f"[Recovery] unavailable: {_rtu_exc}")
             try:
                 import seed_media_bridge as _smb
                 self._seed_media_packet = _smb.identity_packet(self)
@@ -24433,6 +25149,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # State lock for playlist memory; Qt widgets must still be touched only on the UI thread.
         self.playlist_state_lock = threading.RLock()
         self.instrument_param_state = {}
+        # Seed reach and named overrides belong to the canonical seed programme;
+        # tuning follows a separate global → instrument → step inheritance chain.
+        self.seed_reach = 1.0
+        self.seed_named_overrides = {}
+        self._global_tuning_touched = set()
+        self._parameter_provenance_snapshot = {}
+        try:
+            import canonical_ownership as _co
+            self.canonical_ownership_policy = _co.default_policy()
+        except Exception:
+            self.canonical_ownership_policy = {"canonical": {"blend": True, "strength": 1.0}, "seed": {"blend": False, "strength": 1.0}, "user": {"blend": False, "strength": 1.0}}
+        self.canonical_operation_mode = "Seeded Baseline → Canonical Control"
+        self.seed_divergence = 0.5
+        self._r32_divergence_user = False
+        self.global_tuning = {"system": "equal", "detune": 0.0, "stretch": 0.0}
+        self._global_tuning_touched = set()
+        self.speak_as = "music"
         # Build the initial program state before rendering the sequencer.
         # This prevents the first selection click from revealing hidden gates.
         # RECOMMENDED_POWER_LAYER: neutral mathematical boot. Engines create
@@ -24665,6 +25398,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def eventFilter(self, obj, event):
         try:
+            if event.type() == QEvent.Type.Resize and obj is getattr(self, "goava_radio_scroll", None):
+                t = getattr(self, "_radio_fit_timer", None)
+                if t is not None:
+                    t.start()
+                return False
             if event.type() == QEvent.Type.MouseButtonPress:
                 self._dismiss_teleport_popups_for_click(obj, event)
             # HARD SCROLL-SAFETY: wheel events never edit parameter widgets,
@@ -24783,14 +25521,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             p = getattr(self, "_performance_panel", None)
         return p
 
-    def _open_performance_tab(self, label):
+    def _open_performance_tab(self, label=""):
         p = self._perf_panel()
         tabs = getattr(p, "_performance_tabs", None) if p is not None else None
         if tabs is None:
             return None
         for i in range(tabs.count()):
             t = tabs.tabText(i)
-            if t == label or label.casefold() in t.casefold():
+            if label and (t == label or label.casefold() in t.casefold()):
                 tabs.setCurrentIndex(i)
                 break
         try:
@@ -25063,36 +25801,72 @@ class MathematiciansGrooveboxApp(QMainWindow):
     _GOAVA_FLAG_SIZE = (300, 112)
 
     def _refresh_goava_radio_brand(self):
-        """Render the complete GOAVA Radio visual at readable height.
-
-        RADIO_FIXED_VIEWPORT_20260907: the panel geometry is independent of the
-        current artwork dimensions. The source remains at authored/native scale
-        inside a fixed 384x148 viewport; larger custom art scrolls instead of
-        resizing the panel or surrounding controls.
-        """
+        """Scale Radio artwork into the complete parent viewport; no scroll crop."""
         label = getattr(self, "lbl_goava_radio_brand", None)
         source = getattr(self, "_goava_radio_brand_source", None)
-        if label is None or source is None or source.isNull():
+        scroll = getattr(self, "goava_radio_scroll", None)
+        if label is None or source is None or source.isNull() or scroll is None:
             return
         try:
-            scroll = getattr(self, "goava_radio_scroll", None)
-            # GROOVEBOX_R23R_SNUG_UI_20261103: the flag is scaled (smooth, aspect kept)
-            # to fit a snug viewport instead of scrolling at native size.
-            fw, fh = self._GOAVA_FLAG_SIZE
-            pm = source.scaled(fw - 4, fh - 4, Qt.AspectRatioMode.KeepAspectRatio,
+            vw, vh = max(1, scroll.viewport().width()), max(1, scroll.viewport().height())
+            if vw < 100 or vh < 60:
+                return
+            key = (vw, vh, source.cacheKey())
+            if getattr(self, "_radio_fit_key", None) == key:
+                return
+            self._radio_fit_key = key
+            pm = source.scaled(vw, vh, Qt.AspectRatioMode.KeepAspectRatio,
                                Qt.TransformationMode.SmoothTransformation)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            label.setMinimumSize(1, 1)
             label.setPixmap(pm)
-            label.setFixedSize(pm.size())
-            if scroll is not None:
-                # Fixed default panel footprint; never derive this from image size.
-                scroll.setFixedSize(fw, fh)
-                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-                scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-                bar = scroll.horizontalScrollBar()
-                bar.setEnabled(True)
-                bar.setSingleStep(24)
-                bar.setPageStep(160)
-                scroll.widget().adjustSize()
+            label.update()
+        except Exception as exc:
+            print(f"[Radio UI] fit: {exc}")
+
+    def _refresh_status_frame(self):
+        """Display the latest real scenograph frame without triggering another render."""
+        if not self.isVisible() or self.isMinimized():
+            return                                   # hidden / minimised window: no copy, no scale
+        label = getattr(self, "status_frame_image", None)
+        viewer = getattr(self, "video_synth_viewer", None)
+        if label is None or viewer is None:
+            return
+        try:
+            frame = getattr(viewer, "_frame", None)
+            if frame is None or getattr(frame, "ndim", 0) != 3 or frame.shape[2] < 3:
+                return
+            # Do not recopy/re-scale the same frame. Downsample to a bounded
+            # preview raster before creating the GUI-owned QImage; expensive
+            # scene rendering remains on VideoSynthViewer's worker lane.
+            frame_key = id(frame)
+            target_size = (max(1, label.width()-8), max(1, label.height()-8))
+            cache_key = (frame_key, target_size)
+            if getattr(self, "_status_frame_cache_key", None) != cache_key:
+                import numpy as _np
+                hh0, ww0 = frame.shape[:2]
+                stride = max(1, int(max(ww0 / 480.0, hh0 / 270.0, 1.0)))
+                arr = _np.ascontiguousarray(frame[::stride, ::stride, :3], dtype=_np.uint8)
+                hh, ww = arr.shape[:2]
+                img = QImage(arr.data, ww, hh, ww * 3, QImage.Format.Format_RGB888).copy()
+                pm = QPixmap.fromImage(img).scaled(*target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+                label.setPixmap(pm)
+                self._status_frame_cache_key = cache_key
+            try:
+                instrument = self.instrument_selector_dropdown.currentText()
+            except Exception:
+                instrument = ""
+            try:
+                seed = self._seed_text()[:36]
+            except Exception:
+                seed = ""
+            try:
+                playhead = f" · beat {float(getattr(self,'play_cursor',0.0))/max(1.0,float(getattr(self,'play_sample_rate',48000))*60.0/max(30.0,float(self.spin_bpm.value()))):.2f}"
+            except Exception:
+                playhead = ""
+            self.status_frame_context.setText(f"{instrument} · {seed}{playhead}")
         except Exception:
             pass
 
@@ -25679,7 +26453,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             })
         return events
 
-    def _remove_goava_canonical_writes(self):
+    def _remove_goava_canonical_writes(self, start_row=0, end_row=None, clear_banks=True, finalize=True):
         """Reverse only GOAVA-owned writes, using identity rather than current row/ensemble scale.
 
         The reverse path deliberately consults the GOAVA write ledger captured at
@@ -25690,24 +26464,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         ledger = list(getattr(self, "_goava_write_ledger", []) or [])
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
-        # Remove exact GOAVA-owned sequence objects by owner, regardless of the
-        # ensemble generation in which they were created.
-        for _name, bank in list(banks.items()):
-            if not isinstance(bank, dict):
-                continue
-            for _sid in list(bank.keys()):
-                _mem = bank.get(_sid)
-                if isinstance(_mem, dict) and str(_mem.get("canonical_owner", "")) == "canonical:goava":
-                    bank.pop(_sid, None)
-            if not bank:
-                bank[1] = {"sequence_id": 1, "pattern_length": DEFAULT_SEQUENCE_LENGTH,
-                           "steps": [False]*DEFAULT_SEQUENCE_LENGTH, "gates": [True]*DEFAULT_SEQUENCE_LENGTH,
-                           "amplitudes": [1.0]*DEFAULT_SEQUENCE_LENGTH, "pitches": [1.0]*DEFAULT_SEQUENCE_LENGTH,
-                           "probabilities": [100]*DEFAULT_SEQUENCE_LENGTH, "offsets": [0.0]*DEFAULT_SEQUENCE_LENGTH,
-                           "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5,
-                           "user_owned": True}
+        # Remove exact GOAVA-owned sequence objects once; playlist rows below
+        # are processed in bounded slices by the cooperative commit.
+        if clear_banks:
+            for _name, bank in list(banks.items()):
+                if not isinstance(bank, dict):
+                    continue
+                for _sid in list(bank.keys()):
+                    _mem = bank.get(_sid)
+                    if isinstance(_mem, dict) and str(_mem.get("canonical_owner", "")) == "canonical:goava":
+                        bank.pop(_sid, None)
+                if not bank:
+                    bank[1] = {"sequence_id": 1, "pattern_length": DEFAULT_SEQUENCE_LENGTH,
+                               "steps": [False]*DEFAULT_SEQUENCE_LENGTH, "gates": [True]*DEFAULT_SEQUENCE_LENGTH,
+                               "amplitudes": [1.0]*DEFAULT_SEQUENCE_LENGTH, "pitches": [1.0]*DEFAULT_SEQUENCE_LENGTH,
+                               "probabilities": [100]*DEFAULT_SEQUENCE_LENGTH, "offsets": [0.0]*DEFAULT_SEQUENCE_LENGTH,
+                               "sequence_envelope_attack": 0.5, "sequence_envelope_release": 0.5,
+                               "user_owned": True}
 
-        for _r, e in enumerate(getattr(self, "_render_playlist_snapshot", None) or getattr(self, "master_playlist_data", []) or []):
+        _rows = getattr(self, "_render_playlist_snapshot", None) or getattr(self, "master_playlist_data", []) or []
+        _lo = max(0, int(start_row or 0))
+        _hi = len(_rows) if end_row is None else min(len(_rows), max(_lo, int(end_row)))
+        for _r in range(_lo, _hi):
+            e = _rows[_r]
             if not isinstance(e, dict):
                 continue
             # Remove the exact GOAVA contribution, not an entire row.
@@ -25749,13 +26528,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if str(e.get("paint_instrument", "")).strip().casefold() == "goava":
                 e.pop("paint_instrument", None)
 
-        self._goava_write_ledger = []
-        try:
-            self._sync_playlist_paint_table_from_memory()
-        except Exception:
-            pass
+        if finalize:
+            self._goava_write_ledger = []
+            try:
+                self._sync_playlist_paint_table_from_memory()
+            except Exception:
+                pass
 
-    def _apply_goava_to_canonical_playlist(self):
+    def _apply_goava_to_canonical_playlist(self, start_row=0, end_row=None, reset_ledger=True, sync=True):
         """Fill GOAVA across the entire current ensemble playlist span.
 
         A short seed list is treated as a repeating numerical field, not as a
@@ -25768,13 +26548,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         while len(getattr(self, "playlist_automation", []) or []) < rows:
             self.playlist_automation.append({})
         events = list(self.goava_note_events or [])
+        lo = max(0, int(start_row or 0))
+        hi = rows if end_row is None else min(rows, max(lo, int(end_row)))
         if self.goava_active and events:
-            # New activation owns a fresh ledger. Each entry records the exact
-            # identity written at that ensemble scale so a later reverse-write
-            # remains correct even after resize.
-            self._goava_write_ledger = []
+            # A cooperative commit starts a fresh ledger once, then appends
+            # bounded row slices while the UI event loop remains responsive.
+            if reset_ledger:
+                self._goava_write_ledger = []
             _resize_generation = int(getattr(self, "_canonical_resize_sequence_generation", 0) or 0)
-            for r in range(rows):
+            for r in range(lo, hi):
                 e = self.master_playlist_data[r]
                 if not isinstance(e, dict):
                     e = {}; self.master_playlist_data[r] = e
@@ -25810,12 +26592,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # GOAVA never occupies an instrument or a sequence slot.
         else:
             # Reverse-write GOAVA by its recorded identity, not by the current
-            # ensemble ordinal. This is the critical resize-safe unwrite path.
-            self._remove_goava_canonical_writes()
-        try:
-            self._sync_playlist_paint_table_from_memory()
-        except Exception:
-            pass
+            # ensemble ordinal. The cooperative kernel supplies row slices.
+            self._remove_goava_canonical_writes(lo, hi, clear_banks=(lo == 0), finalize=False)
+        if sync:
+            if not self.goava_active:
+                self._goava_write_ledger = []
+            try:
+                self._sync_playlist_paint_table_from_memory()
+            except Exception:
+                pass
 
     # deduped: shadowed by later _on_goava_toggled() definition (perfect-unison system).
 
@@ -26742,6 +27527,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         rows are explicit ``none``/zero values rather than undefined cells.
         """
         source = "phase_lock" if str(source) == "phase-lock" else str(source)
+        # PLAYLIST_WRITE_GATE: a canonical engine writes playlist rows only while it is active (or when the user
+        # explicitly asked for this paint); an inactive engine never fills a blank project's playlist.
+        if source in ("randomizer", "phase_lock", "euclidean", "seeded", "fractal_seed", "goava") and \
+                not getattr(self, "_user_requested_paint", False):
+            try:
+                if source not in self._get_active_engine_set():
+                    return 0
+            except Exception:
+                pass
         seed = int(self.get_numeric_seed() or 1)
         if rng is None:
             channel = 0x51 if "random" in source else (0xA7 if "phase" in source else 0xD3)
@@ -27507,8 +28301,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # just sampled at a different N.
 
         self.instrument_display_names = {}
-        self.instrument_selector_dropdown = _InstrumentKeyCombo(self.instrument_display_names)
+        self.instrument_auto_labels = {}          # convolve-driven labels of free voices + "User Synth #n"
+        self.instrument_user_synth_numbers = {}   # key → n, in the order voices were first edited by the user
+        self.instrument_selector_dropdown = _InstrumentKeyCombo(self.instrument_display_names,
+                                                                auto_map=self.instrument_auto_labels)
         self.instrument_selector_dropdown.addItems(self.instrument_names_48)
+        QTimer.singleShot(0, self._refresh_auto_instrument_labels)
         self.instrument_selector_dropdown.currentIndexChanged.connect(self.on_instrument_switched)
         # READABILITY_FIX: an uncapped QComboBox in this QHBoxLayout was
         # expanding to fill available space and squeezing the neighboring
@@ -28077,6 +28875,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         eng_row.addWidget(self.spin_engine_strength)
 
+        reach_lbl = QLabel("Seed Reach:")
+        reach_lbl.setStyleSheet("color:#8fe7ff;font-weight:900;font-size:10pt;")
+        eng_row.addWidget(reach_lbl)
+        self.spin_seed_reach = QDoubleSpinBox()
+        self.spin_seed_reach.setRange(0.0, 1.0)
+        self.spin_seed_reach.setDecimals(3)
+        self.spin_seed_reach.setSingleStep(0.025)
+        self.spin_seed_reach.setValue(1.0)
+        self.spin_seed_reach.setFixedWidth(76)
+        self.spin_seed_reach.setToolTip(
+            "Seed Reach (0–1) is independent of Seed Weight. 1.000 uses the full per-parameter seed variation; "
+            "0.000 holds numeric controls at their selected preset defaults. The preset name itself remains seed-selected."
+        )
+        self.spin_seed_reach.valueChanged.connect(self._on_seed_reach_changed)
+        eng_row.addWidget(self.spin_seed_reach)
+
+        eng_row.addWidget(QLabel("Divergence:"))
+        self.spin_seed_divergence_menu = QDoubleSpinBox()
+        self.spin_seed_divergence_menu.setRange(0.0, 1.0)
+        self.spin_seed_divergence_menu.setDecimals(2)
+        self.spin_seed_divergence_menu.setSingleStep(0.05)
+        self.spin_seed_divergence_menu.setValue(0.50)
+        self.spin_seed_divergence_menu.setFixedWidth(70)
+        self.spin_seed_divergence_menu.setToolTip(
+            "Deterministically separates instrument/domain values derived from one seed program. "
+            "0 preserves identical shared values; 1 applies full slot/domain decorrelation."
+        )
+        self.spin_seed_divergence_menu.valueChanged.connect(self._on_seed_divergence_menu_changed)
+        eng_row.addWidget(self.spin_seed_divergence_menu)
 
         # Full Unison Blend — ON (default) forces ideal blend 1.0; OFF uses the spin.
         self.chk_full_unison = QPushButton("Full Unison Blend: ON")
@@ -28148,6 +28975,37 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.chk_reverse_time.toggled.connect(self._on_reverse_time_toggled)
         eng_row.addWidget(self.chk_reverse_time)
         seed_panel.addLayout(eng_row)
+
+        tuning_row = QHBoxLayout()
+        tuning_row.setSpacing(7)
+        tuning_row.addWidget(QLabel("Global Tuning:"))
+        self.combo_global_tuning_system = QComboBox()
+        self.combo_global_tuning_system.addItems(["equal", "just", "pythagorean", "meantone", "meum"])
+        self.combo_global_tuning_system.setCurrentText("equal")
+        self.combo_global_tuning_system.setToolTip("Global temperament. Instrument and per-step overrides inherit from this value.")
+        self.combo_global_tuning_system.currentTextChanged.connect(self._on_global_tuning_changed)
+        tuning_row.addWidget(self.combo_global_tuning_system)
+        tuning_row.addWidget(QLabel("Detune¢:"))
+        self.spin_global_detune_cents = QDoubleSpinBox()
+        self.spin_global_detune_cents.setRange(-1200.0, 1200.0)
+        self.spin_global_detune_cents.setDecimals(2); self.spin_global_detune_cents.setSingleStep(0.25)
+        self.spin_global_detune_cents.setValue(0.0); self.spin_global_detune_cents.setFixedWidth(86)
+        self.spin_global_detune_cents.valueChanged.connect(self._on_global_tuning_changed)
+        tuning_row.addWidget(self.spin_global_detune_cents)
+        tuning_row.addWidget(QLabel("Stretch¢/oct:"))
+        self.spin_global_stretch = QDoubleSpinBox()
+        self.spin_global_stretch.setRange(-100.0, 100.0)
+        self.spin_global_stretch.setDecimals(2); self.spin_global_stretch.setSingleStep(0.25)
+        self.spin_global_stretch.setValue(0.0); self.spin_global_stretch.setFixedWidth(86)
+        self.spin_global_stretch.setToolTip("Inharmonic tuning stretch in cents per octave.")
+        self.spin_global_stretch.valueChanged.connect(self._on_global_tuning_changed)
+        tuning_row.addWidget(self.spin_global_stretch)
+        self.btn_instrument_tuning = QPushButton("Instrument Tuning…")
+        self.btn_instrument_tuning.setToolTip("Set a selected-instrument override. Missing fields continue to inherit global tuning.")
+        self.btn_instrument_tuning.clicked.connect(self._open_instrument_tuning_dialog)
+        tuning_row.addWidget(self.btn_instrument_tuning)
+        tuning_row.addStretch(1)
+        seed_panel.addLayout(tuning_row)
 
         seed_panel.addWidget(self.input_seed_val, 1)
 
@@ -28221,8 +29079,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.qe_notes.setMinimumHeight(92)
         self.qe_notes.setMaximumHeight(16777215)
         self.qe_notes.setToolTip("Free-form project notes; stored in the canonical project document.")
-        self.quick_edit_group.setMinimumWidth(240)
-        self.quick_edit_group.setMaximumWidth(520)
+        self.quick_edit_group.setMinimumWidth(480)
+        self.quick_edit_group.setMaximumWidth(1040)
         self.quick_edit_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         # MOVED_TO_BELOW_SEQUENCER_LAYER
 
@@ -28248,6 +29106,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.qe_instrument.setToolTip("Type a new name for the selected instrument and press Enter. Clear the box to restore the original name.")
         self.qe_instrument.setMaxLength(48)
         self.qe_instrument.editingFinished.connect(self._commit_instrument_display_name)
+        _capture_row = QHBoxLayout(); _capture_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_notes_webcam = QPushButton("📷 Webcam picture")
+        self.btn_notes_webcam.setToolTip("Open the Video tab and use Take Picture From Camera. Device selection and capture remain explicit.")
+        self.btn_notes_mic = QPushButton("🎙 Microphone / audio")
+        self.btn_notes_mic.setToolTip("Open Audio Draw / Record or the Video tab's microphone capture controls. No device starts automatically.")
+        def _open_capture_tab(index, focus_attr=None):
+            dlg = self._open_main_signal_lab()
+            tabs = getattr(self, "_main_signal_lab_tabs", None)
+            if dlg is not None and tabs is not None:
+                tabs.setCurrentIndex(int(index))
+                if focus_attr:
+                    def _focus_capture():
+                        owner = getattr(self, "_main_video_clip_studio", None) if int(index) == 2 else tabs.widget(int(index))
+                        target = getattr(owner, focus_attr, None) if owner is not None else None
+                        if target is not None:
+                            try: target.setFocus()
+                            except Exception: pass
+                    QTimer.singleShot(250, _focus_capture)
+        self.btn_notes_webcam.clicked.connect(lambda: _open_capture_tab(2, "btn_camera_snapshot"))
+        self.btn_notes_mic.clicked.connect(lambda: _open_capture_tab(0))
+        _capture_row.addWidget(self.btn_notes_webcam); _capture_row.addWidget(self.btn_notes_mic)
+        qe.addLayout(_capture_row)
         # GROOVEBOX_R32_SYNTH_COLOURS_20261110: each synth's playlist colour, editable here.
         try:
             _crow = QHBoxLayout(); _crow.setContentsMargins(0, 0, 0, 0)
@@ -28266,7 +29146,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # column so the Seed panel gets the full top workspace.
 
         self.lbl_math_groovebox_logo.setToolTip("MATH GROOVEBOX — canonical signal conversion workspace")
-        _proc_title_row.addWidget(self.quick_edit_group,-1, Qt.AlignmentFlag.AlignRight)
+        # Project Notes is moved into the left third of the workspace triptych below.
 
         # PERFORMANCE_TOP_RIGHT_V3: the live Operation Station is the primary
         # bridge out of the scientific editor. Keep it immediately underneath
@@ -28298,7 +29178,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _logo_perf_stack = QVBoxLayout()
         _logo_perf_stack.setContentsMargins(0, 0, 0, 0)
         _logo_perf_stack.setSpacing(4)
-        _logo_perf_stack.addWidget(self.btn_patch_motion)
         self.lbl_goava_radio_brand = QLabel()
         self.lbl_goava_radio_brand.setToolTip("GOAVA Radio — seed-shaped broadcast identity for Mathematician's Groovebox")
         self.lbl_goava_radio_brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -28319,7 +29198,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
         self.lbl_goava_radio_brand.setStyleSheet("background:#050b12; border:1px solid #9a7b2f; border-radius:8px; padding:2px;")
         _logo_perf_stack.addWidget(self.lbl_math_groovebox_logo, 0, Qt.AlignmentFlag.AlignRight)
+        # PATCH_MOTION_BELOW_BRAND_R77: place Patch Motion directly below the
+        # Mathematician's Groovebox logo, before the larger operation controls.
+        # Launcher priority: Performance first, then Patch Motion, then local authoring tools.
         _logo_perf_stack.addWidget(self.btn_media_hub, 0, Qt.AlignmentFlag.AlignRight)
+        _logo_perf_stack.addWidget(self.btn_patch_motion, 0, Qt.AlignmentFlag.AlignRight)
+        self.btn_instrument_designer = QPushButton("🎹 INSTRUMENT DESIGNER · PERCUSSION / PADS / KEYS")
+        self.btn_instrument_designer.setMinimumHeight(34)
+        self.btn_instrument_designer.setToolTip("Build per-instrument percussion, pad and key patches with TONE / MOTION / BODY macros; optionally fill the selected sequence.")
+        self.btn_instrument_designer.clicked.connect(self._open_instrument_designer)
+        _logo_perf_stack.addWidget(self.btn_instrument_designer, 0, Qt.AlignmentFlag.AlignRight)
         self.btn_system_health = QPushButton("⚙ SYSTEM / PERFORMANCE HEALTH")
         self.btn_system_health.setMinimumHeight(34)
         self.btn_system_health.setToolTip("Worker lanes, render progress, audio route, removable media, diagnostics and recovery actions.")
@@ -28345,19 +29233,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # RADIO_SCROLL_FIX_20260906: preserve the complete graphic and expose
         # its full right-hand side through a horizontal scroll area instead of
         # allowing QLabel/layout compression to crop or shrink it.
-        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.lbl_goava_radio_brand.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.lbl_goava_radio_brand.setMinimumSize(1, 1)
         self.goava_radio_scroll = QScrollArea()
-        self.goava_radio_scroll.setWidgetResizable(False)
+        self.goava_radio_scroll.setWidgetResizable(True)
         self.goava_radio_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.goava_radio_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.goava_radio_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.goava_radio_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.goava_radio_scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.goava_radio_scroll.setFixedSize(*self._GOAVA_FLAG_SIZE)
-        # RADIO_SHRINK_TO_FIT_20260906: the artwork pane asks only for the
-        # artwork's natural size. It may be constrained by the parent, in which
-        # case the horizontal scrollbar exposes the remaining width.
-        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        # RADIO_FILL: the artwork pane takes the free pixels of the row (at least the classic 300×112) and the logo is
+        # rescaled to fit it, aspect kept, whenever the pane resizes.
+        self.goava_radio_scroll.setMinimumSize(*self._GOAVA_FLAG_SIZE)
+        self.goava_radio_scroll.setMaximumHeight(240)
+        self.goava_radio_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.goava_radio_scroll.setStyleSheet(
             "QScrollArea{background:#050b12;border:1px solid #9a7b2f;border-radius:8px;}"
             "QScrollBar:horizontal{height:11px;background:#09131e;border:1px solid #263c51;border-radius:5px;}"
@@ -28370,7 +29258,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QScrollBar::handle:vertical:pressed{background:#b18a3e;border-color:#f0d18a;}"
         )
         self.goava_radio_scroll.setWidget(self.lbl_goava_radio_brand)
-        _radio_row.addWidget(self.goava_radio_scroll, 0)
+        self.goava_radio_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _radio_row.addWidget(self.goava_radio_scroll, 1)
+        self._radio_fit_timer = QTimer(self); self._radio_fit_timer.setSingleShot(True); self._radio_fit_timer.setInterval(120)
+        self._radio_fit_timer.timeout.connect(self._refresh_goava_radio_brand)
+        self.goava_radio_scroll.installEventFilter(self)
         try:
             from radio_station import load_identity
             _rid = load_identity()
@@ -28412,12 +29304,89 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 QMessageBox.warning(self, "Radio Identity", str(e))
         self.btn_edit_radio_identity.clicked.connect(_edit_radio_identity)
         _radio_identity_layout.addWidget(self.btn_edit_radio_identity, 0)
-        _radio_row.addWidget(self.radio_identity_panel, 1)
-        _radio_row.setStretch(0, 0)
-        _radio_row.setStretch(1, 1)
-        self.global_controls_side.addLayout(_radio_row, 1)
+        _radio_row.addWidget(self.radio_identity_panel, 0)
+        _radio_row.setStretch(0, 1)
+        _radio_row.setStretch(1, 0)
+
+        # R74 WORKSPACE TRIPTYCH: Notes/Instrument Name · GOAVA Radio · Status Frame.
+        # The Status Frame reuses the latest main-scenograph frame; it never calls
+        # render_frame from the UI timer, preserving the existing preview worker lane.
+        self.radio_visual_panel = QFrame()
+        self.radio_visual_panel.setStyleSheet("QFrame{background:#050b12;border:1px solid #33485b;border-radius:8px;}")
+        _radio_panel_layout = QVBoxLayout(self.radio_visual_panel)
+        _radio_panel_layout.setContentsMargins(3,3,3,3)
+        _radio_panel_layout.addLayout(_radio_row, 1)
+        self.status_frame_panel = QFrame()
+        self.status_frame_panel.setStyleSheet("QFrame{background:#05080c;border:1px solid #3c5a6c;border-radius:8px;}")
+        _status_layout = QVBoxLayout(self.status_frame_panel)
+        _status_layout.setContentsMargins(5,5,5,5); _status_layout.setSpacing(3)
+        self.status_frame_title = QLabel("STATUS FRAME · MAIN SCENOGRAPH")
+        self.status_frame_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_frame_title.setStyleSheet("color:#9fe6d8;font-weight:900;font-size:9pt;")
+        self.status_frame_image = QLabel("Waiting for Main Scenograph frame…")
+        self.status_frame_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_frame_image.setMinimumSize(180,120)
+        self.status_frame_image.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
+        self.status_frame_image.setStyleSheet("background:#020408;color:#8aa;border:1px solid #263a4b;border-radius:5px;")
+        self.status_frame_context = QLabel("Current scene · latest live render")
+        self.status_frame_context.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_frame_context.setWordWrap(True)
+        self.status_frame_context.setStyleSheet("color:#a7b7c5;font-size:8pt;")
+        _status_layout.addWidget(self.status_frame_title); _status_layout.addWidget(self.status_frame_image,1); _status_layout.addWidget(self.status_frame_context)
+        self.workspace_triptych = QHBoxLayout(); self.workspace_triptych.setSpacing(8)
+        self.workspace_triptych.addWidget(self.quick_edit_group, 1)
+        self.workspace_triptych.addWidget(self.radio_visual_panel, 1)
+        self.workspace_triptych.addWidget(self.status_frame_panel, 1)
+        self.workspace_triptych.setStretch(0,1); self.workspace_triptych.setStretch(1,1); self.workspace_triptych.setStretch(2,1)
+
+        # R74 STARTER PATCH SEED: one-shot seed expands the entire active project.
+        self.starter_patch_panel = QGroupBox("CONFIGURE ENTIRE PROJECT · STARTER PATCH SEED")
+        self.starter_patch_panel.setStyleSheet("QGroupBox{color:#ffe3a0;background:#141b21;border:1px solid #78643a;border-radius:7px;margin-top:6px;font-weight:900;} QGroupBox::title{subcontrol-origin:margin;left:9px;padding:0 4px;}")
+        _starter_layout = QHBoxLayout(self.starter_patch_panel)
+        _starter_layout.setContentsMargins(8,10,8,6)
+        self.input_starter_patch_seed = QLineEdit()
+        self.input_starter_patch_seed.setPlaceholderText("Enter a Starter Patch Seed to construct a complete project…")
+        self.input_starter_patch_seed.setMaxLength(512)
+        self.input_starter_patch_seed.setToolTip("One-shot deterministic project constructor. This field takes priority; when empty, Configure Entire Project uses the separate Superseed. Writes instrument sequence banks, active patterns, parameters, playlist arrangement, automation and provenance, copies the chosen seed into Global Seed, then clears this one-shot field.")
+        self.chk_starter_random_canonicals = QCheckBox("Allow seed-selected random canonicals")
+        self.chk_starter_random_canonicals.setChecked(False)
+        self.chk_starter_random_canonicals.setToolTip("Explicit opt-in: enable a deterministic seed-selected subset of canonical engines during project construction. Off does not activate any canonical engine.")
+        self.btn_configure_entire_project = QPushButton("∿ Configure Entire Project")
+        self.btn_configure_entire_project.setMinimumHeight(34)
+        self.btn_configure_entire_project.setToolTip("Generate a complete deterministic starter composition. Use the entered Starter Patch Seed, or the dedicated Superseed when this field is empty. Existing content is replaced; the selected seed is copied to Global Seed and the one-shot field is cleared.")
+        self.btn_configure_entire_project.clicked.connect(self._configure_entire_project_from_seed)
+        _starter_layout.addWidget(self.input_starter_patch_seed, 1); _starter_layout.addWidget(self.chk_starter_random_canonicals); _starter_layout.addWidget(self.btn_configure_entire_project)
+
+        # SUPERSEED is a separate Autopilot root, editable only here in the main window.
+        self.superseed_panel = QGroupBox("SUPERSEED · AUTOPILOT ROOT")
+        self.superseed_panel.setStyleSheet("QGroupBox{color:#9de8ff;background:#101c27;border:1px solid #34758a;border-radius:7px;margin-top:6px;font-weight:900;} QGroupBox::title{subcontrol-origin:margin;left:9px;padding:0 4px;}")
+        _superseed_layout = QHBoxLayout(self.superseed_panel); _superseed_layout.setContentsMargins(8,9,8,6)
+        _superseed_layout.addWidget(QLabel("Autopilot seed (separate from Global Seed):"))
+        self.input_superseed = QLineEdit()
+        self.input_superseed.setPlaceholderText("Enter a Superseed for deterministic Autopilot evolution…")
+        self.input_superseed.setMaxLength(512)
+        self.input_superseed.setText("MATGROOVEBOX::SUPERSEED::GENESIS")
+        self.input_superseed.setToolTip("Dedicated Autopilot Superseed, separate from Global Seed. Edit it here in the main window; the Autopilot window shows a read-only live readout. Autopilot also folds in the ordinary Global Seed and any currently entered Starter Patch Seed to form its deterministic lineage.")
+        _superseed_layout.addWidget(self.input_superseed,1)
+
+        self.global_controls_side.addWidget(self.starter_patch_panel)
+        self.global_controls_side.addWidget(self.superseed_panel)
+        self.global_controls_side.addLayout(self.workspace_triptych, 1)
         QTimer.singleShot(0, self._refresh_goava_radio_brand)
-        self.global_controls_side.addLayout(_proc_title_row)
+        QTimer.singleShot(1000, self._refresh_status_frame)
+        self._status_frame_timer = QTimer(self); self._status_frame_timer.setInterval(1000); self._status_frame_timer.timeout.connect(self._refresh_status_frame); self._status_frame_timer.start()
+        # TASK PAD placement: inside the title row, between "GLOBAL PROCESSOR CONTROLS" and the right-aligned logo /
+        # performer / health stack — beside that stack (not above it), filling the height down to the menu.
+        try:
+            _sp = _proc_title_row.itemAt(1)
+            if _sp is not None and _sp.spacerItem() is not None:
+                _proc_title_row.takeAt(1)
+            _proc_title_row.insertWidget(1, self._build_task_pad(), 1)
+            _proc_title_row.setAlignment(Qt.AlignmentFlag.AlignTop)
+        except Exception as _tp_exc:
+            print(f"[Task pad] placement: {_tp_exc}")
+            self.global_controls_side.addWidget(self._build_task_pad(), 1)
+        self.global_controls_side.addLayout(_proc_title_row, 1)
         self.global_geometry_layout.addLayout(self.global_controls_side, 1)
         self.global_geometry_layout.setAlignment(self.global_controls_side, Qt.AlignmentFlag.AlignTop)
 
@@ -28481,9 +29450,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.btn_seed_id = QPushButton("🧬 Seed")
         self.btn_seed_id.setToolTip("Show and copy the current seed fingerprint")
         def _show_seed():
-            from PyQt6.QtWidgets import QMessageBox
-            fp = str(getattr(self, "seed_fingerprint", "") or getattr(self, "global_seed", "") or "none")
-            QMessageBox.information(self, "Seed", fp)
+            from PyQt6.QtWidgets import QMessageBox, QApplication as _QA
+            fp = self.seed_fingerprint_text()
+            print("[Seed] " + fp.replace("\n", " · "), flush=True)
+            try:
+                _QA.clipboard().setText(fp)
+            except Exception:
+                pass
+            try:
+                self.scope_status_label.setText("🧬 " + fp.splitlines()[0] + "  (copied)")
+            except Exception:
+                pass
+            QMessageBox.information(self, "Seed fingerprint", fp + "\n\n(copied to the clipboard)")
         self.btn_seed_id.clicked.connect(_show_seed)
         self.transport_layout.addWidget(self.btn_seed_id)
         self.btn_mute_all = QPushButton("🔇 Mute")
@@ -29316,20 +30294,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # script / modular patch / domain) read+write the *current sequence's*
         # panel overrides, and canonical engines may generate per-sequence panel
         # content. Default OFF preserves master/instrument-level panel behaviour.
-        self.btn_edit_panels_per_sequence = QPushButton("Edit Synth\nPer Seq\nOFF")
+        self.btn_edit_panels_per_sequence = QPushButton("EDIT SYNTH\nPER SEQ\nOFF")
         self.btn_edit_panels_per_sequence.setCheckable(True)
         self.btn_edit_panels_per_sequence.setChecked(False)
         self.btn_edit_panels_per_sequence.setFixedSize(92, 92)
         self.btn_edit_panels_per_sequence.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.btn_edit_panels_per_sequence.setToolTip(
-            "OFF: editors write the master instrument panel (the mix carrier).\n"
-            "ON: editors write the selected sequence's addon synth/script/patch/domain.\n"
-            "This button prepares the active sequence for synth-pattern/panel editing.\n"
-            "Addon panels always mix into the master per sequence using blend/coverage "
-            "amounts — they never replace the master bus."
+            "EDIT SYNTH PER SEQ · OFF\n"
+            "OFF: the synth, script, patch and domain editors change the instrument's shared master settings.\n"
+            "ON: those editors change only the selected sequence's settings; the button glows in that sequence's colour.\n"
+            "Per-sequence settings remain separate from the master and are mixed at render time."
         )
         self.btn_edit_panels_per_sequence.setStyleSheet(
-            "QPushButton { background-color:#5a3218; color:#f2c38b; border:2px solid #9a6335; "
+            "QPushButton { background-color:#1b2028; color:#ffffff; border:2px solid #ffffff; "
             "border-radius:8px; padding:6px; font-weight:900; font-size:9pt; } "
             "QPushButton:hover { background-color:#70401f; color:#ffe0b2; } "
             "QPushButton:checked { background-color:#8a5428; color:#fff0d0; border:2px solid #d39a5b; } "
@@ -29413,6 +30390,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                              "EUCLIDEAN gate, Divergence tail) plus FX / EQ / Mod Osc / automation / per-seq / mixer state.")
         self.top_layout_row2.addWidget(self.spin_global_convolve)
         self.slider_global_convolve = self.spin_global_convolve  # compatibility alias
+        self.spin_global_convolve.valueChanged.connect(lambda *_a: QTimer.singleShot(0, self._refresh_auto_instrument_labels))
         # GROOVEBOX_R23R_CONVOLUTION_DEFAULTS_20261031: the Global Convolve
         # setting convolves equally for the geometric synth components —
         # at-default instances follow the new preset when the slider moves.
@@ -30838,8 +31816,35 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_controls.addSpacing(12)
         seq_controls.addWidget(QLabel("Sequence:"))
         seq_controls.addWidget(self.sequence_selector, 1)
+        self.chk_view_canonical_layer = QCheckBox("View Canonical Layer")
+        self.chk_view_canonical_layer.setChecked(True)
+        self.chk_view_canonical_layer.setToolTip("Display canonical-only steps when enabled. Display-only: authored user steps are never changed.")
+        self.chk_view_canonical_layer.toggled.connect(lambda *_: self.reload_active_instrument_sequencer_ui())
+        seq_controls.addWidget(self.chk_view_canonical_layer)
         seq_controls.addWidget(self.btn_add_sequence)
         seq_controls.addWidget(self.btn_remove_sequence)
+        self.btn_clear_sequence = QPushButton("Clear Seq")
+        self.btn_clear_sequence.setToolTip("Clear gates/steps and amplitudes for this sequence only. Keep its automation and tuning.")
+        self.btn_clear_sequence.clicked.connect(self._clear_selected_sequence)
+        seq_controls.addWidget(self.btn_clear_sequence)
+        self.btn_clear_sequence_auto = QPushButton("Clear Auto")
+        self.btn_clear_sequence_auto.setToolTip("Clear automation for this sequence only. Steps and gates remain untouched.")
+        self.btn_clear_sequence_auto.clicked.connect(self._clear_selected_sequence_automation)
+        seq_controls.addWidget(self.btn_clear_sequence_auto)
+        self.btn_randomize_sequence = QPushButton("Rand This Seq")
+        self.btn_randomize_sequence.clicked.connect(self._randomize_selected_sequence)
+        seq_controls.addWidget(self.btn_randomize_sequence)
+        self.btn_randomize_sequence_auto = QPushButton("Rand Its Auto")
+        self.btn_randomize_sequence_auto.clicked.connect(self._randomize_selected_sequence_automation)
+        seq_controls.addWidget(self.btn_randomize_sequence_auto)
+        seq_controls.addWidget(QLabel("Speak as:"))
+        self.combo_speak_as = QComboBox(); self.combo_speak_as.addItems(["music", "video", "game"]); self.combo_speak_as.setCurrentText("music")
+        self.combo_speak_as.setToolTip("Sets the output context label only. It does not force or start media generation.")
+        self.combo_speak_as.currentTextChanged.connect(self._on_speak_as_changed)
+        seq_controls.addWidget(self.combo_speak_as)
+        self.lbl_speak_as_status = QLabel("music")
+        self.lbl_speak_as_status.setStyleSheet("color:#9fdcca;font-weight:800;")
+        seq_controls.addWidget(self.lbl_speak_as_status)
         self._live_step_record = False
         self._live_step_cursor = {}
         self.btn_live_step_record = QPushButton("⏺ STEP REC OFF")
@@ -30887,6 +31892,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         seq_controls.addWidget(self.chk_force_sequence_schedule)
         seq_controls.addStretch(1)
         seq_inner.addLayout(seq_controls)
+
+        observe_row = QHBoxLayout(); observe_row.setSpacing(8)
+        self.chk_show_userdata = QCheckBox("Show userdata"); self.chk_show_userdata.setChecked(True)
+        self.chk_show_userdata.setToolTip("Show the active instrument and selected sequence's user-owned values in the read-only inspector.")
+        self.chk_show_userdata.toggled.connect(self._refresh_canonical_data_inspector)
+        observe_row.addWidget(self.chk_show_userdata)
+        self.chk_show_canonical_write_data = QCheckBox("Show canonical write data"); self.chk_show_canonical_write_data.setChecked(True)
+        self.chk_show_canonical_write_data.setToolTip("Show canonical-generated values and ownership metadata without changing project state.")
+        self.chk_show_canonical_write_data.toggled.connect(self._refresh_canonical_data_inspector)
+        observe_row.addWidget(self.chk_show_canonical_write_data)
+        self.txt_canonical_data_inspector = QPlainTextEdit(); self.txt_canonical_data_inspector.setReadOnly(True)
+        self.txt_canonical_data_inspector.setMaximumHeight(82); self.txt_canonical_data_inspector.setPlaceholderText("Userdata and canonical write data are read-only here.")
+        self.txt_canonical_data_inspector.setToolTip("Read-only diagnostics: user state and canonical effective write state.")
+        observe_row.addWidget(self.txt_canonical_data_inspector, 1)
+        seq_inner.addLayout(observe_row)
 
         # CANONICAL_CHORD_BUDGET_20261024: explicit per-instrument voicing controls.
         chord_row = QHBoxLayout()
@@ -31379,6 +32399,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         step_edit.addWidget(self.slider_step_phase_shift)
         self.lbl_step_phase_shift = QLabel("0°")
         step_edit.addWidget(self.lbl_step_phase_shift)
+        step_edit.addWidget(QLabel("Phase propagation:"))
+        self.combo_step_phase_propagation = QComboBox()
+        self.combo_step_phase_propagation.addItems(["retrigger", "longitudinal"])
+        self.combo_step_phase_propagation.setToolTip("Retrigger resets oscillator phase at this step. Longitudinal continues the accumulated phase.")
+        self.combo_step_phase_propagation.currentTextChanged.connect(self._on_step_phase_propagation_changed)
+        step_edit.addWidget(self.combo_step_phase_propagation)
         step_edit.addStretch(1)
         step_edit_aux.addWidget(QLabel("EQ dB:"))
         self.slider_step_eq_gain = QSlider(Qt.Orientation.Horizontal)
@@ -31415,6 +32441,62 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_step_eq_q.setToolTip("Bandwidth of this step's band EQ (higher Q = narrower).")
         self.spin_step_eq_q.valueChanged.connect(lambda v: self._on_step_control_slider("eq_q", float(v)))
         step_edit_aux.addWidget(self.spin_step_eq_q)
+        # Retain hidden compatibility editors for older project fields, but do not
+        # expose temperament/scale/cents terminology in the STEP workflow.
+        self.combo_step_tuning_system = QComboBox(self.step_editor_popup)
+        self.combo_step_tuning_system.addItems(["inherit", "equal", "just", "pythagorean", "meantone", "meum"])
+        self.combo_step_tuning_system.setCurrentText("inherit")
+        self.combo_step_tuning_system.currentTextChanged.connect(self._on_step_tuning_changed)
+        self.combo_step_tuning_system.hide()
+        self.spin_step_detune_cents = QDoubleSpinBox(self.step_editor_popup)
+        self.spin_step_detune_cents.setRange(-1200.0, 1200.0); self.spin_step_detune_cents.setDecimals(2)
+        self.spin_step_detune_cents.setSpecialValueText("inherit"); self.spin_step_detune_cents.setValue(-1200.0)
+        self.spin_step_detune_cents.valueChanged.connect(self._on_step_tuning_changed); self.spin_step_detune_cents.hide()
+        self.spin_step_stretch = QDoubleSpinBox(self.step_editor_popup)
+        self.spin_step_stretch.setRange(-100.0, 100.0); self.spin_step_stretch.setDecimals(2)
+        self.spin_step_stretch.setSpecialValueText("inherit"); self.spin_step_stretch.setValue(-100.0)
+        self.spin_step_stretch.valueChanged.connect(self._on_step_tuning_changed); self.spin_step_stretch.hide()
+
+        # Mathematical mapping controls are sequence/step data, not note-system
+        # settings. The mapping shapes the normalized automation morph at this step.
+        step_edit_math = QHBoxLayout()
+        step_edit_math.setSpacing(6)
+        step_edit_root.addLayout(step_edit_math)
+        step_edit_math.addWidget(QLabel("Automation Map:"))
+        self.combo_step_automation_shape = QComboBox(self.step_editor_popup)
+        self.combo_step_automation_shape.addItems([
+            "linear", "quadratic", "cubic", "exponential", "polynomial",
+            "sqrt", "log", "power", "x^x", "smoothstep", "sine", "inverse"
+        ])
+        self.combo_step_automation_shape.setToolTip(
+            "Shape the normalized automation value at this step. This is a mathematical mapping, not a fixed note system."
+        )
+        self.combo_step_automation_shape.currentTextChanged.connect(self._on_step_automation_math_changed)
+        self.combo_step_automation_shape.setFixedWidth(112)
+        step_edit_math.addWidget(self.combo_step_automation_shape)
+        step_edit_math.addWidget(QLabel("Power:"))
+        self.spin_step_automation_exponent = QDoubleSpinBox(self.step_editor_popup)
+        self.spin_step_automation_exponent.setRange(0.05, 16.0)
+        self.spin_step_automation_exponent.setDecimals(2)
+        self.spin_step_automation_exponent.setSingleStep(0.1)
+        self.spin_step_automation_exponent.setValue(2.0)
+        self.spin_step_automation_exponent.setFixedWidth(68)
+        self.spin_step_automation_exponent.valueChanged.connect(self._on_step_automation_math_changed)
+        step_edit_math.addWidget(self.spin_step_automation_exponent)
+        step_edit_math.addWidget(QLabel("Polynomial a₀/a₁/a₂:"))
+        self.spin_step_automation_poly0 = QDoubleSpinBox(self.step_editor_popup)
+        self.spin_step_automation_poly1 = QDoubleSpinBox(self.step_editor_popup)
+        self.spin_step_automation_poly2 = QDoubleSpinBox(self.step_editor_popup)
+        for _poly_spin, _poly_value in ((self.spin_step_automation_poly0, 0.0),
+                                        (self.spin_step_automation_poly1, 1.0),
+                                        (self.spin_step_automation_poly2, 0.0)):
+            _poly_spin.setRange(-8.0, 8.0)
+            _poly_spin.setDecimals(3)
+            _poly_spin.setSingleStep(0.1)
+            _poly_spin.setValue(_poly_value)
+            _poly_spin.setFixedWidth(68)
+            _poly_spin.valueChanged.connect(self._on_step_automation_math_changed)
+            step_edit_math.addWidget(_poly_spin)
         step_edit_aux.addWidget(QLabel("FX Prob:"))
         self.slider_step_fx_probability = QSlider(Qt.Orientation.Horizontal)
         self.slider_step_fx_probability.setRange(0, 100); self.slider_step_fx_probability.setValue(100)
@@ -32638,6 +33720,72 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as exc:
             print(f"[InstrumentName] sync skipped: {exc}")
 
+    def instrument_label(self, name):
+        """What the UI calls an instrument: the user's name, else 'User Synth #n' once edited, else its convolve label."""
+        name = str(name)
+        return str((getattr(self, "instrument_display_names", {}) or {}).get(name)
+                   or (getattr(self, "instrument_auto_labels", {}) or {}).get(name) or name)
+
+    def _refresh_auto_instrument_labels(self, *_a):
+        """Free voices are labelled from the name pool rotated by the seed and the Global Convolve setting, so the first
+        voice is not always the same name; resizing or reconvolving relabels them the same deterministic way. Voices
+        the user edited read 'User Synth #n'; a name the user typed always wins and is never changed."""
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        if not names:
+            return {}
+        pool = [str(n).split(". ", 1)[-1].strip() for n in DEFAULT_INSTRUMENT_LIST]
+        P = len(pool)
+        try:
+            seed = float(_safe_int_seed(self.get_numeric_seed()))
+        except Exception:
+            seed = 1.0
+        try:
+            conv = float(self.spin_global_convolve.value()) / 100.0
+        except Exception:
+            conv = 0.0
+        off = int(((seed * float(MEUM - 1.0)) % 1.0 + conv * float(PHI)) % 1.0 * P)
+        stride = 1 + int(conv * (P - 2))
+        while math.gcd(stride, P) != 1:
+            stride += 1
+        nums = getattr(self, "instrument_user_synth_numbers", {}) or {}
+        out = {}
+        used = set((getattr(self, "instrument_display_names", {}) or {}).values()) | set(names)
+        for i, key in enumerate(names):
+            if key in nums:
+                out[key] = "User Synth #%d" % int(nums[key])
+                continue
+            base = pool[(off + i * stride) % P]
+            lab, k = base, 0
+            while lab in used and lab != key:
+                lab = "%s %s" % (_ADJECTIVES[k % len(_ADJECTIVES)], base); k += 1
+                if k > 64:
+                    lab = key
+                    break
+            used.add(lab)
+            if lab != key:
+                out[key] = lab
+        d = self.__dict__.setdefault("instrument_auto_labels", {})
+        d.clear(); d.update(out)
+        try:
+            self.instrument_selector_dropdown.refresh_labels()
+        except Exception:
+            pass
+        return out
+
+    def _mark_user_synth(self, name=None):
+        """The user edited this voice's synth / script: it becomes 'User Synth #n' (unless the user named it)."""
+        try:
+            name = str(name or self.instrument_selector_dropdown.currentText())
+        except Exception:
+            return
+        if not name:
+            return
+        nums = self.__dict__.setdefault("instrument_user_synth_numbers", {})
+        if name in nums:
+            return
+        nums[name] = 1 + max([int(v) for v in nums.values()] or [0])
+        self._refresh_auto_instrument_labels()
+
     def _sanitized_instrument_display_names(self, data=None):
         """Return display names that are valid, unique and not canonical keys."""
         try:
@@ -33121,6 +34269,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _sequence_display_mem(self, name, mem):
         """What the pads and sliders should SHOW: the user's sequence, or - while the user has not touched any step -
         the canonical sequence that is actually playing (so active/inactive steps and slider values are visible)."""
+        if not bool(getattr(self, "chk_view_canonical_layer", None) and self.chk_view_canonical_layer.isChecked()):
+            return mem
         if self._mem_has_user_steps(mem):
             return mem
         seq = self._canonical_sequence_for_display(name)
@@ -33130,7 +34280,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # until activated. Build this instrument's canonical coverage now (same function the render uses).
             try:
                 if (self._active_engine_sources()
-                        and getattr(self, "canonical_control_strategy", "Full Canonical") != "Seeded Baseline"):
+                        ):
                     self._materialize_canonical_coverage(name, 0)
                     seq = self._canonical_sequence_for_display(name)
             except Exception:
@@ -33174,6 +34324,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
         count = int(mem.get('pattern_length', len(self.seq_step_buttons) or DEFAULT_SEQUENCE_LENGTH))
         self._ensure_seq_mem_length(mem, count)
+        try: self._refresh_canonical_data_inspector()
+        except Exception: pass
         if hasattr(self, "spin_chord_note_count"):
             self.spin_chord_note_count.blockSignals(True)
             _chord_budget = self._canonical_chord_note_budget()
@@ -33537,12 +34689,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # ENTER_HOLD_LOOP_R7: releasing Enter closes the take, even if focus moved while held.
             self._enter_loop_release()
             return
-        if not (48 <= k <= 57 or 65 <= k <= 90) or not self._keychart_gate(obj, event):
+        if not (48 <= k <= 57 or 65 <= k <= 90):
             return
         ch = chr(k)
         if KEYCHART_ORDER.find(ch) < 0:
             return
+        # A release is always honoured (it used to pass the same focus gate as the press, so a key let go while a
+        # popup / another field had focus kept ringing to the end of its note). A key typed into a text field never
+        # started a note, so releasing it is a no-op.
         self._held_key_release(ch)
+        if not self._keychart_gate(obj, event):
+            return
         loop = getattr(self, "_enter_loop", None)              # R32.9: the loop keeps each note's hold time
         if isinstance(loop, dict) and loop.get("state") == "rec":
             now_t = time.monotonic() - loop["started"]
@@ -34638,6 +35795,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             msg = "Loop cleared"
         if hasattr(self, "scope_status_label"):
             self.scope_status_label.setText(msg)
+
+    def _release_all_held_keys(self):
+        hk = getattr(self, "_held_keys", None)
+        if hk is None:
+            return
+        for ch in list(getattr(hk, "held", {}) or {}):
+            self._held_key_release(ch)
 
     def _held_key_release(self, ch):
         """GROOVEBOX_R32_HELD_SUSTAIN_20261109: start the release of a held key's voice."""
@@ -36735,6 +37899,263 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return self.input_seed_val.toPlainText().strip()
         except AttributeError:
             return self.input_seed_val.text().strip()
+
+    def _build_task_pad(self):
+        """TASK PAD under Project Notes · Radio · Status Frame: one click for the important jobs and live switches."""
+        box = QGroupBox("TASK PAD · make · play · export · tools")
+        box.setStyleSheet("QGroupBox{color:#c8f0ff;background:rgba(11,20,28,188);border:1px solid rgba(44,85,104,210);border-radius:7px;"
+                          "margin-top:6px;font-weight:900;} QGroupBox::title{subcontrol-origin:margin;left:9px;padding:0 4px;}"
+                          "QPushButton{background:#13222f;color:#dff4ff;border:1px solid #2f5d74;border-radius:6px;"
+                          "padding:2px 3px;font-weight:700;font-size:8pt;} QPushButton:hover{background:#1c3546;border-color:#7fd6ee;}")
+        # Width follows the column (never wider than the panels above it, never under the title / performer buttons /
+        # health bar); height fills the space down to the title and menu.
+        box.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        box.setMinimumWidth(240)
+        grid = QGridLayout(box); grid.setContentsMargins(6, 10, 6, 6); grid.setHorizontalSpacing(5); grid.setVerticalSpacing(4)
+
+        def mod(name, fn, *args):
+            def _go():
+                try:
+                    m = __import__(name, fromlist=["_"])
+                    getattr(m, fn)(*args)
+                except Exception as exc:
+                    self._task_pad_say("%s unavailable: %s" % (name, exc))
+            return _go
+
+        def meth(name, *args):
+            def _go():
+                f = getattr(self, name, None)
+                if callable(f):
+                    try:
+                        f(*args)
+                    except Exception as exc:
+                        self._task_pad_say("%s: %s" % (name, exc))
+                else:
+                    self._task_pad_say("%s is not available in this build" % name)
+            return _go
+        rows = (
+            ("Make", (("🎲 Random seed", "A new seed program (every function and workspace variable)", meth("_on_random_seed_clicked")),
+                      ("∿ Configure project", "Build a complete project from the Starter Patch Seed / Superseed",
+                       meth("_configure_entire_project_from_seed")),
+                      ("🧬 Seed ID", "Show, print and copy the seed fingerprint",
+                       lambda: getattr(self, "btn_seed_id", None) and self.btn_seed_id.click()),
+                      ("✍ Script Studio", "Write and test seed programs", mod("script_studio", "open_window", self)),
+                      ("✦ Autopilot", "GOAVA Autopilot: evolution + live response", mod("groovebox_runtime.command_center", "_open_autopilot", self)),
+                      ("🌀 Multidim", "Multidimensional synth editor", mod("multidim_ui", "open_multidim_window", self)),
+                      ("⚖ Canonical Rules", "Inspect ownership, blending strengths and canonical operating mode", mod("canonical_rules_panel", "open_dialog", self)))),
+            ("Play", (("▶ Play / Stop", "Play or stop the composition", meth("toggle_playback")),
+                      ("🎛 Live Player", "Perform, record and project the music video live", mod("live_player", "open_live_player", self)),
+                      ("🎵 Theremin", "Pointer / sensor theremin · gravity · magnetometer · raw-signal projection",
+                       mod("theremin_sensors", "open_window", self)),
+                      ("🎚 Mixer + noise", "Instrument Mixer: gain · mute · solo · coloured / static noise",
+                       mod("instrument_mixer", "open_window", self)),
+                      ("🧱 3D Studio", "Wrap media on an OBJ and place it in a scene", mod("studio_3d", "open_window", self)),
+                      ("📶 Network", "Other Grooveboxes on the LAN: Wi-Fi, play together, live edit", mod("network_hub", "open_window", self)))),
+            ("Export", (("⬇ Export…", "The Export window: every format and destination", meth("export_window_dialog")),
+                        ("🎬 Music video", "Render the music video (MP4)", meth("export_video_dialog")),
+                        ("🔊 Mixdown", "Render the audio mixdown (WAV)", meth("export_mixdown_dialog")),
+                        ("🧊 Project OBJ", "The song as a 3D model that carries the audio and the project", meth("export_project_obj")),
+                        ("🗂 All formats", "Export to several formats at once", meth("export_all_formats_dialog")),
+                        ("📋 Export jobs", "Queue, progress, retry, remove", meth("show_export_jobs")))),
+            ("Tools", (("📂 Files", "File Studio: projects, samples, exports, versions", mod("file_studio", "open_window", self)),
+                       ("💽 Drives", "Format USB / SD media (never the computer's own disk)", mod("file_studio", "open_window", self, "Drives")),
+                       ("🛟 Recovery", "Checkpoints every 10 minutes · restore", mod("runtime_tools_ui", "open_recovery", self)),
+                       ("❓ Explain", "Search the Help or click a control to see what it does", mod("runtime_tools_ui", "open_explain", self)),
+                       ("🧪 Self-test", "Local checks without hardware writes", mod("runtime_tools_ui", "open_selftest", self)),
+                       ("🖥 Settings", "System Settings: scale, backgrounds, Party Mode, audio", mod("sos_system_settings", "open_window", self)),
+                       ("📏 Loudness", "LUFS / true-peak meter, normalise to a target, time-stretch and pitch-shift",
+                        mod("audio_tools", "open_window", self)),
+                       ("🛟 Checkpoints", "Project checkpoints and recovery", mod("project_transactions", "open_window", self)),
+                       ("🩺 Project tools", "Health report · compare projects · batch browser · render preview · templates · sequence morph",
+                        mod("project_tools", "open_window", self)),
+                       ("🧮 Math Lab", "Mathematical Mapping Laboratory", lambda: __import__("mapping_laboratory").open_mapping_laboratory(self)),
+                       ("🧩 Apps & scripts", "Launch installed Linux apps, install AppImage / .deb / Flatpak, write scripts that make media and send it back",
+                        mod("app_hub", "open_window", self)))),
+        )
+        # LARGE LAUNCHERS for the most important jobs (row 0), the full Task pad grid below.
+        big = QHBoxLayout(); big.setSpacing(6)
+        for text, tip, fn in (("▶ Play / Stop", "Play or stop the composition", meth("toggle_playback")),
+                              ("🎛 Live Player", "Perform, record, master", mod("live_player", "open_live_player", self)),
+                              ("⬇ Export", "The Export window", meth("export_window_dialog")),
+                              ("🎬 Clip Editor", "Multitrack clip / timeline editor", meth("_r32_open_clip_editor")),
+                              ("🧱 3D Studio", "3D video producer: several OBJs, wraps, stereo", mod("studio_3d", "open_window", self)),
+                              ("✦ Autopilot", "GOAVA Autopilot", mod("groovebox_runtime.command_center", "_open_autopilot", self))):
+            bb = QPushButton(text); bb.setToolTip(tip); bb.clicked.connect(fn)
+            bb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding); bb.setMinimumSize(48, 44)
+            bb.setStyleSheet("QPushButton{font-size:11pt;font-weight:900;background:#173246;border:1px solid #4aa3c8;"
+                             "border-radius:8px;} QPushButton:hover{background:#21455f;border-color:#9fe6ff;}")
+            big.addWidget(bb, 1)
+        grid.addLayout(big, 0, 0, 1, 12); grid.setRowStretch(0, 2)
+        for r, (title, items) in enumerate(rows, start=1):
+            lab = QLabel(title); lab.setStyleSheet("color:#8fb8cc;font-weight:900;")
+            grid.addWidget(lab, r, 0)
+            for c, (text, tip, fn) in enumerate(items):
+                b = QPushButton(text); b.setToolTip(tip); b.clicked.connect(fn)
+                b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)   # no label-width demand
+                b.setMinimumSize(36, 30)
+                grid.addWidget(b, r, 1 + c)
+            grid.setRowStretch(r, 1)
+        # live switches + session
+        sw = QHBoxLayout()
+        chk_party = QCheckBox("🎉 Party Mode"); chk_bg = QCheckBox("🖼 Window backgrounds")
+        try:
+            import compat_settings as _cs_tp
+            _st_tp = _cs_tp.load()
+            chk_party.setChecked(bool(_st_tp.get("party_mode", True))); chk_bg.setChecked(bool(_st_tp.get("math_background_enabled", True)))
+        except Exception:
+            chk_party.setChecked(True); chk_bg.setChecked(True)
+
+        def _party(on):
+            try:
+                import compat_settings as _c, party_overlay as _po
+                _c.update(party_mode=bool(on)); _po.refresh(self)
+            except Exception as exc:
+                self._task_pad_say("Party Mode: %s" % exc)
+
+        def _bg(on):
+            try:
+                import compat_settings as _c
+                _c.update(math_background_enabled=bool(on)); refresh_window_backgrounds(self)
+            except Exception as exc:
+                self._task_pad_say("backgrounds: %s" % exc)
+        chk_party.toggled.connect(_party); chk_bg.toggled.connect(_bg)
+        b_ss = QPushButton("💾 Save session"); b_ss.clicked.connect(mod("session_snapshot", "save", self))
+        b_rs = QPushButton("↺ Restore session"); b_rs.clicked.connect(lambda: self._task_pad_say(__import__("session_snapshot").restore(self)))
+        b_raw = QPushButton("💾 Save RAW")
+        b_raw.setToolTip("Save the current mixdown (live buffer) as a RAW Groovebox file at once — no encoding")
+
+        def _save_raw():
+            try:
+                pth = __import__("live_buffer").save_raw_now(self)
+                self._task_pad_say(("saved RAW " + pth) if pth else "rendering the live buffer first — press again in a moment")
+            except Exception as exc:
+                self._task_pad_say("Save RAW: %s" % exc)
+        b_raw.clicked.connect(_save_raw)
+        self._task_pad_status = QLabel(""); self._task_pad_status.setStyleSheet("color:#9fb4c8;")
+        self._task_pad_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        for w in (chk_party, chk_bg, b_ss, b_rs, b_raw):
+            sw.addWidget(w)
+        sw.addWidget(self._task_pad_status, 1)
+        grid.addLayout(sw, len(rows) + 1, 0, 1, 12)
+        try:
+            __import__("session_snapshot").install_autosave(self)
+        except Exception:
+            pass
+        QTimer.singleShot(0, lambda: __import__("power_clock").install(self))
+        QTimer.singleShot(0, lambda: __import__("project_transactions").install(self))   # checkpoints + unclean-exit recovery
+        QTimer.singleShot(0, lambda: __import__("resource_supervisor").install(self))     # CPU · RAM · threads · audio health
+        QTimer.singleShot(0, lambda: __import__("edit_glow").install(self))               # per-seq edit glow + hint   # 🔋 battery · 🕒 time in the status bar
+        self.task_pad = box
+        return box
+
+    def _perf_sync_playback(self):
+        try:
+            import performance_governor as _pg
+            (_pg.acquire if bool(getattr(self, "is_playing", False)) else _pg.release)("playback")
+        except Exception:
+            pass
+        if bool(getattr(self, "is_playing", False)) and not getattr(self, "_audio_only_mode", False):
+            try:                                  # bring the scenograph into view (every scroll area that holds it)
+                from PyQt6.QtWidgets import QScrollArea as _QSA
+                v = getattr(self, "video_synth_viewer", None)
+                w = v.parentWidget() if v is not None else None
+                while w is not None:
+                    if isinstance(w, _QSA):
+                        w.ensureWidgetVisible(v, 0, 0)
+                    w = w.parentWidget()
+            except Exception:
+                pass
+
+    def _task_pad_say(self, text):
+        lab = getattr(self, "_task_pad_status", None)
+        if lab is not None:
+            lab.setText(str(text)[:200])
+        print("[Task pad] %s" % text)
+
+    def _configure_entire_project_from_seed(self):
+        """Expand the one-shot Starter Patch Seed into the complete editable project."""
+        try:
+            self._push_undo("Configure Entire Project")        # one-step undo of the whole replacement
+        except Exception:
+            pass
+        starter_seed = str(getattr(self, "input_starter_patch_seed", None).text() if getattr(self, "input_starter_patch_seed", None) is not None else "").strip()
+        # The dedicated Superseed is also a valid whole-project constructor.
+        # An explicitly entered Starter Patch Seed takes precedence; otherwise
+        # fall back to Superseed while keeping the persistent Autopilot root intact.
+        seed = starter_seed or str(getattr(self, "input_superseed", None).text() if getattr(self, "input_superseed", None) is not None else "").strip()
+        seed_source = "Starter Patch Seed" if starter_seed else "Superseed"
+        if not seed:
+            QMessageBox.information(self, "Configure Entire Project", "Enter a Starter Patch Seed or Superseed first.")
+            return
+        try:
+            import starter_patch as _starter
+            try:
+                self._push_undo("Configure Entire Project · Starter Patch Seed")
+            except Exception:
+                pass
+            length = int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else 64
+            rows = int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else 64
+            patch = _starter.generate_project(
+                seed, list(getattr(self, "instrument_names_48", []) or []),
+                steps=length, playlist_rows=rows,
+                activate_random_canonicals=bool(getattr(self, "chk_starter_random_canonicals", None) and self.chk_starter_random_canonicals.isChecked()))
+            self._project_loading = True
+            try:
+                self.instrument_sequencer_memory = patch["instrument_sequencer_memory"]
+                self.instrument_sequence_banks = patch["instrument_sequence_banks"]
+                self.instrument_selected_sequence = patch["instrument_selected_sequence"]
+                _old_params = getattr(self, "instrument_param_state", {})
+                _old_params = _old_params if isinstance(_old_params, dict) else {}
+                self.instrument_param_state = {
+                    name: {**dict(_old_params.get(name, {}) or {}), **dict(generated)}
+                    for name, generated in patch["instrument_param_state"].items()
+                }
+                self.instrument_scripts = dict(patch.get("instrument_scripts", {}))
+                self.master_playlist_data = patch["master_playlist_data"]
+                self.playlist_automation = list(patch.get("playlist_automation", []))
+                self._starter_patch_provenance = dict(patch.get("project_metadata", {}))
+                try:
+                    self._apply_automation_patterns(patch["automation_patterns"])
+                except Exception:
+                    self.automation_patterns = patch["automation_patterns"]
+                self.global_algo_state = global_algo_fill_missing(getattr(self, "global_algo_state", {}))
+                if hasattr(self, "spin_bpm"):
+                    self.spin_bpm.setValue(int(patch["bpm"]))
+                if hasattr(self, "spin_seq_length"):
+                    self.spin_seq_length.setValue(int(patch["steps"]))
+                if hasattr(self, "spin_playlist_length"):
+                    self.spin_playlist_length.setValue(int(patch["playlist_rows"]))
+                # Keep the selected instrument's active edit buffer attached to its chosen bank.
+                _name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else self.instrument_names_48[0]
+                self.active_instrument_memory = self.instrument_sequencer_memory.get(_name, next(iter(self.instrument_sequencer_memory.values())))
+                # Replace only the Global Seed script with the Starter Patch Seed text.
+                self.input_seed_val.blockSignals(True)
+                self.input_seed_val.setPlainText(seed)
+                self.input_seed_val.blockSignals(False)
+                # Opt-in canonical activation is deterministic for this seed.
+                wanted = set(patch.get("canonical_engines_to_enable", []))
+                self._r32_restore_engine_buttons(wanted)
+                self.master_playlist_data = list(patch["master_playlist_data"])
+            finally:
+                self._project_loading = False
+            try:
+                self._push_restored_playlist_to_table()
+            except Exception:
+                pass
+            try:
+                self._on_live_source_changed()
+            except Exception:
+                pass
+            try:
+                self.reload_active_instrument_sequencer_ui()
+            except Exception:
+                pass
+            self.input_starter_patch_seed.clear()
+            if hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(f"∿ Complete starter project generated from {seed_source} · playlist, 4 sequence banks per instrument, parameters and provenance written")
+            self._refresh_status_frame()
+        except Exception as exc:
+            QMessageBox.warning(self, "Configure Entire Project", f"The Starter Patch Seed could not be applied:\n{exc}")
 
     def _run_audio_check(self):
         """GROOVEBOX_R23R_AUDIO_CHECK_20261101: tones through every path + report."""
@@ -39174,19 +40595,495 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             return 1.0
 
+    def _on_seed_reach_changed(self, value):
+        try:
+            self.seed_reach = float(np.clip(float(value), 0.0, 1.0))
+        except Exception:
+            self.seed_reach = 1.0
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
+
+    def _on_seed_divergence_menu_changed(self, value):
+        try:
+            self.seed_divergence = float(np.clip(float(value), 0.0, 1.0))
+            self._r32_divergence_user = True
+        except Exception:
+            self.seed_divergence = 0.5
+        # Quick Rack and Seed controls are mirrors, not independent authorities.
+        other = getattr(self, "spin_seed_divergence", None)
+        if other is not None and other is not getattr(self, "spin_seed_divergence_menu", None):
+            try:
+                other.blockSignals(True); other.setValue(self.seed_divergence); other.blockSignals(False)
+            except Exception: pass
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
+
+    def _on_seed_divergence_quickrack_changed(self, value):
+        self._on_seed_divergence_menu_changed(value)
+        own = getattr(self, "spin_seed_divergence_menu", None)
+        if own is not None:
+            try: own.blockSignals(True); own.setValue(float(value)); own.blockSignals(False)
+            except Exception: pass
+
+    def _refresh_tuning_provenance_badges(self):
+        """Update read-only source badges for global, instrument and selected-step tuning."""
+        try:
+            import parameter_provenance_ui as _pui
+            import tuning_inheritance as _ti
+            name = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else ""
+            slot = max(0, int(self.instrument_names_48.index(name))) if name in (getattr(self, "instrument_names_48", []) or []) else 0
+            params, _seed = self._md_params(name, slot)
+            layers = params.get("_tuning_layers", {}) if isinstance(params, dict) else {}
+            _global_layer = layers.get("global", {})
+            _global_data = {
+                "system": {"seed": (layers.get("seed_global") or {}).get("system"),
+                           "canonical": (layers.get("canonical_global") or {}).get("system"),
+                           "user": (layers.get("user_global") or {}).get("system"),
+                           "effective": _global_layer.get("system"),
+                           "has_seed": "system" in (layers.get("seed_global") or {}),
+                           "has_canonical": "system" in (layers.get("canonical_global") or {}),
+                           "has_user": "system" in (layers.get("user_global") or {})},
+            }
+            for _key, _widget in (("system", getattr(self, "combo_global_tuning_system", None)),
+                                  ("detune", getattr(self, "spin_global_detune_cents", None)),
+                                  ("stretch", getattr(self, "spin_global_stretch", None))):
+                _pui.attach(_widget, _global_data.get(_key) or {
+                    "seed": (layers.get("seed_global") or {}).get(_key),
+                    "canonical": (layers.get("canonical_global") or {}).get(_key),
+                    "user": (layers.get("user_global") or {}).get(_key),
+                    "effective": _global_layer.get(_key),
+                    "has_seed": _key in (layers.get("seed_global") or {}),
+                    "has_canonical": _key in (layers.get("canonical_global") or {}),
+                    "has_user": _key in (layers.get("user_global") or {})})
+            mem = self._current_sequence_mem(name) if name else {}
+            idx = getattr(self, "selected_step_idx", None)
+            _step_user = _ti.step_tuning(mem, idx) if idx is not None else {}
+            _step_seed = self._canonical_tuning_layer(name, slot, int(idx), engines=()) if idx is not None else {}
+            _eng = tuple(self._md_engines())
+            _step_canon = self._canonical_tuning_layer(name, slot, int(idx), engines=_eng) if idx is not None and _eng else {}
+            _base_global = layers.get("global", {})
+            _base_inst = layers.get("instrument", {})
+            _step_effective = _ti.resolve_tuning(_base_global, _base_inst, _ti.merge_tuning_layer(
+                _step_user, _step_canon, getattr(self, "canonical_ownership_policy", None), seed_layer=_step_seed))
+            for _key, _widget in (("system", getattr(self, "combo_step_tuning_system", None)),
+                                  ("detune", getattr(self, "spin_step_detune_cents", None)),
+                                  ("stretch", getattr(self, "spin_step_stretch", None))):
+                _pui.attach(_widget, {
+                    "seed": _step_seed.get(_key), "canonical": _step_canon.get(_key),
+                    "user": _step_user.get(_key), "step": _step_user.get(_key),
+                    "effective": _step_effective.get(_key),
+                    "has_seed": _key in _step_seed, "has_canonical": _key in _step_canon,
+                    "has_user": _key in _step_user, "has_step": _key in _step_user})
+        except Exception:
+            pass
+
+    def _on_global_tuning_changed(self, *_args):
+        _previous_tuning = dict(getattr(self, "global_tuning", {}) or {})
+        try:
+            self.global_tuning = {
+                "system": str(self.combo_global_tuning_system.currentText()).strip().lower(),
+                "detune": float(self.spin_global_detune_cents.value()),
+                "stretch": float(self.spin_global_stretch.value()),
+            }
+            _touched = set(getattr(self, "_global_tuning_touched", set()) or set())
+            for _key, _value in self.global_tuning.items():
+                _old_value = _previous_tuning.get(_key)
+                if _old_value != _value:
+                    _touched.add(_key)
+            self._global_tuning_touched = _touched
+            import tuning_inheritance as _ti
+            self.global_tuning = _ti.sanitize_layer(self.global_tuning)
+        except Exception:
+            self.global_tuning = {"system": "equal", "detune": 0.0, "stretch": 0.0}
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
+        try: self._refresh_canonical_data_inspector()
+        except Exception: pass
+        try: self._refresh_tuning_provenance_badges()
+        except Exception: pass
+
+    def _open_instrument_tuning_dialog(self):
+        """Edit the selected instrument's local tuning overrides; empty fields inherit."""
+        name = str(self.instrument_selector_dropdown.currentText()) if hasattr(self, "instrument_selector_dropdown") else ""
+        import tuning_inheritance as _ti
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QComboBox, QDoubleSpinBox, QDialogButtonBox
+        state = ((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {}).get("tuning", {})
+        state = _ti.sanitize_layer(state)
+        dlg = QDialog(self); dlg.setWindowTitle(f"Instrument Tuning · {name}"); dlg.setMinimumWidth(360)
+        lay = QVBoxLayout(dlg); form = QFormLayout(); lay.addLayout(form)
+        system = QComboBox(); system.addItems(["inherit", *_ti.SYSTEMS]); system.setCurrentText(state.get("system", "inherit"))
+        detune = QDoubleSpinBox(); detune.setRange(-1201.0, 1200.0); detune.setDecimals(2); detune.setSpecialValueText("inherit"); detune.setValue(float(state.get("detune", -1201.0)))
+        stretch = QDoubleSpinBox(); stretch.setRange(-100.01, 100.0); stretch.setDecimals(2); stretch.setSpecialValueText("inherit"); stretch.setValue(float(state.get("stretch", -100.01)))
+        form.addRow("Temperament", system); form.addRow("Detune (cents)", detune); form.addRow("Stretch (cents/octave)", stretch)
+        form.addRow("Inherited global", QLabel(str(getattr(self, "global_tuning", {}))))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept); buttons.rejected.connect(dlg.reject); lay.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = {}
+        if system.currentText() != "inherit": values["system"] = system.currentText()
+        if detune.value() > -1200.5: values["detune"] = detune.value()
+        if stretch.value() > -100.005: values["stretch"] = stretch.value()
+        self._push_undo(f"Instrument tuning · {name}")
+        self.instrument_param_state.setdefault(name, {})["tuning"] = values
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
+        self._refresh_canonical_data_inspector()
+
+    def _on_step_phase_propagation_changed(self, value):
+        idx = getattr(self, "selected_step_idx", None)
+        if idx is None: return
+        try:
+            name = self.instrument_selector_dropdown.currentText()
+            mem = self._current_sequence_mem(name)
+            import sequencer_schema as _ss
+            mem = _ss.normalize_sequence_memory(mem)
+            self.instrument_sequencer_memory[name] = mem
+            mem["step_controls"]["phase_propagation"][int(idx)] = (
+                "longitudinal" if str(value).lower() == "longitudinal" else "retrigger")
+            self._push_undo("Step phase propagation")
+            self._canonical_write_sequence_runtime(name, self._current_sequence_index(name))
+            self._on_live_source_changed()
+        except Exception as exc:
+            print(f"[Step Tuning] phase propagation skipped: {exc}")
+
+    def _step_automation_math_config(self, mem, idx):
+        """Return sanitized mathematical mapping data for one sequence step."""
+        raw = (mem.get("automation_math", {}) or {}).get(str(max(0, int(idx))), {})
+        if not isinstance(raw, dict):
+            raw = {}
+        modes = ("linear", "quadratic", "cubic", "exponential", "polynomial",
+                 "sqrt", "log", "power", "x^x", "smoothstep", "sine", "inverse")
+        mode = str(raw.get("mode", "linear") or "linear").lower()
+        if mode not in modes:
+            mode = "linear"
+        try:
+            exponent = float(raw.get("exponent", 2.0))
+            if not math.isfinite(exponent): exponent = 2.0
+        except Exception:
+            exponent = 2.0
+        exponent = float(np.clip(exponent, 0.05, 16.0))
+        coeffs = raw.get("coefficients", [0.0, 1.0, 0.0])
+        if not isinstance(coeffs, (list, tuple)):
+            coeffs = [0.0, 1.0, 0.0]
+        clean = []
+        for _i in range(3):
+            try:
+                _v = float(coeffs[_i]) if _i < len(coeffs) else (1.0 if _i == 1 else 0.0)
+                if not math.isfinite(_v): _v = 1.0 if _i == 1 else 0.0
+            except Exception:
+                _v = 1.0 if _i == 1 else 0.0
+            clean.append(float(np.clip(_v, -8.0, 8.0)))
+        return {"mode": mode, "exponent": exponent, "coefficients": clean}
+
+    def _refresh_step_automation_math_ui(self):
+        """Show the selected step's mathematical mapping without writing project data."""
+        idx = getattr(self, "selected_step_idx", None)
+        if idx is None:
+            return
+        try:
+            name = str(self.instrument_selector_dropdown.currentText())
+            mem = self._current_sequence_mem(name)
+            cfg = self._step_automation_math_config(mem, idx)
+            widgets = (getattr(self, "combo_step_automation_shape", None),
+                       getattr(self, "spin_step_automation_exponent", None),
+                       getattr(self, "spin_step_automation_poly0", None),
+                       getattr(self, "spin_step_automation_poly1", None),
+                       getattr(self, "spin_step_automation_poly2", None))
+            for _w in widgets:
+                if _w is not None: _w.blockSignals(True)
+            if widgets[0] is not None: widgets[0].setCurrentText(cfg["mode"])
+            if widgets[1] is not None: widgets[1].setValue(cfg["exponent"])
+            for _w, _v in zip(widgets[2:], cfg["coefficients"]):
+                if _w is not None: _w.setValue(_v)
+            for _w in widgets:
+                if _w is not None: _w.blockSignals(False)
+            self._update_step_automation_math_visibility()
+        except Exception:
+            for _name in ("combo_step_automation_shape", "spin_step_automation_exponent",
+                          "spin_step_automation_poly0", "spin_step_automation_poly1", "spin_step_automation_poly2"):
+                _w = getattr(self, _name, None)
+                try: _w.blockSignals(False)
+                except Exception: pass
+
+    def _update_step_automation_math_visibility(self, *_args):
+        mode = str(getattr(self, "combo_step_automation_shape", None).currentText()
+                   if getattr(self, "combo_step_automation_shape", None) is not None else "linear")
+        power = mode == "power"
+        polynomial = mode == "polynomial"
+        w = getattr(self, "spin_step_automation_exponent", None)
+        if w is not None:
+            w.setVisible(power)
+        for _name in ("spin_step_automation_poly0", "spin_step_automation_poly1", "spin_step_automation_poly2"):
+            _w = getattr(self, _name, None)
+            if _w is not None: _w.setVisible(polynomial)
+
+    def _on_step_automation_math_changed(self, *_args):
+        idx = getattr(self, "selected_step_idx", None)
+        if idx is None:
+            return
+        try:
+            name = str(self.instrument_selector_dropdown.currentText())
+            mem = self._current_sequence_mem(name)
+            cfg = {
+                "mode": str(self.combo_step_automation_shape.currentText() or "linear"),
+                "exponent": float(self.spin_step_automation_exponent.value()),
+                "coefficients": [float(self.spin_step_automation_poly0.value()),
+                                 float(self.spin_step_automation_poly1.value()),
+                                 float(self.spin_step_automation_poly2.value())],
+                "owner": "user",
+            }
+            # A linear identity mapping is the neutral default; remove it rather
+            # than accumulating redundant per-step metadata in project files.
+            if cfg["mode"] == "linear" and abs(cfg["exponent"] - 2.0) < 1e-9 and cfg["coefficients"] == [0.0, 1.0, 0.0]:
+                (mem.get("automation_math", {}) or {}).pop(str(int(idx)), None)
+            else:
+                mem.setdefault("automation_math", {})[str(int(idx))] = cfg
+            self._update_step_automation_math_visibility()
+            try: self._push_undo("Step automation mapping")
+            except Exception: pass
+            try: self._canonical_write_sequence_runtime(name, self._current_sequence_index(name))
+            except Exception: pass
+            try: self._refresh_canonical_fingerprint()
+            except Exception: pass
+            try: self._on_live_source_changed()
+            except Exception: pass
+        except Exception as exc:
+            print(f"[Step Automation Map] update skipped: {exc}")
+
+    def _on_step_tuning_changed(self, *_args):
+        idx = getattr(self, "selected_step_idx", None)
+        if idx is None: return
+        try:
+            import tuning_inheritance as _ti
+            name = self.instrument_selector_dropdown.currentText()
+            mem = self._current_sequence_mem(name)
+            values = dict(_ti.step_tuning(mem, idx))
+            system = str(self.combo_step_tuning_system.currentText())
+            if system == "inherit": values.pop("system", None)
+            else: values["system"] = system
+            detune = float(self.spin_step_detune_cents.value())
+            stretch = float(self.spin_step_stretch.value())
+            if detune <= -1200.5: values.pop("detune", None)
+            else: values["detune"] = detune
+            if stretch <= -100.005: values.pop("stretch", None)
+            else: values["stretch"] = stretch
+            self._push_undo("Step tuning")
+            _ti.set_step_tuning(mem, idx, values)
+            self._canonical_write_sequence_runtime(name, self._current_sequence_index(name))
+            self._refresh_canonical_fingerprint(); self._on_live_source_changed()
+            self._refresh_tuning_provenance_badges()
+        except Exception as exc:
+            print(f"[Step Tuning] update skipped: {exc}")
+
+    def _on_speak_as_changed(self, value):
+        value = str(value or "music").strip().lower()
+        self.speak_as = value if value in ("music", "video", "game") else "music"
+        if hasattr(self, "lbl_speak_as_status"):
+            self.lbl_speak_as_status.setText(self.speak_as)
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+
+    def _selected_sequence_context(self):
+        name = self.instrument_selector_dropdown.currentText()
+        seq = int(self._current_sequence_index(name))
+        mem = self._current_sequence_mem(name)
+        return name, seq, mem
+
+    def _sequence_action_finish(self, label):
+        try: self._canonical_write_sequence_runtime(*self._selected_sequence_context()[:2])
+        except Exception: pass
+        try: self._refresh_sequence_dependent_panels()
+        except Exception: pass
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+        try: self._on_live_source_changed()
+        except Exception: pass
+        self._refresh_canonical_data_inspector()
+
+    def _clear_selected_sequence(self):
+        name, seq, mem = self._selected_sequence_context()
+        self._push_undo(f"Clear sequence {seq}")
+        n = int(mem.get("pattern_length", len(mem.get("steps", [])) or 16))
+        mem["steps"] = [False] * n
+        mem["gates"] = [False] * n
+        mem["amplitudes"] = [0.0] * n
+        # Keep pitches, automation, tuning, phase modes and FX lanes intact.
+        mem["user_owned"] = True
+        mem["user_touched_steps"] = [True] * n
+        self._sequence_action_finish("clear sequence")
+
+    def _clear_selected_sequence_automation(self):
+        name, seq, mem = self._selected_sequence_context()
+        self._push_undo(f"Clear sequence {seq} automation")
+        for key in ("automation", "automation_lane", "automation_lane_points", "automation_points", "automation_patterns"):
+            mem.pop(key, None)
+        mem["automation_cleared_by_user"] = True
+        points = getattr(self, "sequencer_automation_points", []) or []
+        self.sequencer_automation_points = [p for p in points if not (
+            isinstance(p, dict)
+            and str(p.get("from_instrument") or p.get("instrument") or "") == str(name)
+            and int(p.get("from_sequence", 1) or 1) == int(seq))]
+        self._sequence_action_finish("clear automation")
+
+    def _randomize_selected_sequence(self):
+        name, seq, mem = self._selected_sequence_context()
+        self._push_undo(f"Randomize sequence {seq}")
+        n = max(1, min(512, int(mem.get("pattern_length", len(mem.get("steps", [])) or 16))))
+        seed = f"{self.get_numeric_seed()}|{name}|{seq}|sequence-pattern"
+        digest = hashlib.sha256(seed.encode("utf-8", "replace")).digest()
+        steps, amps, pitches, probabilities, offsets = [], [], [], [], []
+        for i in range(n):
+            block = hashlib.sha256(digest + int(i).to_bytes(4, "little")).digest()
+            a, b, c, d = [int.from_bytes(block[j:j+4], "little") / 2**32 for j in (0, 4, 8, 12)]
+            steps.append(a < 0.56)
+            amps.append(round(0.45 + b * 0.55, 4))
+            pitches.append(round(0.75 + c * 0.5, 4))
+            probabilities.append(int(round(70 + d * 30)))
+            offsets.append(round((b - 0.5) * 0.16, 4))
+        mem.update({"steps": steps, "gates": list(steps), "amplitudes": amps,
+                    "pitches": pitches, "probabilities": probabilities, "offsets": offsets,
+                    "pattern_length": n, "user_owned": True,
+                    "user_touched_steps": [True] * n})
+        self._sequence_action_finish("randomize sequence")
+
+    def _randomize_selected_sequence_automation(self):
+        name, seq, mem = self._selected_sequence_context()
+        self._push_undo(f"Randomize sequence {seq} automation")
+        n = max(1, min(512, int(mem.get("pattern_length", len(mem.get("steps", [])) or 16))))
+        seed = f"{self.get_numeric_seed()}|{name}|{seq}|automation"
+        digest = hashlib.sha256(seed.encode("utf-8", "replace")).digest()
+        values = []
+        for i in range(n):
+            block = hashlib.sha256(digest + int(i).to_bytes(4, "little")).digest()
+            values.append(round(100.0 * int.from_bytes(block[:4], "little") / 2**32, 3))
+        mem["automation_lane"] = {"value": values}
+        mem["automation_lane_points"] = [
+            {"step": i + 1, "parameter": "value", "value": values[i], "user_owned": True}
+            for i in range(n)]
+        mem.pop("automation_cleared_by_user", None)
+        self._sequence_action_finish("randomize automation")
+
+    def _canonical_tuning_layer(self, name, slot, step=None, engines=None):
+        """Deterministic seed tuning proposal, optionally modulated by engines."""
+        if engines is None:
+            engines = tuple(sorted(self._md_engines())) if hasattr(self, "_md_engines") else ()
+        else:
+            engines = tuple(sorted(str(e).lower() for e in (engines or ())))
+        seed = str(_safe_int_seed(self.get_numeric_seed())) + "|" + str(name) + "|" + str(slot) + "|" + str(step) + "|" + ",".join(engines)
+        digest = hashlib.sha256(seed.encode("utf-8", "replace")).digest()
+        systems = ("equal", "just", "pythagorean", "meantone", "meum")
+        system = systems[digest[0] % len(systems)]
+        detune = (int.from_bytes(digest[1:3], "little") / 65535.0 - 0.5) * 8.0
+        stretch = (int.from_bytes(digest[3:5], "little") / 65535.0 - 0.5) * 3.0
+        if engines:
+            # Active engines apply a deterministic, small identity-specific offset.
+            _eng_digest = hashlib.sha256((seed + "|engine-tuning").encode("utf-8", "replace")).digest()
+            detune += (int.from_bytes(_eng_digest[0:2], "little") / 65535.0 - 0.5) * 12.0
+            stretch += (int.from_bytes(_eng_digest[2:4], "little") / 65535.0 - 0.5) * 4.0
+            if "goava" in engines: system = "meum"
+            elif "euclidean" in engines or "euclid" in engines: system = "just"
+        return {"system": system, "detune": detune, "stretch": stretch}
+
+    def _refresh_canonical_data_inspector(self, *_args):
+        view = getattr(self, "txt_canonical_data_inspector", None)
+        if view is None: return
+        sections = []
+        try:
+            name, seq, mem = self._selected_sequence_context()
+        except Exception:
+            name, seq, mem = "", 1, {}
+        if bool(getattr(self, "chk_show_userdata", None) and self.chk_show_userdata.isChecked()):
+            user = copy.deepcopy((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {})
+            steps = [i + 1 for i, on in enumerate(mem.get("steps", []) or []) if on]
+            sections.append("USERDATA · %s · SEQ %s\n%s\nactive steps=%s" % (
+                name, seq, json.dumps(user, sort_keys=True, default=str)[:1500], steps[:48]))
+        if bool(getattr(self, "chk_show_canonical_write_data", None) and self.chk_show_canonical_write_data.isChecked()):
+            try:
+                _params, _seed = self._md_params(name, max(0, int(self.instrument_names_48.index(name))))
+                payload = {k: _params.get(k) for k in ("_owner", "_engines", "_seed_reach", "_seed_divergence", "preset", "ca_rule", "rot_hz", "restitution", "gravity", "tuning", "_tuning_layers", "_provenance", "_convolution") if k in _params}
+            except Exception as exc:
+                payload = {"status": "canonical snapshot unavailable", "reason": str(exc)}
+            sections.append("CANONICAL WRITE DATA · %s · SEQ %s\n%s" % (name, seq, json.dumps(payload, sort_keys=True, default=str)[:1500]))
+        try:
+            _tn = self._refresh_tuning_provenance_badges
+            _tn()
+            _prov_tune = (getattr(self, "_parameter_provenance_snapshot", {}) or {}).get(name, {}).get("tuning")
+            if _prov_tune:
+                sections.append("TUNING PROVENANCE · global → instrument → selected step\n" + json.dumps(_prov_tune, sort_keys=True, default=str)[:1800])
+        except Exception:
+            pass
+        view.setPlainText("\n\n".join(sections) if sections else "Inspector hidden. Enable one or both data views above.")
+
     def _md_params(self, name, slot):
         import multidim_synth as _md
         try:
             seed_int = int(_safe_int_seed(self.get_numeric_seed()))
         except Exception:
             seed_int = 0
-        engines = self._md_engines()
-        canon = _md.canonical_params(seed_int, int(slot), engines, *self._md_convolution())
+        engines = tuple(self._md_engines())
+        try:
+            _reach = float(np.clip(float(getattr(self, "seed_reach", 1.0)), 0.0, 1.0))
+        except Exception:
+            _reach = 1.0
+        _named = getattr(self, "seed_named_overrides", {})
+        if not isinstance(_named, dict): _named = {}
+        try:
+            import seed_divergence as _sdv
+            _divergence = float(_sdv.amount_from(self))
+        except Exception:
+            _divergence = 0.0
+        _density, _convolve = self._md_convolution()
+        # Seed Baseline is the first deterministic layer. Canonical engines are
+        # applied afterwards; they never replace/disable this generation stage.
+        _seed_base = _md.canonical_params(seed_int, int(slot), (), _density, _convolve,
+                                         seed_reach=_reach, named_overrides=_named,
+                                         divergence=_divergence)
+        canon = _md.canonical_params(seed_int, int(slot), engines, _density, _convolve,
+                                     seed_reach=_reach, named_overrides=_named,
+                                     divergence=_divergence)
         user = ((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {}).get("multidim")
+        _policy = getattr(self, "canonical_ownership_policy", None)
         params = _md.merge_params(canon, user if isinstance(user, dict) else None,
-                                  canonical_active=bool(engines), canon_share=self._md_canon_share())
-        # Snapshot the canonical-moderated global XMOD controls into the render
-        # packet. DSP workers never read host widgets or mutable main-window state.
+                                  canonical_active=bool(engines), canon_share=self._md_canon_share(),
+                                  ownership_policy=_policy, seed_baseline=_seed_base)
+        # Tuning layers are merged independently at global, instrument and step
+        # scopes. Defaults not explicitly touched are not misreported as userdata.
+        try:
+            import tuning_inheritance as _ti
+            _global_raw = dict(getattr(self, "global_tuning", {}) or {})
+            _global_touched = set(getattr(self, "_global_tuning_touched", set()) or set())
+            _global_user = {k: v for k, v in _global_raw.items()
+                            if k in _global_touched or v != {"system": "equal", "detune": 0.0, "stretch": 0.0}.get(k)}
+            _inst_user = ((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {}).get("tuning", {})
+            _global_seed = self._canonical_tuning_layer(name, slot, None, engines=())
+            _inst_seed = self._canonical_tuning_layer(name, slot, "instrument", engines=())
+            _global_canon = self._canonical_tuning_layer(name, slot, None, engines=engines) if engines else {}
+            _inst_canon = self._canonical_tuning_layer(name, slot, "instrument", engines=engines) if engines else {}
+            _global_layer = _ti.merge_tuning_layer(_global_user, _global_canon, _policy, seed_layer=_global_seed)
+            _inst_layer = _ti.merge_tuning_layer(_inst_user, _inst_canon, _policy, seed_layer=_inst_seed)
+            params["tuning"] = _ti.resolve_tuning(_global_layer, _inst_layer)
+            params["_tuning_layers"] = {"global": _global_layer, "instrument": _inst_layer,
+                                       "seed_global": _global_seed, "seed_instrument": _inst_seed,
+                                       "canonical_global": _global_canon, "canonical_instrument": _inst_canon,
+                                       "user_global": _global_user, "user_instrument": _ti.sanitize_layer(_inst_user)}
+        except Exception:
+            params["tuning"] = dict(getattr(self, "global_tuning", {}) or {})
+            params["_tuning_layers"] = {}
+        # Read-only, per-instrument snapshot used by the contribution overlay.
+        try:
+            self._parameter_provenance_snapshot[str(name)] = copy.deepcopy(params.get("_provenance", {}))
+        except Exception:
+            pass
+        # DSP workers receive frozen values and never inspect Qt widgets.
         try:
             params["global_mod_state"] = dict(self._effective_mod_state())
         except Exception:
@@ -39580,11 +41477,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if btn is not None:
             base = self.__dict__.setdefault("_per_seq_btn_base_style", btn.styleSheet())
             if per_seq:
-                btn.setText(f"Edit Synth\nPer Seq\nSEQ #{n}")
-                btn.setStyleSheet(base + f"QPushButton {{ border:3px solid {col}; color:{col}; background:#151820; font-weight:900; }}")
+                _gb_set_text_ss(btn, "EDIT SYNTH\nPER SEQ\nON", base + f"QPushButton {{ border:3px solid {col}; color:{col}; background:#151820; font-weight:1000; }}")
             else:
-                btn.setText("Edit Synth\nPer Seq\nOFF")
-                btn.setStyleSheet(base)
+                _gb_set_text_ss(btn, "EDIT SYNTH\nPER SEQ\nOFF", base + " QPushButton { color:#f4f7fb; border:2px solid #d8e2ec; background:#202a36; font-weight:1000; }")
         styles = self.__dict__.setdefault("_per_seq_base_styles", {})
         for b in [getattr(self, a, None) for a in ("btn_edit_synth", "btn_script_inst", "btn_view_patchbay", "btn_domain_eq")] + self._geo_groups():
             if b is None:
@@ -39594,10 +41489,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 styles[key] = b.styleSheet()
             if per_seq:
                 sel = "QGroupBox" if isinstance(b, QGroupBox) else "QPushButton"
-                b.setStyleSheet(styles[key] + f" {sel} {{ border:2px solid {col}; }}")
+                _gb_set_text_ss(b, None, styles[key] + f" {sel} {{ border:2px solid {col}; }}")
             else:
-                b.setStyleSheet(styles[key])
-        disp = str((getattr(self, "instrument_display_names", {}) or {}).get(name) or name)
+                _gb_set_text_ss(b, None, styles[key])
+        disp = self.instrument_label(name)
         for attr in ("synth_editor_window", "script_editor_window", "patch_bay_dialog", "_domain_eq_dialog_ref"):
             win = getattr(self, attr, None)
             if win is None:
@@ -39612,11 +41507,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if per_seq:
                         banner.setText(f"PER-SEQ SYNTH SETTING · {disp} · stored in SEQUENCE #{n} · "
                                        f"blends 50/50 with the main synth (Automation Morph moves it)")
-                        banner.setStyleSheet(f"background:{col}; color:#0b0d12; font-weight:900; padding:4px; border-radius:4px;")
+                        _gb_set_text_ss(banner, None, f"background:{col}; color:#0b0d12; font-weight:900; padding:4px; border-radius:4px;")
                     else:
                         banner.setText(f"MAIN SYNTH SETTING · {disp} · stored in the instrument's master panel "
                                        f"(turn on Edit Synth Per Seq to edit a sequence's own setting)")
-                        banner.setStyleSheet("background:#2b3446; color:#e8eefc; font-weight:900; padding:4px; border-radius:4px;")
+                        _gb_set_text_ss(banner, None, "background:#2b3446; color:#e8eefc; font-weight:900; padding:4px; border-radius:4px;")
                     banner.show()
                 t = win.windowTitle().split(" · SEQ #")[0].split(" · MAIN")[0]
                 win.setWindowTitle(f"{t} · SEQ #{n}" if per_seq else f"{t} · MAIN")
@@ -39629,8 +41524,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_edit_panels_per_sequence_toggled(self, checked):
         """Switch live panel editors between master and sequence-local storage."""
+        # PER-SEQ FULL STATE: Edit Synth Per Seq also stores every FX / EQ / Mod Osc / mixer / geometric-panel /
+        # synth-engine value edited while it is on as LOCAL state of the selected sequence (perseq_vars), morphed in
+        # at render by each playlist row's Per-Seq Vote — the same store as the blue Edit Per-Sequence / Global button.
         try:
-            self.btn_edit_panels_per_sequence.setText("Edit Synth\nPer Seq\nON" if checked else "Edit Synth\nPer Seq\nOFF")
+            import perseq_vars as _psv
+            _on = bool(self.btn_edit_panels_per_sequence.isChecked())
+            if bool(_psv.state(self).get("edit")) != _on:
+                _psv.set_edit(self, _on)
+        except Exception as _psv_exc:
+            print(f"[PerSeq] panel state capture unavailable: {_psv_exc}")
+        try:
+            self.btn_edit_panels_per_sequence.setText("EDIT SYNTH\nPER SEQ\nON" if checked else "EDIT SYNTH\nPER SEQ\nOFF")
             name = self._current_instrument_name()
             if checked:
                 # Leaving master mode: snapshot current live panels into the
@@ -39793,6 +41698,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for name in names:
             bank=(getattr(self,"instrument_sequence_banks",{}) or {}).setdefault(name,{})
             ids=sorted(int(k) for k in bank if str(k).isdigit()) or [1]
+            # R33: everything below that depends only on the instrument is built once, not per sequence
+            # (deep copies of params / domains / patch / master panel were repeated ×sequences: ~3 s UI stall).
+            state = getattr(self, "instrument_param_state", {}) or {}
+            raw_params = state.get(name, {}) if isinstance(state, dict) else {}
+            params0 = dict(raw_params) if isinstance(raw_params, dict) else {}
+            generated = getattr(self, "instrument_param_generated", {}) or {}
+            raw_gen = generated.get(name, {}) if isinstance(generated, dict) else {}
+            if isinstance(raw_gen, dict):
+                for k, v in raw_gen.items():
+                    params0.setdefault(k, v)
+            engine=getattr(self,"domain_eq_engine",None)
+            domains0=[d for d in (engine.domains or []) if isinstance(d,dict) and (name[:6].lower() in str(d.get("name","")).lower() or str(d.get("source",""))==source)][:4] if engine is not None else []
+            patch0=[c for c in (getattr(self,"patch_connections",[]) or []) if isinstance(c,dict) and (c.get("source")==name or c.get("target")==name)][:6]
+            script0=str((getattr(self,"instrument_scripts",{}) or {}).get(name,"") or "")
+            try:
+                master0 = copy.deepcopy(state.get(name, {}) or {}) if isinstance(state, dict) else {}
+                if not isinstance(master0, dict):
+                    master0 = {}
+                if isinstance(raw_gen, dict):
+                    for _k, _v in raw_gen.items():
+                        master0.setdefault(_k, _v)
+            except Exception:
+                master0 = {}
             for sid in ids:
                 mem=bank.setdefault(sid,{})
                 locked = self._sequence_is_user_locked(mem) if hasattr(self, "_sequence_is_user_locked") else bool(mem.get("user_owned"))
@@ -39800,26 +41728,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 panels.setdefault("blend", 0.5)
                 ec=panels.setdefault("engine_contributions",{})
                 if not isinstance(ec,dict): ec=panels["engine_contributions"]={}
-                state = getattr(self, "instrument_param_state", {}) or {}
-                raw_params = state.get(name, {}) if isinstance(state, dict) else {}
-
-                params = dict(raw_params) if isinstance(raw_params, dict) else {}
-
-                generated = getattr(
-                    self, "instrument_param_generated", {}
-                ) or {}
-
-                raw_gen = generated.get(name, {}) if isinstance(generated, dict) else {}
-
-                if isinstance(raw_gen, dict):
-                    for k, v in raw_gen.items():
-                        params.setdefault(k, v)
-                gen=dict((getattr(self,"instrument_param_generated",{}) or {}).get(name,{}) or {})
-                for k,v in gen.items(): params.setdefault(k,v)
-                engine=getattr(self,"domain_eq_engine",None)
-                domains=[copy.deepcopy(d) for d in (engine.domains or []) if isinstance(d,dict) and (name[:6].lower() in str(d.get("name","")).lower() or str(d.get("source",""))==source)][:4] if engine is not None else []
-                patch=[copy.deepcopy(c) for c in (getattr(self,"patch_connections",[]) or []) if isinstance(c,dict) and (c.get("source")==name or c.get("target")==name)][:6]
-                ec[str(source)]={"synth":copy.deepcopy(params),"script":str((getattr(self,"instrument_scripts",{}) or {}).get(name,"") or ""),"domain":{"domains":domains,"source":str(source)},"patch":patch}
+                params=params0
+                ec[str(source)]={"synth":copy.deepcopy(params0),"script":script0,"domain":{"domains":copy.deepcopy(domains0),"source":str(source)},"patch":copy.deepcopy(patch0)}
                 merged_synth={}; merged_script=""; merged_domains=[]; merged_patch=[]; sources=[]
                 for src in sorted(ec):
                     cp=ec[src] or {}
@@ -39836,23 +41746,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # both identities. Locked user sequences keep more of their own
                 # prior panel synth (0.35 engine); free sequences take a stronger
                 # engine contribution (0.55) still mixed with master defaults.
-                master_live = {}
-                try:
-                    master_live = copy.deepcopy(
-                        (getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {}
-                    )
-                except Exception:
-                    master_live = {}
-                if not isinstance(master_live, dict):
-                    master_live = {}
-                # Seed master with generated defaults so empty panels still have shape
-                try:
-                    gen = (getattr(self, "instrument_param_generated", {}) or {}).get(name, {}) or {}
-                    if isinstance(gen, dict):
-                        for _k, _v in gen.items():
-                            master_live.setdefault(_k, _v)
-                except Exception:
-                    pass
+                master_live = copy.deepcopy(master0)
                 if locked and panels.get("synth"):
                     # User-locked: keep prior sequence panel, light engine + master
                     base = self._blend_param_dicts(panels.get("synth") or {}, master_live, 0.25) if hasattr(self, "_blend_param_dicts") else dict(panels.get("synth") or {})
@@ -39865,18 +41759,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         merged_synth = {**master_live, **merged_synth}
                 # Script / domain / patch: keep master defaults when engine left them empty
                 if not merged_script:
-                    merged_script = str((getattr(self, "instrument_scripts", {}) or {}).get(name, "") or "")
+                    merged_script = script0
                 if not merged_domains and master_live:
                     # leave domains as engine-provided list (may be empty)
                     pass
                 if not merged_patch:
-                    try:
-                        merged_patch = [
-                            copy.deepcopy(c) for c in (getattr(self, "patch_connections", []) or [])
-                            if isinstance(c, dict) and (c.get("source") == name or c.get("target") == name)
-                        ][:6]
-                    except Exception:
-                        pass
+                    merged_patch = copy.deepcopy(patch0)
                 panels.update({
                     "synth": merged_synth,
                     "script": merged_script if not (locked and panels.get("script")) else panels.get("script"),
@@ -40187,9 +42075,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             strength = 0.50 + 0.10 * min(active, 5)
         else:
             strength = max(0.50, self._canonical_coverage_score())
-        # Missing canonical lanes are filled in a canonical-owned structure. They never
-        # reduce authority and never rewrite a user-owned program slot.
-        if strategy != "Seeded Baseline" and self._canonical_missing_lanes():
+        # Missing canonical lanes are filled in a canonical-owned structure. The
+        # Seeded Baseline strategy is a 50% fallback only; it never suppresses
+        # canonical generation and never rewrites a user-owned program slot.
+        if self._canonical_missing_lanes():
             try:
                 self._materialize_canonical_coverage(instrument_name, row_idx)
             except Exception:
@@ -41251,6 +43140,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
             amt = float(np.clip(float(point.get("morph", 0.5)), 0.0, 1.0))
         except Exception:
             amt = 0.5
+        # The selected sequence step owns its mapping. This shapes the normalized
+        # A→B automation morph only; authored source values remain unchanged.
+        try:
+            _step_no = max(1, int(point.get("step", 1) or 1))
+            _sid = int(point.get("from_sequence", point.get("ref_sequence", 0)) or 0)
+            _banks = getattr(self, "instrument_sequence_banks", {}) or {}
+            _bank = _banks.get(str(instrument_name), {}) if isinstance(_banks, dict) else {}
+            _active_mem = (_bank.get(_sid, _bank.get(str(_sid))) if _sid > 0 and isinstance(_bank, dict) else None)
+            if not isinstance(_active_mem, dict):
+                _active_mem = self._current_sequence_mem(str(instrument_name))
+            _math_cfg = self._step_automation_math_config(_active_mem, _step_no - 1)
+            if _math_cfg.get("mode", "linear") != "linear":
+                import automation_math as _automation_math
+                amt = float(_automation_math.transform(
+                    amt, _math_cfg["mode"], exponent=_math_cfg["exponent"],
+                    coefficients=_math_cfg["coefficients"]))
+        except Exception:
+            pass
         a_inst = str(point.get("from_instrument", instrument_name))
         b_inst = str(point.get("to_instrument", instrument_name))
         a_seq = int(point.get("from_sequence", 1) or 1)
@@ -41934,6 +43841,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             mem["automation_lane_length"] = n
         except Exception as _lane_exc:
             print("[Automation] lane bake failed: %s" % _lane_exc)
+        if getattr(self, "_bake_batch_depth", 0):
+            self._bake_batch_dirty = True      # R33: a batch of bakes refreshes the strip once, at the end
+            return
         try:
             if hasattr(self, "_canonical_write_sequencer_automation_state"):
                 self._canonical_write_sequencer_automation_state()
@@ -42313,7 +44223,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         scoped_points = [p for p in points if isinstance(p, dict) and str(p.get("from_instrument") or p.get("instrument") or "") == _ui_inst and int(p.get("from_sequence", 1) or 1) == _ui_sid]
         # Self-heal: Full Canonical with empty Automator scope materializes coverage
         # into live points so the strip is never a dead blank under canonical authority.
-        if not scoped_points and str(getattr(self, "canonical_control_strategy", "Full Canonical")) != "Seeded Baseline":
+        if not scoped_points:
             if not getattr(self, "_automator_materialize_guard", False):
                 try:
                     self._automator_materialize_guard = True
@@ -42473,6 +44383,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         if hasattr(self, 'lbl_selected_step'):
             self.lbl_selected_step.setText(f"Step: {s_idx + 1}")
+        try: self._refresh_step_automation_math_ui()
+        except Exception: pass
         view = self._sequence_display_mem(curr_i, mem)
         amp = float(view["amplitudes"][s_idx]) if s_idx < len(view.get("amplitudes", [])) else 1.0
         pitch = float(view["pitches"][s_idx]) if s_idx < len(view.get("pitches", [])) else 1.0
@@ -42565,6 +44477,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             target = 0.25 + 0.75 * field
             if randomize:
                 target = 0.75 * target + 0.25 * float(rng.uniform(0.5, 1.5))
+            if not isinstance(entry, dict) or not (entry.get("operator") or entry.get("operators_csv") or entry.get("pattern")):
+                continue          # an empty row stays empty: velocity painting never creates playlist content
             old = _num_or(entry.get("velocity"), 1.0)
             # Treat explicit non-default velocities as user data and preserve them.
             user_locked = bool(entry.get("velocity_user_locked", False))
@@ -42584,6 +44498,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 table.set_cell_item(r, 3, item)
 
     def randomize_playlist_velocity(self):
+        self._user_requested_paint = True
+        QTimer.singleShot(0, lambda: setattr(self, "_user_requested_paint", False))
         self._phase_lock_playlist_velocity(np.random.default_rng(_safe_int_seed(self.get_numeric_seed())), strength=1.0, randomize=True)
         self._live_engine_signatures.pop("playlist", None)
 
@@ -42665,6 +44581,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._refresh_canonical_fingerprint()
         except Exception:
             pass
+
+    def _automation_index_representation(self, seed_values=None, canonical_values=None, user_values=None):
+        """Return math-first indexing descriptions for seed/canonical/user writes."""
+        try:
+            import automation_math
+            return automation_math.index_source_layers(seed_values, canonical_values, user_values)
+        except Exception:
+            return {"layers": {}, "combined": {"mode": "linear", "score": 0.0, "count": 0}}
 
     def _on_step_control_slider(self, lane_name, value):
         """Write a per-step canonical control lane and refresh project identity."""
@@ -43468,6 +45392,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _set_value("spin_canonical_convolve", CANONICAL_CONVOLVE_DEFAULT_PCT)
         _set_value("spin_canonical_live_overblend", CANONICAL_LIVE_OVERBLEND_DEFAULT_PCT)
         _set_value("spin_engine_strength", CANONICAL_SEED_WEIGHT_DEFAULT)
+        _set_value("spin_seed_reach", 1.0)
+        _set_value("spin_seed_divergence_menu", 0.50)
+        self.seed_reach = 1.0; self.seed_named_overrides = {}
+        self.seed_divergence = 0.50; self._r32_divergence_user = False
+        self.global_tuning = {"system": "equal", "detune": 0.0, "stretch": 0.0}
+        self.speak_as = "music"
         self._unison_blend_user = CANONICAL_ADHERENCE_FALLBACK
         _set_value("spin_unison_blend", 1.0)
         _set_value("slider_eqr", EQR_DEFAULT * 100.0)
@@ -43554,6 +45484,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _clear_project_memory(self):
         """Reset all project/composition state and the global seed to a fresh boot."""
+        # R88: invalidate process-local render-buffer state as part of the same
+        # Clear Memory transaction. Disk cache files remain content-addressed and
+        # harmless; a later render-key lookup can reuse only an exact match.
+        try:
+            self._live_buffer_generation = int(getattr(self, "_live_buffer_generation", 0)) + 1
+            self._live_buffer_inflight_key = None
+            self._live_buffer_state = "idle"
+            timer = getattr(self, "_live_buffer_timer", None)
+            if timer is not None: timer.stop()
+        except Exception: pass
+        try:
+            self._render_sequence_banks_snapshot = None
+            self._render_playlist_snapshot = None
+            self._render_project_snapshot = None
+            self._shared_mixdown_buffer = None
+            self._shared_mixdown_buffer_key = None
+            self._shared_mixdown_buffer_sr = None
+        except Exception: pass
+        try:
+            self._export_resume_buffer_descriptor = None
+        except Exception: pass
         # Clear Algorithm→Seed revert history; heuristic writers own their own
         # exact STEP/AUTOMATION revert snapshots.
         self._seed_history.clear()
@@ -43838,7 +45789,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "slider_pkp_envelope", "slider_pkp_boost", "slider_pkp_boost_pitch",
             "slider_pkp_boost_steps", "slider_pkp_boost_offset",
             "slider_pkp_boost_mod", "slider_pkp_boost_prob", "slider_pkp_boost_env",
-            "spin_engine_strength", "spin_unison_blend",
+            "spin_engine_strength", "spin_seed_reach", "spin_seed_divergence_menu",
+            "spin_global_detune_cents", "spin_global_stretch", "spin_step_detune_cents", "spin_step_stretch",
+            "spin_unison_blend",
             "gp_mix_slider", "gp_script_slider", "gp_domain_slider", "gp_wire_slider",
             "spin_clip_ratio", "spin_import_speed", "spin_sparse_density", "spin_speed_scrub",
             "spin_hyperdrive_drive", "spin_hyperdrive_resonance",
@@ -43866,7 +45819,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "btn_edit_panels_per_sequence",
             "btn_meum_engine_simplify", "btn_trigonometry_engine", "btn_operator_theory",
             "btn_math_symbols", "btn_hyperdrive",
-            "chk_sparse_mask", "chk_speed_scrub",
+            "chk_sparse_mask", "chk_speed_scrub", "chk_view_canonical_layer",
+            "chk_show_userdata", "chk_show_canonical_write_data",
         ):
             obj = getattr(self, name, None)
             if obj is not None and hasattr(obj, "isChecked"):
@@ -43875,7 +45829,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # Combo boxes store {index, text} — restored by text first so a changed
         # item list in a newer build still lands on the intended mode.
         state["combos"] = {}
-        for name in ("mode_combo", "viz_mode_combo", "paint_sequence_mapping_combo", "paint_tempo_combo", "blend_max_combo"):
+        for name in ("mode_combo", "viz_mode_combo", "paint_sequence_mapping_combo", "paint_tempo_combo", "blend_max_combo",
+                     "combo_global_tuning_system", "combo_step_tuning_system", "combo_step_phase_propagation", "combo_speak_as"):
+
             obj = getattr(self, name, None)
             if obj is not None:
                 try:
@@ -43896,6 +45852,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         state["game_last_identity"] = getattr(self, "_last_videogame_identity", None)
         state["game_last_path"] = getattr(self, "_last_videogame_path", None)
         state["goava_active"] = bool(getattr(self, "goava_active", False))
+        state["seed_reach"] = float(getattr(self, "seed_reach", 1.0))
+        state["canonical_ownership_policy"] = copy.deepcopy(getattr(self, "canonical_ownership_policy", {}))
+        state["canonical_operation_mode"] = str(getattr(self, "canonical_operation_mode", "Seeded Baseline → Canonical Control"))
+        state["seed_divergence"] = float(getattr(self, "seed_divergence", 0.5))
+        state["divergence_user"] = bool(getattr(self, "_r32_divergence_user", False))
+        state["global_tuning"] = copy.deepcopy(getattr(self, "global_tuning", {}))
+        state["global_tuning_touched"] = sorted(getattr(self, "_global_tuning_touched", set()) or set())
+        state["speak_as"] = str(getattr(self, "speak_as", "music"))
         # Project notes + global algo stores (never includes seed)
         if getattr(self, "qe_notes", None) is not None:
             try:
@@ -43931,6 +45895,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try:
                     obj.blockSignals(True); obj.setChecked(bool(value)); obj.blockSignals(False)
                 except Exception: pass
+        self.seed_reach = max(0.0, min(1.0, float(state.get("seed_reach", getattr(self, "seed_reach", 1.0)) or 0.0)))
+        try:
+            import canonical_ownership as _co
+            self.canonical_ownership_policy = _co.normalize_policy(state.get("canonical_ownership_policy", getattr(self, "canonical_ownership_policy", None)))
+        except Exception:
+            pass
+        self.canonical_operation_mode = str(state.get("canonical_operation_mode", getattr(self, "canonical_operation_mode", "Seeded Baseline → Canonical Control")))
+        self.seed_divergence = max(0.0, min(1.0, float(state.get("seed_divergence", getattr(self, "seed_divergence", 0.5)) or 0.0)))
+        self._r32_divergence_user = bool(state.get("divergence_user", getattr(self, "_r32_divergence_user", False)))
+        if isinstance(state.get("global_tuning"), dict): self.global_tuning = dict(state["global_tuning"])
+        self._global_tuning_touched = set(state.get("global_tuning_touched", ()) or ())
+        self.speak_as = str(state.get("speak_as", getattr(self, "speak_as", "music")) or "music")
         # Five-canonical / LOCK / RAND / Draw-Record 3D state.
         try:
             _gem = float(state.get("goava_ensemble_mod", 0.1975807343))
@@ -43978,6 +45954,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     obj.setCurrentIndex(int(spec.get("index") or 0))
             except Exception:
                 pass
+        for _attr, _val in (("spin_seed_reach", self.seed_reach), ("spin_seed_divergence_menu", self.seed_divergence),
+                            ("spin_global_detune_cents", (self.global_tuning or {}).get("detune", 0.0)),
+                            ("spin_global_stretch", (self.global_tuning or {}).get("stretch", 0.0))):
+            _w = getattr(self, _attr, None)
+            if _w is not None:
+                try: _w.blockSignals(True); _w.setValue(float(_val)); _w.blockSignals(False)
+                except Exception: pass
+        if hasattr(self, "combo_global_tuning_system"):
+            try: self.combo_global_tuning_system.blockSignals(True); self.combo_global_tuning_system.setCurrentText(str((self.global_tuning or {}).get("system", "equal"))); self.combo_global_tuning_system.blockSignals(False)
+            except Exception: pass
+        if hasattr(self, "combo_speak_as"):
+            try: self.combo_speak_as.blockSignals(True); self.combo_speak_as.setCurrentText(self.speak_as); self.combo_speak_as.blockSignals(False)
+            except Exception: pass
         # Keep FullWeight Seed / Full Unison labels in sync after restore.
         if getattr(self, "chk_fullweight_seed", None) is not None:
             on = bool(self.chk_fullweight_seed.isChecked())
@@ -44314,8 +46303,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                           if hasattr(self, "_seed_script_video_overrides") else {}),
         }
         data = {
+            "restore_manifest": {
+                "schema": "groovebox-project-restore/2",
+                "sequence_banks": "instrument_sequence_banks + instrument_selected_sequence",
+                "synth_patch_scope": "per-sequence-bank-values",
+                "active_instrument": str(getattr(self, "instrument_selector_dropdown", None).currentText() if getattr(self, "instrument_selector_dropdown", None) is not None else ""),
+                "live_buffer": {"contract": "groovebox-live-pcm/2", "authority": "cache-only", "resume": "validate-or-rerender"},
+                "studio_session": "window-manager-session-state-is-restored-separately",
+            },
             "version": "3.9.0-project-state-integrated",
             "seed": str(_seed_script),
+            "superseed_seed": str(getattr(self, "input_superseed", None).text().strip() if getattr(self, "input_superseed", None) is not None else "MATGROOVEBOX::SUPERSEED::GENESIS"),
+            "starter_patch_provenance": _safe_json(getattr(self, "_starter_patch_provenance", {})),
             "seed_state": _seed_state,
             "seed_workspace_override": bool(SEED_WORKSPACE_OVERRIDE),
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
@@ -44323,6 +46322,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "track_offset": float(self.spin_track_offset.value()) if hasattr(self, "spin_track_offset") else 0.0,
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
             "base_frequency": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
+            "seed_reach": float(getattr(self, "seed_reach", 1.0)),
+            "canonical_ownership_policy": _safe_json(getattr(self, "canonical_ownership_policy", {})),
+            "canonical_operation_mode": str(getattr(self, "canonical_operation_mode", "Seeded Baseline → Canonical Control")),
+            "seed_named_overrides": _safe_json(getattr(self, "seed_named_overrides", {})),
+            "seed_divergence": float(getattr(self, "seed_divergence", 0.5)),
+            "divergence_user": bool(getattr(self, "_r32_divergence_user", False)),
+            "global_tuning": _safe_json(getattr(self, "global_tuning", {"system":"equal", "detune":0.0, "stretch":0.0})),
+            "global_tuning_touched": sorted(getattr(self, "_global_tuning_touched", set()) or set()),
+            "speak_as": str(getattr(self, "speak_as", "music")),
             # Persist the logical output gain (0..1) and its user-facing percentage.
             # Both fields are explicit so 0% is not mistaken for a missing value.
             "master_volume": max(0.0, min(1.0, float(getattr(self, "master_volume", 0.72)))),
@@ -44485,6 +46493,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "instrument_display_names": copy.deepcopy(
                 self._sanitized_instrument_display_names(getattr(self, "instrument_display_names", {}))
             ),
+            "instrument_user_synth_numbers": {str(k): int(v) for k, v in
+                                              (getattr(self, "instrument_user_synth_numbers", {}) or {}).items()},
             "last_videogame_identity": _safe_json(getattr(self, "_last_videogame_identity", None)),
             "last_videogame_path": getattr(self, "_last_videogame_path", None),
             # MEDIA_WORKBENCH_20260906: Draw/Record layered reconstruction, timed
@@ -45096,6 +47106,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception:
                 try: self.input_seed_val.blockSignals(False)
                 except Exception: pass
+        if "superseed_seed" in data and getattr(self, "input_superseed", None) is not None:
+            try:
+                self.input_superseed.blockSignals(True)
+                self.input_superseed.setText(str(data.get("superseed_seed") or ""))
+                self.input_superseed.blockSignals(False)
+            except Exception:
+                try: self.input_superseed.blockSignals(False)
+                except Exception: pass
+        if "starter_patch_provenance" in data:
+            self._starter_patch_provenance = data.get("starter_patch_provenance") if isinstance(data.get("starter_patch_provenance"), dict) else {}
         # GROOVEBOX_R23R_SEED_WORKSPACE_OVERRIDE_20261101 (older projects: override on)
         try:
             _ov = bool(_saved_seed_state.get("workspace_override", data.get("seed_workspace_override", True)))
@@ -45229,6 +47249,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # GROOVEBOX_INSTRUMENT_RENAME_20261031: per-instrument display names
         # (older projects lack the key; the legacy single string is not a rename).
         self._apply_loaded_instrument_display_names(data.get("instrument_display_names") if isinstance(data.get("instrument_display_names"), dict) else {})
+        try:
+            _un = data.get("instrument_user_synth_numbers")
+            self.instrument_user_synth_numbers = {str(k): int(v) for k, v in (_un or {}).items()} if isinstance(_un, dict) else {}
+            self._refresh_auto_instrument_labels()
+        except Exception:
+            pass
         # MEDIA_CARRIER_2026: re-load the saved WAV/video carrier by path so the
         # imported reference material (audio carrier + video blend source) is
         # present for render/export/play after load — a missing/broken path is
@@ -45498,6 +47524,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             from export_scheduler import ExportScheduler
             sch = self._export_scheduler_obj = ExportScheduler(self)
             sch.job_finished.connect(self._on_scheduled_export_finished)
+            try:   # workers (incl. a Party Mode pre-warmed one) end with the app instead of outliving their QProcess
+                QApplication.instance().aboutToQuit.connect(sch.shutdown)
+            except Exception:
+                pass
         return sch
 
     def show_export_jobs(self):
@@ -45607,6 +47637,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return
         if not path or not os.path.isfile(path):
             return
+        try:   # the main-window background plays it: video at 50 % over the field (with sound), audio as waveform
+            bg = getattr(self, "parametric_background", None)
+            if bg is not None and hasattr(bg, "play_overlay"):
+                bg.play_overlay(path)
+                return
+        except Exception as exc:
+            print(f"[PlayExportWhenDone] background overlay: {exc}")
         try:
             # Prefer existing media load paths so the main window meters and
             # scenograph light up the same way a normal Play does.
@@ -45631,9 +47668,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_scheduled_export_finished(self, job):
         try:
-            path = getattr(job, "output_path", None) or getattr(job, "path", None)
-            kind = "video" if path and str(path).lower().endswith((".mp4", ".webm", ".mkv")) else "audio"
-            if path:
+            # Export jobs carry the file in result["file_path"] / out_file (the old output_path / path never existed,
+            # so a finished export was never played back).
+            path = str((getattr(job, "result", {}) or {}).get("file_path") or getattr(job, "out_file", "") or "")
+            if getattr(job, "state", "") == "done" and path and os.path.isfile(path):
+                kind = "video" if path.lower().endswith((".mp4", ".webm", ".mkv", ".mov")) else "audio"
                 self._play_export_when_done(path, kind)
         except Exception:
             pass
@@ -46303,6 +48342,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         groovebox_paths.index_file(path, "project", path)
 
     def open_project_path(self, path, *, show_message=True):
+        QTimer.singleShot(2000, lambda: __import__("memory_tools").trim_soon())   # after the load: free the old project
         """Open an .MCC project (or legacy .mgpr) through one canonical loader."""
         path = os.path.abspath(os.path.expanduser(str(path or "")))
         if not path:
@@ -46396,6 +48436,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _keyboard_note_hit(self, note_idx, global_mode=False):
         import time as _t
         self._last_note_hit_time = _t.monotonic()
+        try:
+            name0 = self._current_instrument_name()
+            base0 = float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0
+            semis0 = (int(note_idx) % 12) - 6
+            self._multidim_visual_note_hz = base0 * (2.0 ** (semis0 / 12.0))
+            self._multidim_visual_note_instrument = str(name0)
+            self._pulse_multidim_viz(0.18 + 0.02 * (int(note_idx) % 4))
+        except Exception:
+            pass
         if global_mode:
             self.trigger_all_instruments_hit()
             return
@@ -49787,6 +51836,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
             final_names.append(candidate)
             used.add(candidate)
 
+        # R33 RESIZE_SURVIVOR_RESTORE: the canonical reconcile below used to rewrite surviving voices
+        # (pitch 14.9 → 20 → 6410 → 449 Hz, pattern length 20 → 12), so a resize changed the music and the
+        # game/video identity. Survivors' music content and sequence banks are restored after the recompose.
+        _survivor_keys = ("harmonic_freq", "harmonic_params", "convolution_waves", "synth_params", "tuning_ratio")
+        _survivor_snap = {}
+        try:
+            _ps0 = getattr(self, "instrument_param_state", {}) or {}
+            _banks0 = getattr(self, "instrument_sequence_banks", {}) or {}
+            _keep = set(old_names) & set(final_names)
+            for _nm in _keep:
+                _pp = _ps0.get(_nm) if isinstance(_ps0, dict) else None
+                _survivor_snap[_nm] = (
+                    {k: copy.deepcopy(_pp[k]) for k in _survivor_keys if isinstance(_pp, dict) and k in _pp},
+                    copy.deepcopy(_banks0.get(_nm)) if isinstance(_banks0, dict) and _nm in _banks0 else None,
+                    copy.deepcopy((getattr(self, "instrument_sequencer_memory", {}) or {}).get(_nm)),
+                )
+        except Exception:
+            _survivor_snap = {}
         # RESIZE_FREQUENCY_IDENTITY: snapshot the *effective* carrier frequency
         # before changing ensemble cardinality.  A ratio can be stable while the
         # product harmonic_freq*tuning_ratio is not; that was the source of the
@@ -49977,6 +52044,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._recompose_active_canonicals_after_resize()
         finally:
             self._canonical_resize_preserve_sequences = False
+        try:
+            _ps1 = self.instrument_param_state
+            _banks1 = self.instrument_sequence_banks
+            _mem1 = getattr(self, "instrument_sequencer_memory", None)
+            for _nm, (_fields, _bank, _mem) in _survivor_snap.items():
+                if _fields and isinstance(_ps1.get(_nm), dict):
+                    _ps1[_nm].update(_fields)
+                if _bank is not None:
+                    _banks1[_nm] = _bank
+                    _sid = (getattr(self, "instrument_selected_sequence", {}) or {}).get(_nm)
+                    if isinstance(_mem1, dict):
+                        _mem1[_nm] = _bank.get(_sid) if _sid in _bank else (_mem if _mem is not None else _mem1.get(_nm))
+        except Exception as _exc:
+            print(f"[Synths] survivor restore skipped: {_exc}")
         # Mark the canonical sequence bank as the completed resize transaction.
         # Playback uses the row's canonical refs directly, so no retoggle is required.
         self._canonical_resize_sequence_generation = int(
@@ -49995,7 +52076,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 print(f"[Geo Convolve] rescaled {_n} at-default geometric lane(s) to the new convolution density")
         except Exception:
             pass
-        print(f"[Synths] Resized to {new_count}: {final_names[:6]}{'…' if new_count > 6 else ''}")
+        try:
+            _nums = getattr(self, "instrument_user_synth_numbers", {}) or {}
+            for _gone in [k for k in _nums if k not in final_names]:
+                _nums.pop(_gone, None)
+            self._refresh_auto_instrument_labels()
+        except Exception:
+            pass
+        print(f"[Synths] Resized to {new_count}: {[self.instrument_label(n) for n in final_names[:6]]}{'…' if new_count > 6 else ''}")
 
     def _reconvolve_free_synths_for_ensemble_resize(self, old_names, final_names, locked):
         """Freshly reconvolve/rewrite every non-user voice before a resize recompose."""
@@ -50607,7 +52695,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 try:
                     if _cons_tbl is not None:
                         _cons_tbl.blockSignals(bool(_cons_blk)); _cons_tbl.setUpdatesEnabled(bool(_cons_upd) if _cons_upd is not None else True)
-                        _cons_tbl.viewport().update()
+                        # R33: PaintbrushTable is a plain QWidget (no viewport()); the AttributeError aborted this
+                        # finally block and every canonical rebuild that went through it.
+                        (_cons_tbl.viewport() if hasattr(_cons_tbl, "viewport") else _cons_tbl).update()
                 except RuntimeError:
                     pass
             # Playlist consensus is now authoritative. Rebuild the sequencer bank from
@@ -51984,6 +54074,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     pitch_track = _opt.borrow_vector(f"voice_pitch_{_tid}", _nT, _ldt, 1.0)
                     chord_timbre_track = _opt.borrow_vector(f"voice_timbre_{_tid}", _nT, np.float32, 50.0)
                     step_phase_track = _opt.borrow_vector(f"voice_phase_{_tid}", _nT, _ldt, 0.0)
+                    step_index_track = _opt.borrow_vector(f"voice_step_idx_{_tid}", _nT, np.int16, -1)
+                    step_index_track.fill(-1)
                     step_eq_gain_track = _opt.borrow_vector(f"voice_eq_{_tid}", _nT, _ldt, 0.0)
                     step_sidechain_track = _opt.borrow_vector(f"voice_sc_{_tid}", _nT, _ldt, 0.0)
                     step_key_track = _opt.borrow_vector(f"voice_key_{_tid}", _nT, _ldt, 0.0)
@@ -51992,18 +54084,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     pitch_track = np.ones_like(local_t)
                     chord_timbre_track = np.full_like(local_t, 50.0, dtype=np.float32)
                     step_phase_track = np.zeros_like(local_t)
+                    step_index_track = np.full(local_t.shape, -1, dtype=np.int16)
                     step_eq_gain_track = np.zeros_like(local_t)
                     step_sidechain_track = np.zeros_like(local_t)
                     # GROOVEBOX_R23R_SIGNED_SIDECHAIN_BAND_EQ_20261103
                     step_key_track = np.zeros_like(local_t)      # negative sidechain = KEY (lift self, duck row)
                 _step_band_eq = []                            # (i0, i1, gain_db, freq_hz, q) per step
+                _phase_retrigger_indices = []
                 _canonical_overlay = None
                 try:
                     # FIRST_RENDER_COVERAGE_20261102: the canonical-owned coverage for this (instrument, row) used to be
                     # created only later in the pass, so the first render after launch lacked content every later render had.
                     _ov_key = f"{op_name}:{int(row_idx)}"
-                    if (getattr(self, "canonical_control_strategy", "Full Canonical") != "Seeded Baseline"
-                            and _ov_key not in (getattr(self, "canonical_runtime_overlays", None) or {})
+                    if (_ov_key not in (getattr(self, "canonical_runtime_overlays", None) or {})
                             and self._canonical_missing_lanes()):
                         self._materialize_canonical_coverage(op_name, row_idx)
                 except Exception:
@@ -52149,7 +54242,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _schedule_pairs = [(int(_s), float(_s * inst_step_duration)) for _s in range(_pat)]
                 for s_idx, _mapped_start in _schedule_pairs:
                     _user_active = bool(_user_mask[s_idx]) if s_idx < len(_user_mask) else False
-                    _canonical_on = self._multinode_step_trigger(_node_field, op_idx, row_idx, s_idx, _user_active)
+                    _canonical_on = self._multinode_step_trigger(_node_field, op_idx, row_idx, s_idx, False)
                     try:
                         _step_controls_for_prob = mem.get("step_controls", {}) if isinstance(mem.get("step_controls", {}), dict) else {}
                         _prob_lane = _step_controls_for_prob.get("trigger_probability", [])
@@ -52163,14 +54256,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         _phase_index = (int(s_idx) + int(row_idx) * 3 + int(op_idx) * 5 + _safe_int_seed(self.get_numeric_seed())) % _phase_modulus
                         _step_threshold = float(_phase_index) / float(_phase_modulus)
                     except Exception: _step_prob, _step_threshold = 1.0, 0.0
-                    _user_step_hit = bool(s_idx < len(steps) and steps[s_idx])
-                    # Authored hits are inviolable. A deterministic omit/continue
-                    # decision is permitted only for canonical-only events while an
-                    # actual canonical trigger is active; no stochastic probability is used.
-                    _canonical_only_event = bool(_canonical_on and not _user_step_hit)
-                    _event_allowed = _user_step_hit or (
-                        _canonical_only_event and self._stochastic_point_decision(row_idx, s_idx, op_idx, _step_prob)
-                    )
+                    _base_user_steps = mem.get("steps", []) if isinstance(mem, dict) else []
+                    _user_step_hit = bool(s_idx < len(_base_user_steps) and _base_user_steps[s_idx])
+                    # Explicitly touched OFF cells are deactivator votes. Active
+                    # cells remain valid baseline activators even when loaded from
+                    # a preset, preserving existing sequences. Canonical contributes
+                    # both its active and inactive vote whenever that source is present.
+                    try:
+                        _touched = set(mem.get("touched", ()) or ())
+                        _touched_list = mem.get("user_touched_steps", [])
+                        _user_explicit = (int(s_idx) in _touched or
+                                          (isinstance(_touched_list, list) and s_idx < len(_touched_list) and bool(_touched_list[s_idx])))
+                        _user_vote_present = bool(_user_step_hit or _user_explicit)
+                        _canonical_present = bool(tuple(_node_field.get("canonical", ()) or ()))
+                        import canonical_ownership as _step_ownership
+                        _gate_probability = float(_step_ownership.resolve_step_probability(
+                            _user_vote_present, _user_step_hit, _canonical_present,
+                            _canonical_on, getattr(self, "canonical_ownership_policy", None)))
+                        # The per-step probability lane remains a canonical trigger
+                        # mask, and applies only to a positive canonical vote.
+                        if _canonical_present and _canonical_on:
+                            _gate_probability *= float(_step_prob)
+                        _gate_probability = float(np.clip(_gate_probability, 0.0, 1.0))
+                    except Exception:
+                        _gate_probability = 1.0 if _user_step_hit else (float(_step_prob) if _canonical_on else 0.0)
+                    # Evenly-distributed seeded lattice gives exact, reproducible
+                    # 50/50 activator/deactivator splits at equal source strengths.
+                    _event_allowed = bool(_gate_probability > _step_threshold)
                     if _event_allowed:
                         try:
                             step_offset = float(offsets[s_idx] if s_idx < len(offsets) else 0.0)
@@ -52195,6 +54307,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             s_end = min(row_duration, s_end)
                         s_mask = (local_t >= s_start) & (local_t < s_end)
                         if np.any(s_mask):
+                            step_index_track[s_mask] = int(s_idx)
                             amp = amps[s_idx] if s_idx < len(amps) else 1.0
                             pr = pitches[s_idx] if s_idx < len(pitches) else 1.0
                             # Exact-step automation projection. The helper has already
@@ -52298,6 +54411,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                     _sc_depth = self._canonical_step_sidechain(op_idx, row_idx, s_idx, len(steps) or 1)
                                 step_sidechain_track[s_mask] = float(np.clip(_sc_depth, 0.0, 1.0))
                             except Exception: pass
+                            try:
+                                _sc_phase = mem.get("step_controls", {}) if isinstance(mem.get("step_controls", {}), dict) else {}
+                                _pp_lane = _sc_phase.get("phase_propagation", [])
+                                _pp_mode = str(_pp_lane[s_idx]).lower() if isinstance(_pp_lane, list) and s_idx < len(_pp_lane) else "retrigger"
+                                if _pp_mode != "longitudinal":
+                                    _phase_retrigger_indices.append(int(np.flatnonzero(s_mask)[0]))
+                            except Exception:
+                                _phase_retrigger_indices.append(int(np.flatnonzero(s_mask)[0]))
                             try:
                                 _sc = mem.get("step_controls", {}) if isinstance(mem.get("step_controls", {}), dict) else {}
                                 _phase_lane = _sc.get("phase_shift", mem.get("phase_shift", []))
@@ -52501,19 +54622,66 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # Identity anchor still respected, but scaled by seed ratio
                         # so list seeds remain distinct across the ensemble.
                         _identity_ratio = _seed_to_pitch_ratio(0.0, op_idx, 0)
-                        seed_freq = float(identity_hz) * pitch_track * ((_seed_ratio / _identity_ratio) if _identity_ratio != 0.0 else 0.0)
+                        seed_freq = float(identity_hz) * ((_seed_ratio / _identity_ratio) if _identity_ratio != 0.0 else 0.0)
                     except Exception:
-                        seed_freq = _seed_hz * pitch_track * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
+                        seed_freq = _seed_hz * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
                 elif harm_hz > 20.0 and abs(harm_hz - base_freq) > 1.0:
                     # Panel has a real harmonic_freq — blend with seed identity
                     seed_freq = (0.45 * float(harm_hz) + 0.55 * _seed_hz) * pitch_track * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
                 else:
                     seed_freq = _seed_hz * pitch_track * (tuning_ratio if tuning_ratio >= 0.0 else 0.0)
 
+                # Apply global → instrument → step tuning to the actual pitch
+                # trajectory, not merely to the editor snapshot. Canonical proposals
+                # are merged through the same directional ownership policy.
+                try:
+                    import tuning_inheritance as _ti
+                    _pol = getattr(self, "canonical_ownership_policy", None)
+                    _graw = dict(getattr(self, "global_tuning", {}) or {})
+                    _gtouch = set(getattr(self, "_global_tuning_touched", set()) or set())
+                    _guser = {k: v for k, v in _graw.items()
+                              if k in _gtouch or v != {"system": "equal", "detune": 0.0, "stretch": 0.0}.get(k)}
+                    _iuser = ((getattr(self, "instrument_param_state", {}) or {}).get(op_name, {}) or {}).get("tuning", {})
+                    _eng_tune = tuple(self._md_engines())
+                    _gseed = self._canonical_tuning_layer(op_name, _master_slot, None, engines=())
+                    _iseed = self._canonical_tuning_layer(op_name, _master_slot, "instrument", engines=())
+                    _gcanon = self._canonical_tuning_layer(op_name, _master_slot, None, engines=_eng_tune) if _eng_tune else {}
+                    _icanon = self._canonical_tuning_layer(op_name, _master_slot, "instrument", engines=_eng_tune) if _eng_tune else {}
+                    _glayer = _ti.merge_tuning_layer(_guser, _gcanon, _pol, seed_layer=_gseed)
+                    _ilayer = _ti.merge_tuning_layer(_iuser, _icanon, _pol, seed_layer=_iseed)
+                    _untuned_track = np.asarray(seed_freq * pitch_track, dtype=np.float64)
+                    _tuned_track = _ti.apply_to_hz_array(_untuned_track, base_freq, _glayer, _ilayer)
+                    _active_steps = np.unique(step_index_track[step_index_track >= 0]) if step_index_track.size else ()
+                    for _step_idx in _active_steps:
+                        _sm = step_index_track == int(_step_idx)
+                        _suser = _ti.step_tuning(mem, int(_step_idx))
+                        _sseed = self._canonical_tuning_layer(op_name, _master_slot, int(_step_idx), engines=())
+                        _scanon = self._canonical_tuning_layer(op_name, _master_slot, int(_step_idx), engines=_eng_tune) if _eng_tune else {}
+                        _slayer = _ti.merge_tuning_layer(_suser, _scanon, _pol, seed_layer=_sseed)
+                        _tuned_track[_sm] = _ti.apply_to_hz_array(_untuned_track[_sm], base_freq, _glayer, _ilayer, _slayer)
+                    _ratio_track = np.ones_like(_tuned_track)
+                    _valid_tune = np.isfinite(_untuned_track) & (np.abs(_untuned_track) > 1e-12)
+                    _ratio_track[_valid_tune] = _tuned_track[_valid_tune] / _untuned_track[_valid_tune]
+                    pitch_track *= _ratio_track.astype(pitch_track.dtype, copy=False)
+                    try:
+                        self._parameter_provenance_snapshot.setdefault(op_name, {})["tuning"] = {
+                            "seed": {"global": _gseed, "instrument": _iseed}, "canonical": {"global": _gcanon, "instrument": _icanon},
+                            "user": {"global": _guser, "instrument": _ti.sanitize_layer(_iuser)},
+                            "step": {str(int(i)): _ti.step_tuning(mem, int(i)) for i in _active_steps},
+                            "effective": _ti.resolve_tuning(_glayer, _ilayer)}
+                    except Exception:
+                        pass
+                except Exception as _tune_exc:
+                    try:
+                        import quiet_log
+                        quiet_log.refresh_fail("Tuning.pitch_apply", _tune_exc)
+                    except Exception:
+                        pass
+
                 # Seed-driven harmonic ↔ entropy continuum (authoritative voice).
                 # Engines / seed scripts define character HERE. Later stages must
                 # not spectral-fit or convolute these voices back into one shape.
-                f0 = np.maximum(seed_freq, AUDIBLE_LO_HZ)
+                f0 = np.maximum(seed_freq * pitch_track, AUDIBLE_LO_HZ)
                 # Canonical-owned polyphony: simultaneous deterministic pitch values.
                 _canonical_ratios = st.get("canonical_chord_ratios") if isinstance(st, dict) else None
                 if _canonical_ratios and not bool((mem or {}).get("user_owned", False)):
@@ -52571,7 +54739,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     self._voice_phase_carry = {}
                 _phase_carry_in = float(self._voice_phase_carry.get(op_name, 0.0))
                 phase = None
-                if _phase_native is not None and local_t.size >= 256:
+                if _phase_native is not None and local_t.size >= 256 and not _phase_retrigger_indices:
                     try:
                         import ctypes as _ct
                         _fr32 = np.ascontiguousarray(_fm_ratio, dtype=np.float32)
@@ -52592,8 +54760,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         phase = None
                 if phase is None:
                     _inst_freq = f0 * _fm_ratio * (1.0 + _voice_detune)
-                    _phase_unwrapped = 2.0 * np.pi * np.cumsum(_inst_freq) * _dt
-                    phase = _phase_unwrapped + _phase_carry_in
+                    _increments = 2.0 * np.pi * np.asarray(_inst_freq, dtype=np.float64) * _dt
+                    if _phase_retrigger_indices and _increments.size:
+                        _prefix = np.empty(_increments.size + 1, dtype=np.float64); _prefix[0] = 0.0
+                        np.cumsum(_increments, out=_prefix[1:])
+                        _reset_mask = np.zeros(_increments.size, dtype=bool)
+                        _reset_mask[np.clip(np.asarray(_phase_retrigger_indices, dtype=np.int64), 0, _increments.size - 1)] = True
+                        _last_reset = np.maximum.accumulate(np.where(_reset_mask, np.arange(_increments.size), 0))
+                        _phase_unwrapped = _prefix[np.arange(1, _increments.size + 1)] - _prefix[_last_reset]
+                        phase = _phase_unwrapped
+                    else:
+                        phase = np.cumsum(_increments) + _phase_carry_in
                     if phase.size > 0:
                         self._voice_phase_carry[op_name] = float(phase[-1] % math.tau)
                     phase = phase + _pm_offset + _voice_phase0 + _canonical_phase
@@ -53910,6 +56087,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
             **{k: str(gas.get(k, "")) for k in GLOBAL_ALGO_EXTRA_KINDS},
         }}
 
+    def seed_fingerprint_text(self):
+        """The seed's identity: SHA-256 of the seed text, the numeric seed, and the live canonical fingerprint."""
+        import hashlib as _h
+        try:
+            text = self._seed_text()
+        except Exception:
+            text = ""
+        text = str(text or "")
+        lines = ["seed sha256: " + _h.sha256(text.encode("utf-8")).hexdigest()[:32]]
+        try:
+            lines.append("numeric seed: %s" % self.get_numeric_seed())
+        except Exception:
+            pass
+        try:
+            lines.append("project fingerprint: %s" % self._canonical_fingerprint())
+        except Exception:
+            pass
+        first = (text.strip().splitlines() or [""])[0][:60]
+        lines.append("seed: " + (first or "(empty)") + (" …" if len(text.strip().splitlines()) > 1 else ""))
+        self.seed_fingerprint = lines[0].split(": ", 1)[1]
+        return "\n".join(lines)
+
     def _canonical_fingerprint(self):
         """Order-independent short identity of the live project.
 
@@ -53931,6 +56130,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             parts = [
                 seed.strip(),
                 f"{float(self.spin_engine_strength.value()) if hasattr(self, 'spin_engine_strength') else CANONICAL_SEED_WEIGHT_DEFAULT:.4f}",
+                f"reach={float(getattr(self, 'seed_reach', 1.0)):.4f}",
+                f"div={float(getattr(self, 'seed_divergence', 0.5)):.4f}:{int(bool(getattr(self, '_r32_divergence_user', False)))}",
+                "tune=" + hashlib.sha256(repr((getattr(self, "global_tuning", {}),
+                    {str(k): (v or {}).get("tuning", {}) for k,v in (getattr(self, "instrument_param_state", {}) or {}).items()},
+                    {str(k): (m or {}).get("tuning_overrides", {}) for k,m in (getattr(self, "instrument_sequencer_memory", {}) or {}).items()})).encode("utf-8", "replace")).hexdigest()[:12],
                 "1" if (getattr(self, "chk_fullweight_seed", None) and self.chk_fullweight_seed.isChecked()) else "0",
                 f"{float(self.spin_bpm.value()) if hasattr(self, 'spin_bpm') else 120:.3f}",
                 f"{float(self.spin_base_frequency.value()) if hasattr(self, 'spin_base_frequency') else 432:.4f}",
@@ -54150,6 +56354,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         QTimer.singleShot(0, _do)
 
     def _on_live_source_changed(self, *args):
+        try:
+            __import__("live_buffer").schedule(self)     # re-arm the background live-buffer render (debounced)
+        except Exception:
+            pass
         job = getattr(self, "_canonical_commit", None)
         if job is not None and job.running:
             if self.sender() is getattr(self, "input_seed_val", None):
@@ -55508,17 +57716,46 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pass
 
     def _on_goava_toggled(self, checked):
-        """Modified to use perfect unison system"""
+        """Flip GOAVA immediately; coalesce undo/source work after the UI paints.
+
+        GOAVA activation changes a canonical engine mask whose downstream rebuild
+        can be expensive on large playlists.  The button and dependent control now
+        update synchronously, while the undo snapshot and debounced canonical
+        invalidation are deferred to the next GUI turn.  Rapid toggles collapse
+        into the latest requested state instead of queuing redundant rebuilds.
+        """
+        checked = bool(checked)
         try:
-            self.slider_goava_ensemble.setEnabled(bool(checked))
+            self.slider_goava_ensemble.setEnabled(checked)
         except Exception:
             pass
+        self.goava_active = checked
+        self._goava_toggle_generation = int(getattr(self, "_goava_toggle_generation", 0) or 0) + 1
+        # GOAVA owns potentially large canonical playlist updates.  Force this
+        # one transaction through the existing time-sliced cooperative engine
+        # even when the user's global cooperative-canonical preference is off.
+        self._goava_force_cooperative_commit = True
+        generation = self._goava_toggle_generation
+        if getattr(self, "_goava_toggle_deferred", False):
+            return
+        self._goava_toggle_deferred = True
+        try:
+            QTimer.singleShot(0, lambda g=generation: self._finish_goava_toggle(g))
+        except Exception:
+            self._finish_goava_toggle(generation)
+
+    def _finish_goava_toggle(self, generation):
+        """Commit the latest GOAVA toggle once, outside the button event stack."""
+        self._goava_toggle_deferred = False
+        latest = int(getattr(self, "_goava_toggle_generation", 0) or 0)
+        if generation != latest:
+            # A later toggle arrived before this callback; it owns the commit.
+            generation = latest
         if not getattr(self, "_undo_in_flight", False):
-            self._push_undo("GOAVA " + ("ON" if checked else "OFF"))
-        if checked:
-            self.goava_active = True
-        else:
-            self.goava_active = False
+            try:
+                self._push_undo("GOAVA " + ("ON" if bool(getattr(self, "goava_active", False)) else "OFF"))
+            except Exception:
+                pass
         self._on_live_source_changed()
 
     def _schedule_ui_after_canonical_write(self, reason="canonical-write"):
@@ -56219,20 +58456,27 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception as exc:
                 self._canonical_prepared_sequence_plan = None
                 print(f"[Canonical pool] snapshot unavailable: {exc}; using synchronous ownership-safe path")
-        if self._get_active_engine_set() and os.environ.get("GROOVEBOX_COOPERATIVE_CANONICAL", "0") != "0":
+        _force_cooperative = bool(getattr(self, "_goava_force_cooperative_commit", False))
+        if (self._get_active_engine_set() or _force_cooperative) and (                os.environ.get("GROOVEBOX_COOPERATIVE_CANONICAL", "0") != "0" or _force_cooperative):
             from canonical_cooperative import CanonicalCommit
             if job is None:
                 job = self._canonical_commit = CanonicalCommit(self)
             self._cache_realtime_control_state()
             self._live_source_update_pending = False
             self._live_source_update_dirty = False
+            self._goava_force_cooperative_commit = False
             job.start()
             return
+        self._goava_force_cooperative_commit = False
         self._live_source_update_pending = False
         self._cache_realtime_control_state()
 
         # Use perfect unison instead of individual processing
         self._ensure_perfect_unison()
+        try:
+            __import__("memory_tools").trim_soon()    # a canonical transaction allocates heavily; return it afterwards
+        except Exception:
+            pass
 
         try:
             self._refresh_canonical_fingerprint()
@@ -56249,6 +58493,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.btn_seeded_randomize.isChecked()):
             if hasattr(self, "_live_seeded_timer"):
                 self._live_seeded_timer.start()
+
+    def _ui_after_canonical_write(self, reason="canonical"):
+        """UI steps after a cooperative (time-sliced) canonical transaction: the same follow-ups the synchronous path
+        runs after _ensure_perfect_unison (live engine timers, playlist table, sequencer view)."""
+        if hasattr(self, "btn_idealize_rhythm") and self.btn_idealize_rhythm.isChecked() and hasattr(self, "_live_euclid_timer"):
+            self._live_euclid_timer.start()
+        if hasattr(self, "btn_seeded_randomize") and self.btn_seeded_randomize.isChecked() and hasattr(self, "_live_seeded_timer"):
+            self._live_seeded_timer.start()
+        for name in ("_push_restored_playlist_to_table", "reload_active_instrument_sequencer_ui"):
+            fn = getattr(self, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception as exc:
+                    print(f"[Canonical] {name} after {reason}: {exc}")
 
     def _refresh_live_dj_pair(self):
         """Choose one canonical unordered sound pair and expose its stable ID."""
@@ -56913,6 +59172,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         return max(1, min(int(n), max(1, plen)))
 
     def toggle_playback(self):
+        QTimer.singleShot(0, self._perf_sync_playback)     # boost follows play / stop (an event, not a poll)
         """Unified PLAY/PAUSE/RESUME transport over the rendered audiovisual data stream."""
         # AUDIO_ONLY_CROSS_DEACTIVATE: audiovisual play always wins over the
         # audio-only transport.
@@ -58970,6 +61230,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         snaps[kind] = None
 
     def _heuristic_apply_writer(self, kind):
+        try:
+            self._push_undo("Heuristic write")
+        except Exception:
+            pass
         kind = "automation" if str(kind).lower().startswith("auto") else "step"
         family = str(self.combo_heuristic_family.currentText()) if hasattr(self, "combo_heuristic_family") else "ℤ-Lattice"
         bias = str(self.combo_heuristic_bias.currentText()) if hasattr(self, "combo_heuristic_bias") else "Balanced"
@@ -59001,17 +61265,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
         }
         _planner = getattr(self, "_heuristic_series_plan", None)
         _series = _planner(targets, family, bias, n, scope) if callable(_planner) else {}
-        for idx, (name, sid) in enumerate(targets):
-            vv = list(values)
-            if (name, int(sid)) in _series:
-                vv = list(_series[(name, int(sid))])
-            elif idx and vv:
-                rot = int(identity_unit(name, "heuristic_rotation") * len(vv)) % len(vv)
-                vv = vv[rot:] + vv[:rot]
-            if kind == "automation":
-                self._heuristic_write_automation_into_sequence(name, sid, vv, family, bias)
-            else:
-                self._heuristic_write_step_into_sequence(name, sid, vv, family, bias, scope=scope)
+        # R33: one strip refresh for the whole batch (GLOBAL scope bakes every sequence of every instrument;
+        # each bake used to rebuild the automation widgets and rewrite canonical state: 3.6 s of UI freeze).
+        self._bake_batch_depth = getattr(self, "_bake_batch_depth", 0) + 1
+        try:
+            for idx, (name, sid) in enumerate(targets):
+                vv = list(values)
+                if (name, int(sid)) in _series:
+                    vv = list(_series[(name, int(sid))])
+                elif idx and vv:
+                    rot = int(identity_unit(name, "heuristic_rotation") * len(vv)) % len(vv)
+                    vv = vv[rot:] + vv[:rot]
+                if kind == "automation":
+                    self._heuristic_write_automation_into_sequence(name, sid, vv, family, bias)
+                else:
+                    self._heuristic_write_step_into_sequence(name, sid, vv, family, bias, scope=scope)
+        finally:
+            self._bake_batch_depth -= 1
+        if not self._bake_batch_depth and getattr(self, "_bake_batch_dirty", False):
+            self._bake_batch_dirty = False
+            for _fn in ("_canonical_write_sequencer_automation_state", "_refresh_sequencer_automation_row"):
+                try:
+                    getattr(self, _fn)()
+                except Exception:
+                    pass
         # RHYTHM_MELODY_OWNERSHIP_REGISTER: after a RHYTHM/MELODY scope write,
         # claim engine ownership so canonical passes know to blend/skip.
         _scope_up = str(scope).upper()
@@ -60056,6 +62333,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             # re-applying these to a fresh window and recomposing deterministically
             # reproduces the exported artifact's identity.
             "engine_strength": _num("spin_engine_strength", CANONICAL_SEED_WEIGHT_DEFAULT),
+            "seed_reach": float(getattr(self, "seed_reach", 1.0)),
+            "seed_divergence": float(getattr(self, "seed_divergence", 0.5)),
+            "divergence_user": bool(getattr(self, "_r32_divergence_user", False)),
+            "global_tuning": copy.deepcopy(getattr(self, "global_tuning", {})),
+            "speak_as": str(getattr(self, "speak_as", "music")),
             "synth_count": int(round(_num("spin_synth_count", 48.0))),
             "engines": {
                 "seeded": _on("btn_seeded_randomize"),
@@ -60191,6 +62473,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "sparse_density": ("spin_sparse_density", float),
             "master_volume": ("slider_master_vol", float),
             "engine_strength": ("spin_engine_strength", float),
+            "seed_reach": ("spin_seed_reach", float),
             "synth_count": ("spin_synth_count", int),
         }
         for manifest_key, (attr, cast) in setmap.items():
@@ -60215,6 +62498,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     w.blockSignals(False)
                 except Exception:
                     pass
+        try:
+            self.seed_reach = max(0.0, min(1.0, float(payload.get("seed_reach", 1.0))))
+            try:
+                import canonical_ownership as _co
+                self.canonical_ownership_policy = _co.normalize_policy(payload.get("canonical_ownership_policy"))
+            except Exception:
+                pass
+            self.canonical_operation_mode = str(payload.get("canonical_operation_mode", "Seeded Baseline → Canonical Control"))
+            self.seed_named_overrides = copy.deepcopy(payload.get("seed_named_overrides", {})) if isinstance(payload.get("seed_named_overrides", {}), dict) else {}
+            self.seed_divergence = max(0.0, min(1.0, float(payload.get("seed_divergence", 0.5))))
+            self._r32_divergence_user = bool(payload.get("divergence_user", False))
+            if isinstance(payload.get("global_tuning"), dict): self.global_tuning = dict(payload["global_tuning"])
+            self._global_tuning_touched = set(payload.get("global_tuning_touched", ()) or ())
+            self.speak_as = str(payload.get("speak_as", "music") or "music")
+            for _attr, _val in (("spin_seed_reach", self.seed_reach), ("spin_seed_divergence_menu", self.seed_divergence),
+                                ("spin_global_detune_cents", (self.global_tuning or {}).get("detune", 0.0)),
+                                ("spin_global_stretch", (self.global_tuning or {}).get("stretch", 0.0))):
+                _w = getattr(self, _attr, None)
+                if _w is not None: _w.blockSignals(True); _w.setValue(float(_val)); _w.blockSignals(False)
+            if hasattr(self, "combo_global_tuning_system"):
+                self.combo_global_tuning_system.blockSignals(True); self.combo_global_tuning_system.setCurrentText(str((self.global_tuning or {}).get("system", "equal"))); self.combo_global_tuning_system.blockSignals(False)
+            if hasattr(self, "combo_speak_as"):
+                self.combo_speak_as.blockSignals(True); self.combo_speak_as.setCurrentText(self.speak_as); self.combo_speak_as.blockSignals(False)
+        except Exception as _seed_tuning_restore_exc:
+            print(f"[Seed/Tuning] restore partially skipped: {_seed_tuning_restore_exc}")
+        if "seed_reach" in payload:
+            try: self.seed_reach = float(np.clip(float(payload.get("seed_reach", 1.0)), 0.0, 1.0))
+            except Exception: self.seed_reach = 1.0
+        if "seed_divergence" in payload:
+            try: self.seed_divergence = float(np.clip(float(payload.get("seed_divergence", 0.5)), 0.0, 1.0))
+            except Exception: self.seed_divergence = 0.5
+        self._r32_divergence_user = bool(payload.get("divergence_user", self._r32_divergence_user))
+        if isinstance(payload.get("global_tuning"), dict): self.global_tuning = dict(payload["global_tuning"])
+        if "speak_as" in payload: self.speak_as = str(payload.get("speak_as") or "music")
         dj = payload.get("dj") if isinstance(payload.get("dj"), dict) else {}
         fx = payload.get("fx") if isinstance(payload.get("fx"), dict) else {}
         fills = list(dj.items()) + list(fx.items())
@@ -61566,7 +63883,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             jpath = os.path.join(tmp, "job.json")
             with open(jpath, "w", encoding="utf-8") as f:
                 _json.dump(job, f)
-            proc = QProcess(self)
+            proc = _track_child_process(QProcess(self))
             proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
             loop = QEventLoop()
             state = {"fail": ""}
@@ -61648,7 +63965,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._export_worker_busy = False
             _sh.rmtree(tmp, ignore_errors=True)
             on_done(None, 0, f"could not pack the project: {exc}"); return None
-        proc = QProcess(self)
+        proc = _track_child_process(QProcess(self))
         proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         state = {"fail": "", "done": False}
 
@@ -62421,7 +64738,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                      "libvpx-vp9", "libvpx", "mjpeg"]
 
         presets = {
-            "libx264": ["-preset", "medium", "-crf", "18"],
+            "libx264": ["-preset", "faster", "-crf", "17"],   # ~2× the encode speed of "medium"; CRF 17 keeps the quality
             "libopenh264": ["-b:v", "2M"],
             "h264_mf": ["-b:v", "2M"],
             "libxvid": ["-qscale:v", "5"],
@@ -62487,6 +64804,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         return out
+
+    def _game_seq_length(self):
+        """R33: the game/video identity's sequence length. The spin box mirrors whichever instrument is SELECTED,
+        so a resize (which can move the selection) changed the identity; the first roster instrument survives
+        every resize, so its selected sequence's length is used (spin value as the fallback)."""
+        try:
+            names = list(getattr(self, "instrument_names_48", []) or [])
+            if names:
+                first = names[0]
+                bank = (getattr(self, "instrument_sequence_banks", {}) or {}).get(first) or {}
+                sid = (getattr(self, "instrument_selected_sequence", {}) or {}).get(first, 1)
+                mem = bank.get(sid) or bank.get(1) or (getattr(self, "instrument_sequencer_memory", {}) or {}).get(first) or {}
+                if isinstance(mem, dict) and mem.get("pattern_length"):
+                    return int(mem["pattern_length"])
+        except Exception:
+            pass
+        return int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
 
     def _composition_meta_for_game(self):
         """Snapshot for game classification — same lattice as save/export.
@@ -62585,7 +64919,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _hyper = self._hyperdrive_state(0.0, 0) if hasattr(self, "_hyperdrive_state") else {"enabled": False}
         return {
             "bpm": float(self.spin_bpm.value()) if hasattr(self, "spin_bpm") else 120.0,
-            "seq_length": int(self.spin_seq_length.value()) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH,
+            "seq_length": self._game_seq_length(),
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
             "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
             "goava_active": bool(getattr(self, "goava_active", False)),
@@ -63118,6 +65452,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
         render/export unchanged: the composition rate is not rewritten here.
         """
         key=self._shared_mixdown_key(max_rows)
+        # LIVE BUFFER: the background (medium-priority) render of this exact state, saved as RAW, is used first, so
+        # an export / Play with nothing changed skips the mixdown stage entirely.
+        if max_rows is None and not force:
+            try:
+                with self._shared_mixdown_lock:
+                    _have = key in self._shared_mixdown_cache
+                if not _have:
+                    import live_buffer as _lb
+                    _hit = _lb.lookup_key(key)
+                    if _hit is not None:
+                        with self._shared_mixdown_lock:
+                            self._shared_mixdown_cache[key] = (_hit[0], int(_hit[1]), time.monotonic())
+            except Exception:
+                pass
         # SINGLE_FLIGHT_20261107: only one render of a key at a time.
         # A second caller waits and then reads the cache.
         flight = getattr(self, "_mixdown_flight", None)
@@ -63145,6 +65493,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     pass
                 try:
                     _buffer_linker().link(self)
+                except Exception:
+                    pass
+                try:
+                    import live_buffer as _lb
+                    _lb.publish_shared_buffer(key, ent[0], int(ent[1]))
                 except Exception:
                     pass
                 try:
@@ -63187,6 +65540,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception: pass
         with self._shared_mixdown_lock:
             self._shared_mixdown_cache={key:(buf,int(sr),time.monotonic())}
+        # The same immutable PCM now feeds playback, Live Player, analysis and
+        # exports. Publish it asynchronously so these consumers warm one cache
+        # instead of scheduling a competing background mixdown.
+        try:
+            import live_buffer as _lb
+            _lb.publish_shared_buffer(key, buf, int(sr))
+        except Exception:
+            pass
         # SINGLE_FLIGHT_20261107: wake any waiter now that the buffer is stored.
         try:
             flight.get(key).set()
@@ -63667,6 +66028,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception: pass
         if hasattr(self, "scope_status_label"):
             self.scope_status_label.setText("Signed global/local sidechain contributions saved; canonical composition is global + local offset.")
+
+    def _open_instrument_designer(self):
+        """Open the local macro-based Instrument Designer (per instrument / sequence)."""
+        try:
+            from instrument_designer import open_window
+            return open_window(self)
+        except Exception as exc:
+            try: QMessageBox.warning(self, "Instrument Designer", f"Could not open Instrument Designer:\n{exc}")
+            except Exception: pass
+            return None
 
     def _open_patch_motion_matrix(self):
         dlg=getattr(self,"_patch_motion_matrix_dialog",None)
@@ -66023,8 +68394,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 window = None
 
         if window is None or not window.isVisible():
+            if window is not None:
+                # R33: the hidden previous copy is rebuilt below; release it explicitly (its signal lambdas
+                # could otherwise keep every old copy alive, so reopening a window grew memory each time).
+                try:
+                    window.deleteLater()
+                except RuntimeError:
+                    pass
             window = QWidget(None, Qt.WindowType.Window)
             window.setWindowTitle(window_title)
+            try:   # R33: styled before its content exists, so attach_math_decor's later restyle is a no-op
+                window.setStyleSheet(DAW_STYLE)
+            except Exception:
+                pass
 
             # UI_LAYOUT_2026: floating windows that scroll (Synth Editor / EDIT SYNTH,
             # Patch Modular) open sized to fit their contents but stay freely
@@ -66311,6 +68693,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 """)
                 attach_math_decor(window, app=self, light=True)
                 window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                _UserEditWatcher.attach(window, self)
                 main_layout.addWidget(QLabel(
                     f"Per-synth panel + dedicated Fractallizer: "
                     f"{current_instrument} (Node ID: {inst_index})\n"
@@ -66354,10 +68737,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
 
             elif attr_name == 'script_editor_window':
-                main_layout.addWidget(QLabel(f"Instrument Script Workspace: {current_instrument}"))
+                main_layout.addWidget(QLabel(f"Instrument Script Workspace: {self.instrument_label(current_instrument)}"))
                 script_text_area = QTextEdit()
                 script_text_area.setPlainText(self.instrument_scripts[current_instrument])
                 main_layout.addWidget(script_text_area)
+                _UserEditWatcher.attach(window, self)
 
                 btn_layout = QHBoxLayout()
                 btn_save_script = QPushButton("💾 Save Script to Instrument Memory")
@@ -66382,7 +68766,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 main_layout.addWidget(QLabel(f"Active Panel: {window_title}"))
         setattr(self, attr_name, window)
         try:
-            attach_math_decor(window, app=self)
+            # R33: windows decorated while being built (Edit Synth's light glass) keep that style; restyling the
+            # finished window here re-polished every widget (~20 % of opening Edit Synth) and replaced its style.
+            if getattr(window, "_math_decor", None) is None:
+                attach_math_decor(window, app=self)
             cw = self.centralWidget()
             # Reuse single field; do not stack another 24+24+Meum layer
             bg = _ensure_single_math_background(self, cw)
@@ -67545,7 +69932,9 @@ def _r7_single_setup(name, fn):
             return None
         busy.add(name)
         try:
-            return fn(self, *a, **kw)
+            # R33: Qt's clicked(bool) passes `checked`; the wrapped dialogs take no positional arguments.
+            _n = max(0, getattr(getattr(fn, "__code__", None), "co_argcount", len(a) + 1) - 1)
+            return fn(self, *a[:_n], **kw)
         finally:
             busy.discard(name)
     _guarded._r7_single_setup = True
@@ -67791,11 +70180,20 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     # never scrolls sideways; projects + last saves share the left column; Quick Launch is a narrow right column.
     # (Before: four equal-ish columns squeezed the chooser so its title and buttons were clipped.)
     _outer = QHBoxLayout(dlg); _outer.setContentsMargins(0, 0, 0, 0)
-    _cols = QSplitter(Qt.Orientation.Horizontal); _cols.setChildrenCollapsible(False)
+    _cols = QSplitter(Qt.Orientation.Horizontal); _cols.setChildrenCollapsible(True)
     _outer.addWidget(_cols)
+    _startup_avail = None
+    try:
+        _startup_screen = app.primaryScreen()
+        _startup_avail = _startup_screen.availableGeometry() if _startup_screen is not None else None
+    except Exception:
+        _startup_avail = None
+    _startup_aw = int(_startup_avail.width()) if _startup_avail is not None else 1280
+    _startup_ah = int(_startup_avail.height()) if _startup_avail is not None else 800
+    _startup_compact = (_startup_aw < 1180 or _startup_ah < 760)
     _scroll = QScrollArea(); _scroll.setWidgetResizable(True); _scroll.setFrameShape(QFrame.Shape.NoFrame)
-    _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    _scroll.setMinimumWidth(480)
+    _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if _startup_compact else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    _scroll.setMinimumWidth(300 if _startup_compact else 420)
     _body = QWidget(); _scroll.setWidget(_body)
     _sp = None
     _left = QSplitter(Qt.Orientation.Vertical); _left.setChildrenCollapsible(False)
@@ -67815,15 +70213,17 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         _sp = None
         print(f"[Startup] project list unavailable: {_sp_exc}")
     if _left.count():
-        _left.setMinimumWidth(max(300, _left.minimumSizeHint().width())); _left.setMaximumWidth(480)
-        _cols.addWidget(_left)
+        _left.setMinimumWidth(180 if _startup_compact else 260); _left.setMaximumWidth(480)
+        if not _startup_compact:
+            _cols.addWidget(_left)
     _cols.addWidget(_scroll)
     _ql_panel = None
     try:
         if _sp is not None:
             _ql_panel = _sp.quick_launch_panel()
-            _ql_panel.setMinimumWidth(220); _ql_panel.setMaximumWidth(320)
-            _cols.addWidget(_ql_panel)
+            _ql_panel.setMinimumWidth(150 if _startup_compact else 200); _ql_panel.setMaximumWidth(320)
+            if not _startup_compact:
+                _cols.addWidget(_ql_panel)
     except Exception as _ql_exc:
         print(f"[Startup] quick launch unavailable: {_ql_exc}")
     for _ci in range(_cols.count()):
@@ -67838,6 +70238,11 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
             pass
     dlg.finished.connect(_stop_quick_launch)
     lay = QVBoxLayout(_body)
+    if _startup_compact:
+        if _left.count():
+            _left.setMinimumWidth(0); _left.setMaximumWidth(16777215)
+        if _ql_panel is not None:
+            _ql_panel.setMinimumWidth(0); _ql_panel.setMaximumWidth(16777215)
     try:
         _sg = (app.primaryScreen().availableGeometry())
         dlg.setMinimumSize(min(560, int(_sg.width() * 0.96)), min(560, int(_sg.height() * 0.9)))
@@ -68105,10 +70510,18 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     try:
         screen = app.primaryScreen()
         if screen is not None:
-            area = screen.geometry()
-            # Sit in the band under the 40px bar, not behind it.
+            # Use the work area rather than full display geometry. The old
+            # 56px fixed top offset clipped the lower controls on short laptop
+            # displays after UI scaling; the vertical scroll body then could
+            # not be scrolled to its final action buttons reliably.
+            area = screen.availableGeometry()
+            margin = max(6, min(18, int(area.height() * 0.02)))
+            max_h = max(480, area.height() - 2 * margin)
+            max_w = max(560, area.width() - 2 * margin)
+            if dlg.height() > max_h or dlg.width() > max_w:
+                dlg.resize(min(dlg.width(), max_w), min(dlg.height(), max_h))
             x = int(area.x() + max(0, (area.width() - dlg.width()) / 2))
-            y = int(area.y() + 56)
+            y = int(area.y() + margin)
             dlg.move(x, y)
     except Exception:
         pass
@@ -68121,6 +70534,15 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     QTimer.singleShot(0, _raise_startup)
     QTimer.singleShot(40, _raise_startup)
     QTimer.singleShot(120, _raise_startup)
+    if _startup_compact:
+        # Narrow/high-DPI laptops use one vertically scrollable column. Keeping
+        # the project browser and Quick Launch reachable is preferable to
+        # clipping three independently-minimum-width side-by-side panels.
+        if _left.count():
+            _left.setMinimumHeight(170)
+            lay.addWidget(_left)
+        if _ql_panel is not None:
+            lay.addWidget(_ql_panel)
     try:
         dlg.exec()
     except Exception as exc:
@@ -68414,6 +70836,14 @@ if __name__ == "__main__":
     import sys
     import multiprocessing
     multiprocessing.freeze_support()
+    # R33: an exception inside a Qt slot must never abort the whole session (PyQt6's default calls qFatal).
+    # run_groovebox.py installs a logging hook; a direct "python groovebox.py" launch gets this one.
+    if sys.excepthook is sys.__excepthook__:
+        def _gb_uncaught(exc_type, exc_value, exc_tb):
+            import traceback as _tb_mod
+            print("\n[Groovebox] uncaught exception (session kept running):", file=sys.stderr)
+            _tb_mod.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+        sys.excepthook = _gb_uncaught
     # WEBENGINE_GL_SHARE_2026: must be set before the first QApplication is
     # constructed, or the Performance "Web Browser" tab's QtWebEngine import
     # raises ImportError the first time it's used. No-op if WebEngine is

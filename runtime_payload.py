@@ -1,7 +1,7 @@
 """One root-module inventory for ISO and executable builds."""
 from pathlib import Path
 
-REFERENCE_MODULES = frozenset({"groovebox_newold", "groovebox_reference", "groovebox_seqfix"})
+REFERENCE_MODULES = frozenset({"groovebox_reference", "groovebox_seqfix"})
 
 
 def runtime_sources(root):

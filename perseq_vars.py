@@ -1,7 +1,7 @@
 """perseq_vars.py — GROOVEBOX_R32_PERSEQ_VARIABLES_20261110
 
 PER-SEQUENCE WORKSPACE VARIABLES (canonical control over the playlist)
-  • Blue button "Edit Local/PerSeq Global UI Variables" (panel synth area). While ON, every change you make to a
+  • Blue button "Edit Per-Sequence / Global UI Variables" (panel synth area). While ON, every change you make to a
     global workspace variable (FX, EQ, synth engine, Mod Osc, mixers, expression, game macros … — every automation
     target) is stored as LOCAL state of the selected sequence (instrument # sequence). Turning it OFF puts the
     global values back exactly as they were, so local edits never leak into the global state.
@@ -216,7 +216,7 @@ def overlay(app):
                 return None
 
         def _flag(self, qp, r, text, col):
-            qp.setFont(QFont("Sans", 8, QFont.Weight.Bold))
+            qp.setFont(QFont("Arial", 8, QFont.Weight.Bold))
             fm = qp.fontMetrics(); wdt = min(int(r.width()) + 40, fm.horizontalAdvance(text) + 12)
             fr = QRectF(r.left() + 6, r.top() - 15, wdt, 16)
             c = QColor(col); c.setAlpha(225); qp.setBrush(QBrush(c)); qp.setPen(Qt.PenStyle.NoPen)
@@ -277,7 +277,7 @@ def make_button(app):
     """The blue panel-synth-area button (+ morph amount, votes)."""
     from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QDoubleSpinBox, QComboBox
     w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(2)
-    b = QPushButton("Edit Local/PerSeq\nGlobal UI Variables"); b.setCheckable(True); b.setMinimumSize(128, 56)
+    b = QPushButton("Edit Per-Sequence\n/ Global UI Variables"); b.setCheckable(True); b.setMinimumSize(128, 56)
     b.setToolTip("ON: changes to global workspace variables are stored for the selected sequence (blue panels). "
                  "OFF: the global values come back. The playlist morphs global → per-sequence by each row's shift vote.")
     b.setStyleSheet("QPushButton{background:#0f2a4a;color:#bfe1ff;border:2px solid #3aa0ff;border-radius:8px;font-weight:900;}"

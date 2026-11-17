@@ -101,6 +101,12 @@ def wrap(w) -> bool:
             if isinstance(only, (QScrollArea, QAbstractScrollArea)):
                 w.setProperty(_MARK, True)
                 return False
+        # R33: a window whose layout already holds a scroll area manages its own scrolling. Re-parenting such a
+        # (usually huge) layout into another scroll area re-polished thousands of widgets: ~3.5 s of the 9 s it
+        # took to open Edit Synth on the UI thread.
+        if any(isinstance(lay.itemAt(i).widget(), QScrollArea) for i in range(lay.count())):
+            w.setProperty(_MARK, True)
+            return False
         m = lay.contentsMargins()
         body = QWidget()
         body.setLayout(lay)                              # re-parents the layout and every managed child to body

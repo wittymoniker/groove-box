@@ -108,8 +108,20 @@ def persist_job(job):
     try:
         d = _store("export_queue")
         shutil.copy2(job.project, os.path.join(d, "%d.MCC" % job.id))
+        buffer_hint = None
+        try:
+            hint = (job.options or {}).get("live_buffer_descriptor")
+            if isinstance(hint, dict):
+                import live_buffer as _lb
+                if _lb.validate_descriptor(hint): buffer_hint = hint
+        except Exception:
+            buffer_hint = None
         with open(os.path.join(d, "%d.json" % job.id), "w", encoding="utf-8") as f:
-            json.dump({"kind": job.kind, "out_file": job.out_file, "options": job.options, "label": job.label}, f, default=str)
+            json.dump({"schema": 3, "kind": job.kind, "out_file": job.out_file,
+                       "options": job.options, "label": job.label,
+                       "buffer_contract": "groovebox-live-pcm/2",
+                       "buffer_descriptor": buffer_hint,
+                       "buffer_policy": "validated-cache-hint-or-rebuild-from-frozen-project"}, f, default=str)
     except Exception:
         pass
 
@@ -136,6 +148,21 @@ def resume_exports(app):
             meta = json.load(open(jp, encoding="utf-8"))
             doc = json.load(open(mp, encoding="utf-8"))
             opts = dict(meta.get("options") or {})
+            # Resume never trusts process-local PCM object identities. The frozen MCC
+            # snapshot is authoritative; shared/content-addressed buffers are rebuilt
+            # or reattached by the normal render-key path after restart.
+            opts["resume_buffer_contract"] = str(meta.get("buffer_contract") or "legacy-rebuild")
+            # A cache descriptor is only a hint. Validate schema, PCM header, render
+            # identity and payload checksum; otherwise rebuild from the frozen MCC.
+            descriptor = meta.get("buffer_descriptor")
+            cache_valid = False
+            try:
+                import live_buffer as _lb
+                cache_valid = bool(_lb.validate_descriptor(descriptor))
+            except Exception:
+                cache_valid = False
+            opts["resume_buffer_descriptor"] = descriptor if cache_valid else None
+            opts["force_buffer_rebuild_on_resume"] = not cache_valid
             pre = dict(opts.get("preset") or {}); pre["resume"] = True; opts["preset"] = pre
             sch.submit_job(meta["kind"], meta["out_file"], opts, label="↻ " + str(meta.get("label") or ""), project_doc=doc)
             for x in (jp, mp):                   # R32.9: only after it is safely queued again (it re-persists itself)

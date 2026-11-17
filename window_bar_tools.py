@@ -262,7 +262,7 @@ class ExportProgressBar(QLabel):
         self._sch = None
         self.setMinimumWidth(180)
         self.setText("exports idle")
-        self.setStyleSheet("color:#9fb0c4;")
+        (self.styleSheet() != "color:#9fb0c4;" and self.setStyleSheet("color:#9fb0c4;"))
         self._poll = QTimer(self)
         self._poll.setInterval(1000)
         self._poll.timeout.connect(self._tick)
@@ -298,11 +298,11 @@ class ExportProgressBar(QLabel):
             pct = int(j.progress)
             bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
             self.setText("%s %d%%  %s%s" % (bar, pct, j.label[:24], ("  +%d" % len(queued)) if queued else ""))
-            self.setStyleSheet("color:#7fffd4; font-weight:700;")
+            (self.styleSheet() != "color:#7fffd4; font-weight:700;" and self.setStyleSheet("color:#7fffd4; font-weight:700;"))
         elif queued:
             self.setText("%d queued" % len(queued))
-            self.setStyleSheet("color:#f2d17a;")
+            (self.styleSheet() != "color:#f2d17a;" and self.setStyleSheet("color:#f2d17a;"))
         else:
             done = sum(1 for j in sch.jobs if j.state == "done")
             self.setText("exports idle" if not done else "%d done" % done)
-            self.setStyleSheet("color:#9fb0c4;")
+            (self.styleSheet() != "color:#9fb0c4;" and self.setStyleSheet("color:#9fb0c4;"))
