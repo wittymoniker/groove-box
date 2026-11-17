@@ -77,6 +77,15 @@ def _watch(threshold, here):
             pass
         if dur > 1000:
             print("[UI stall] %.0f ms in %s" % (dur, top[0] if top else "?"), file=sys.stderr)
+        cb = _ON_RECORD
+        if cb is not None:
+            try:
+                cb(rec)
+            except Exception:
+                pass
+
+
+_ON_RECORD = None
 
 
 def install(app=None, threshold_ms=250):

@@ -19,7 +19,7 @@ _VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
          "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 _SHARED = None
 _SHARED_LOCK = threading.Lock()
-_MAX_SHARED_WORKERS = 4
+_MAX_SHARED_WORKERS = 6           # R98: +2 shared workers (capped by cores and memory)
 
 
 def _read_int(path):
@@ -214,7 +214,7 @@ def lane_workers():
     cores = usable_cores()
     # One logical CPU is kept for GUI/audio, a second is reserved when possible
     # for the OS/compositor and bursty driver callbacks.
-    safe = max(1, min(_MAX_SHARED_WORKERS, cores - (2 if cores >= 3 else 1)))
+    safe = max(1, min(_MAX_SHARED_WORKERS, cores - (1 if cores >= 4 else (2 if cores >= 3 else 1))))
     safe = _memory_headroom_cap(safe)
     if forced > 0:
         safe = min(safe, forced)
@@ -223,7 +223,7 @@ def lane_workers():
 
 def engine_workers():
     """Reserve up to two bounded workers for canonical/tracker engine work."""
-    return min(2, max(0, lane_workers() - 2))
+    return min(3, max(0, lane_workers() - 2))      # R98: one more canonical / synth engine worker
 
 
 def bulk_workers():
@@ -330,7 +330,8 @@ def interactive_workers():
     # Reserve exactly one worker when the aggregate budget can support it.
     # This prevents file/dialog/preview work from waiting behind long bulk jobs
     # without increasing total process concurrency.
-    return 1 if lane_workers() >= 2 else 0
+    w = lane_workers()
+    return 2 if w >= 5 else (1 if w >= 2 else 0)    # R98: second interactive worker (live audio / Live Player) when room
 
 
 def _interactive_executor():
@@ -1036,3 +1037,10 @@ def gentle_collect():
         gc.collect(0)
     except Exception:
         pass
+
+
+
+def live_player_extra():
+    """R98: extra workers given to the Live Player canonical / video-synth / streamer elements (1–2 by core count)."""
+    c = usable_cores()
+    return 2 if c >= 6 else (1 if c >= 3 else 0)
