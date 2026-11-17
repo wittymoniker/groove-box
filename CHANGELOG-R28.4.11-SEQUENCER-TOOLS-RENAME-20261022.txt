@@ -1,0 +1,32 @@
+R28.4.11 — SEQUENCER TOOL COHERENCE + FILE RENAME
+
+- Added sequencer_schema.py compatibility normalization for legacy and new STEP
+  automation lanes: phase_shift, EQ gain/frequency/Q, sidechain depth, and phase
+  modulation depth. Unknown sequence keys and ownership metadata pass through.
+- Project save/load serialization normalizes both active sequence memory and bank
+  entries through the same schema helper, while retaining sequence IDs, custom
+  fields, and existing engine ownership/source metadata.
+- Clear Memory initializes neutral STEP control lanes and clears the math-writer
+  userdata artifact. Randomize paths remain non-destructive to that userdata unless
+  the existing Canonical Overwrite protection policy explicitly permits clearing it.
+- Mathematical Composition Lab v1.1 exports versioned STEP lane arrays and per-event
+  step_controls. Lane controls are editable in the lab and committed patterns remain
+  in the existing persisted math_writer_userdata branch.
+- File Manager Rename now preserves MCC/MGPR extensions when omitted, refuses
+  invalid leaf names and collisions, never overwrites a destination, and refreshes
+  the current-project path/index when the active project is renamed. The health panel
+  also offers a generic Rename File action.
+- Player/DJ now retries remaining installed media backends when a launched player
+  exits immediately with a nonzero code. Attempts are bounded to mpv/VLC/FFplay; the
+  system-default routing and the known-good direct PCM path are retained.
+
+Validation scope: pure-Python schema and lab tests, syntax compilation, archive
+integrity, overlay synchronization. GUI interaction, full audio render, video/game
+runtime consumers, HDMI hotplug, physical SD-card reader, and ISO boot require device
+acceptance testing and are not claimed passed.
+
+Hardware note: existing HDMI output prioritization and removable-media rescan/retry
+contracts are retained. The user's analog headphone/speaker/microphone paths are the
+known-good baseline. HDMI audio and physical microSD reader operation remain unverified
+until tested on the target machine. The player fallback is a software resilience fix,
+not proof that a specific exported .audio.wav file is valid or that all sinks work.

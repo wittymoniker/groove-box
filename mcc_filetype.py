@@ -128,10 +128,16 @@ def _register_linux(app_script=None):
     )
     umd = shutil.which("update-mime-database")
     if umd:
-        subprocess.run([umd, str(home / ".local/share/mime")], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:      # PROBE_TIMEOUT_R7: a wedged desktop database must not freeze file-type registration
+            subprocess.run([umd, str(home / ".local/share/mime")], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
     xdg = shutil.which("xdg-mime")
     if xdg:
-        subprocess.run([xdg, "default", DESKTOP_ID, MIME_TYPE], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.run([xdg, "default", DESKTOP_ID, MIME_TYPE], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
     return True, "Linux .MCC MIME/default association registered for current user"
 
 
@@ -142,6 +148,9 @@ def _register_macos(app_script=None):
     if app:
         lsregister = Path("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
         if lsregister.exists():
-            subprocess.run([str(lsregister), "-f", str(app)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                subprocess.run([str(lsregister), "-f", str(app)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
             return True, "macOS .MCC LaunchServices association refreshed"
     return False, "macOS source mode cannot own a file type; build the .app bundle first"

@@ -1,0 +1,10 @@
+R28.4.19 validation
+
+PASS: verify_v35_22zz_r23h.py — linked volume, media keys, Realtek microSD recovery contracts
+PASS: verify_v35_22zz_r23s_hdmi_microsd_audio.py — 8 HDMI/microSD route contracts
+PASS: Python compilation — root and active overlay media_output_router.py, performance.py, new verifier
+PASS: shell syntax — v35_22zz/sos-hardware-volume-v35_22zz_r23h
+PASS: root media_output_router.py matches active app-overlay-v35.22zz/media_output_router.py byte-for-byte
+PASS: archive integrity checks for all produced ZIP files
+
+LIMITS: No full ISO build/boot, physical HDMI output, laptop-speaker acoustic test, or physical microSD card test was performed. Source-contract success is not a claim of hardware-certified sound.

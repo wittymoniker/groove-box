@@ -91,6 +91,14 @@ class LiveEditController(QObject):
         m = self.mgr
         if m is None:
             return
+        # Keep collaboration visible to the same global resource precedence
+        # used by preview and pool planning. This is telemetry only: draining ET
+        # remains on the GUI thread and is never delayed by a background gate.
+        try:
+            import global_intelligence as gi
+            gi.plan({"edit_together": len(m.pending_invites) + len(m.pending_requests)})
+        except Exception:
+            pass
         lines = m.drain()
         for ln in lines:
             if ln.startswith("AUTOJOIN:"):
@@ -122,8 +130,9 @@ class LiveEditController(QObject):
             self.show_requests(auto=True)
 
     # ----------------------------------------------------- R32.9 notifications
-    def _card(self, title, body, actions):
-        """Small always-on-top card near the top-right of the main window; never steals focus."""
+    def _card(self, title, body, actions, timeout_s=60):
+        """Small always-on-top card at the bottom-right of the main window; never steals focus.
+        R33: it closes itself after `timeout_s` (it used to stay over the toolbars until clicked)."""
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         cards = self.__dict__.setdefault("_cards", [])
@@ -148,13 +157,17 @@ class LiveEditController(QObject):
             btn = QPushButton(cap); btn.clicked.connect(lambda _c=False, f=fn: (f(), close())); row.addWidget(btn)
         row.addStretch(1); lay.addLayout(row)
         w.adjustSize(); cards.append(w); self._place_cards(); w.show()
+        if timeout_s:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(int(timeout_s * 1000), lambda: (w in cards) and close())
         return w
 
     def _place_cards(self):
         try:
-            g = self.host.geometry(); y = g.top() + 70
+            # R33: stacked upward from the bottom-right corner, clear of the toolbars and menus at the top.
+            g = self.host.geometry(); y = g.bottom() - 48
             for c in list(getattr(self, "_cards", [])):
-                c.move(g.right() - c.width() - 24, y); y += c.height() + 8
+                y -= c.height(); c.move(g.right() - c.width() - 24, y); y -= 8
         except Exception:
             pass
 
@@ -172,13 +185,13 @@ class LiveEditController(QObject):
             who = inv.get("from_name", "A Groovebox")
             self._card("🤝 Edit Together invite", "%s invites you to edit “%s” together." % (who, inv.get("name", "a project")),
                        [("Join", lambda: (m.join(inv, self.snapshot, self.apply), self._status("🤝 Joined “%s”" % inv.get("name", "")))),
-                        ("Not now", lambda: m.deny("invite", key))])
+                        ("Not now", lambda: m.deny("invite", key))], timeout_s=90)
         else:
             req = m.pending_requests.get(key) or {}
             who = req.get("from_name", "A Groovebox")
             self._card("🤝 Edit Together request", "%s asks to edit your project with you.%s" % (who, ("\n“%s”" % req["note"]) if req.get("note") else ""),
                        [("Approve", lambda: (m.approve_request(key, self.snapshot, self.apply), self._status("🤝 %s joined" % who))),
-                        ("Not now", lambda: m.deny("request", key))])
+                        ("Not now", lambda: m.deny("request", key))], timeout_s=90)
 
     def _offer_nearby(self):
         """The first time another Groovebox appears on the network, offer Edit Together in one click."""
@@ -203,7 +216,7 @@ class LiveEditController(QObject):
             self._card("📡 %s is on your network" % name, "Edit a project together live (playlist, sequences, seed, FX …).",
                        [("Edit together", lambda n=node, nm=name: (m.request(n, "from the nearby notification"),
                                                                   self._status("📨 Asked %s to edit together" % nm))),
-                        ("Not now", lambda: None)])
+                        ("Not now", lambda: None)], timeout_s=25)
             break                                   # one card at a time
 
     def _status(self, text):
@@ -232,11 +245,14 @@ class LiveEditController(QObject):
                                                  if pulse else " QPushButton { border:3px solid #fb8500; }"))
         elif live:
             btn.setText(f"{_BTN_BASE_TEXT}\n🤝 Editing together · “{m.session.name}” v{m.session.version}")
-            btn.setStyleSheet(self._btn_style + " QPushButton { border:3px solid #3bd18a; }")
+            _ss = self._btn_style + " QPushButton { border:3px solid #3bd18a; }"
+            if btn.styleSheet() != _ss:             # R33: identical restyles repaint the subtree
+                btn.setStyleSheet(_ss)
         else:
             if btn.text() != _BTN_BASE_TEXT:
                 btn.setText(_BTN_BASE_TEXT)
-            btn.setStyleSheet(self._btn_style)
+            if btn.styleSheet() != self._btn_style:
+                btn.setStyleSheet(self._btn_style)
 
     # -------------------------------------------------------- user actions
     def start_with(self, members, name):

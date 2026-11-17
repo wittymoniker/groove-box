@@ -18,6 +18,8 @@ import numpy as np
 
 _CACHE = OrderedDict()
 _CACHE_MAX = 256
+_CACHE_BYTES_MAX = 64 * 1024 * 1024
+_CACHE_BYTES = 0
 _JULIA_OK = None
 
 
@@ -82,8 +84,10 @@ def fill_block(vec: dict, n: int, sr: int = 48000) -> np.ndarray:
             return out * float(vec["amp"])
     except Exception:
         pass
-    if _julia_parity(vec):
-        # Experimental operators only; the fill itself stays local.
+    try:   # R99: the hybrid router picks NumPy / LuaJIT / Julia for this fill, parity-checked against NumPy
+        import hybrid_runtime as hr
+        return hr.run("osc_fill", float(vec["phase"]), float(vec["freq"]), n, sr, float(vec["amp"]), float(vec["meum"]))
+    except Exception:
         pass
     return (np.sin(phase) * float(vec["amp"]) * float(vec["meum"])).astype(np.float32)
 
@@ -93,19 +97,30 @@ def pool_block(seed, instrument: str, block: int, t: float, n: int, sr: int = 48
     """Return (vector, buffer), using the identity cache."""
     fp = fingerprint(seed, script)
     key = (fp, str(instrument), int(block))
+    global _CACHE_BYTES
     hit = _CACHE.get(key)
     if hit is not None:
         _CACHE.move_to_end(key)
-        return hit, fill_block(hit, n, sr)
+        vec, cached_buf = hit
+        if cached_buf.shape == (max(1, int(n)),):
+            return dict(vec), cached_buf.copy()
     vec = control_vector(seed, t, script, env_fn)
     buf = fill_block(vec, n, sr)
-    _CACHE[key] = vec
-    while len(_CACHE) > _CACHE_MAX:
-        _CACHE.popitem(last=False)
+    frozen = np.ascontiguousarray(buf, dtype=np.float32).copy()
+    previous = _CACHE.pop(key, None)
+    if previous is not None and isinstance(previous, tuple) and len(previous) == 2 and isinstance(previous[1], np.ndarray):
+        _CACHE_BYTES = max(0, _CACHE_BYTES - previous[1].nbytes)
+    _CACHE[key] = (dict(vec), frozen)
+    _CACHE_BYTES += frozen.nbytes
+    while len(_CACHE) > _CACHE_MAX or _CACHE_BYTES > _CACHE_BYTES_MAX:
+        _old_key, old = _CACHE.popitem(last=False)
+        if isinstance(old, tuple) and len(old) == 2 and isinstance(old[1], np.ndarray):
+            _CACHE_BYTES = max(0, _CACHE_BYTES - old[1].nbytes)
     return vec, buf
 
 
 def visual_vector(seed, instrument: str, block: int):
     """What the visual pool should read. None if the audio block is not cached yet."""
     fp = fingerprint(seed, "")
-    return _CACHE.get((fp, str(instrument), int(block)))
+    item = _CACHE.get((fp, str(instrument), int(block)))
+    return dict(item[0]) if item else None

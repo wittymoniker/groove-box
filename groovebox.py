@@ -9826,7 +9826,7 @@ class VideoSynthEngine:
         # R12_VIDEO_OBJECT_THREADS / R30.3_SHARED_POOL: frame-object FX uses
         # the same bounded process-wide sCode executor as every other window.
         _vw = (_thread_budget.migratory_threads() if (_thread_budget and getattr(_thread_budget, "migratory_threads", None)) else (_thread_budget.lane_workers() if _thread_budget else 1))
-        self._video_object_pool = (_thread_budget.make_lane("video-object", max_workers=_vw, max_pending=64)
+        self._video_object_pool = (_thread_budget.make_lane("video-object", max_workers=_vw + 1, max_pending=64)   # R98: +1 video-synth worker
                                    if _thread_budget is not None else ThreadPoolExecutor(max_workers=1, thread_name_prefix="video-object"))
         try:
             _window_organizer().coordinate_pool("video-object", _vw)
@@ -18243,6 +18243,94 @@ IMPORT MAP — APPLICATION MODULE MAP
   synth-engine value you change is stored for the selected sequence and morphed in
   by each playlist row's Per-Seq Vote at render, like the blue Edit Per-Sequence / Global
   button.
+
+45. STUDIO, NETWORK AND CODE TOOLS
+
+45.1 Checkpoints and recovery (Task pad ▸ Studio ▸ 🛟)
+  A full checkpoint is taken before Clear Memory, around Configure Entire Project, for
+  every Autopilot project and before any restore. If Groovebox did not close normally,
+  the Recovery window opens at the next start. Restoring uses the same loader as
+  File ▸ Open.
+
+45.2 Autopilot supervisor
+  Pause, Resume, Skip instrument, Skip project, Restart, a delay between projects (0 =
+  continuous), "Visit every instrument page", "Record each Autopilot play" and "Master
+  each recorded take" (both off by default). The status line shows the project, phase,
+  instrument, progress and a countdown to Live Player. The supervisor holds and keeps
+  the project when playback stops making progress or an export fails.
+
+45.3 Notices (🔔 in the status bar)
+  The newest notice, short; click for the full list: UI stalls, skipped canonical
+  updates, audio errors, export checks, resource warnings, network events.
+
+45.4 Mod Matrix and canonical distribution (🧬)
+  Any source (LFOs, the seed, canonical level, playhead, MIDI CC, patch bay, automation
+  targets, earlier rows, plugin controls) × any method (add, multiply, ring, min, max,
+  crossfade, FM, fold, sample-and-hold, gate, quantize) → any target, including the
+  global panel and the FX panels. Canonical distribution spreads the canonicals' effect
+  over many controls instead of one; you choose the scope, kernel, budget, cap and what
+  it reads, and it only replaces a distribution that scores better.
+
+45.5 Carrier layers (🎞)
+  Layers for the global carrier and each instrument carrier: start row, length, stretch,
+  pitch, gain, offset, fade, loop, reverse, mute, solo. The mix is the carrier.
+
+45.6 Seed Atlas (🌌)
+  A bounded tree of the ways a seed becomes sound, picture, game or 3D. Every node is
+  reproducible from its address; open a node to go one level down. A node can become an
+  instrument voice, a music video, a playable game, the window background, the video
+  OBJ, the Global Seed, or input for an external app.
+
+45.7 Experiences (🗺)
+  Every creation and its science (seed, canonicals, tempo, tuning, checks), with your
+  rating, tags and notes; search, compare, lineage, export as CSV / JSON.
+
+45.8 Plugins (🔌) and Randomize project (🎲)
+  70+ plugins in Python, Lua, C, C++, Rust, Go, Julia and shell: content makers,
+  informative tools, four games and four live tools. A plugin runs in its own process
+  (or in the Lua sandbox), may only ask for changes through validated requests (applied
+  as one undo step, rolled back on any error) and stays under the external share of CPU
+  and memory. Bind a plugin as an instrument's carrier, use its controls.json as Mod
+  Matrix sources, or run it on seed change, canonical commit, export or project load.
+  Share plugins on the LAN, install them from nearby Grooveboxes (they never run by
+  themselves) and rate them. Randomize project picks a seed, random plugins with their
+  own states and / or random samples, keeping a chosen percentage of the instruments on
+  the original synth.
+
+45.9 Lua workspace (🌙) and Program Builder (🛠)
+  Lua runs in a sandbox (no files, no system calls, an instruction budget) with the gb.*
+  API; Compile saves bytecode. The Program Builder compiles and runs C, C++, Rust, Go,
+  Julia, Lua, Python and shell programs with the Groovebox environment; their output
+  files come back into Groovebox.
+
+45.10 Hybrid kernels and the sCode tree (🌳)
+  Maths kernels run on NumPy, Rust, LuaJIT or Julia, whichever is fastest on this
+  machine and matches the NumPy reference. All work goes through sCode directions
+  (audio, UI offload, canonical, video, hybrid, scripts, export, programs, background);
+  the sCode tree shows the directions, lanes and child processes.
+
+45.11 External application limit
+  Apps launched from Groovebox, Seed Atlas sends and user programs stay strictly under
+  a share of the CPU and of memory (System setting external_app_share, 0.19758 by
+  default).
+
+45.12 Network (🌐)
+  Radio: name, logo, a running order you arrange, on air on the LAN, with a page on your
+  site, comments, messages to the host and ratings. Nearby radios pop up; Trusted and
+  Housemate stations can start playing on their own. Blog: a simple editor; posts appear
+  at /blog. Files: host any file with embed players (/hosted, /embed/<id>). Trust:
+  Housemate, Trusted, Friend, Public, Blacklist 1 (read only), 2 (no downloads), 3
+  (blocked). Host network: a network name and key; primary hosts and gig stations keep
+  the same posts, files, comments and notices and pull changes from each other; members
+  announce their libraries and get notices, failing over between hosts.
+
+45.13 More tools
+  Math Lab (🧮), Project tools (🩺: health, compare, batch browser, preview, templates,
+  sequence morph), Extras (🧰: find any control with Ctrl+Shift+F, project history,
+  stems, crash report bundle), Features (✨: piano roll, arrangement, clip launcher, MIDI
+  clock and learn, scale lock, groove, slicer, audio → sequence, video titles and grade,
+  camera path, game export, presets, templates, A/B morph, profiler, plugins, folder
+  sync, tour). Alt + right-click any control to see where its value comes from.
 """
     def __init__(self, parent=None, dimensions=('x', 'y', 'z'), survival_mode=True, sample_rate=44100):
         super().__init__(parent)
@@ -21896,6 +21984,62 @@ class _LongHoldQuitButton(QToolButton):
             print(f"[Quit] emergency hold action failed: {exc}")
 
 
+class _ApplicationsLauncherTile(QWidget):
+    """Prominent Plugins launcher with a compact Programs shortcut inset.
+
+    The Programs control is intentionally overlaid in the upper-right corner
+    of the Plugins tile: Plugins is the primary destination, while Programs
+    remains one-click accessible without consuming another taskbar slot.
+    """
+    def __init__(self, open_extra, parent=None):
+        super().__init__(parent)
+        self._open_extra = open_extra
+        self.setObjectName("grooveboxApplicationsLauncherTile")
+        self.setFixedSize(154, 34)
+        self.setToolTip("Plugins launcher · shipped Lua / hybrid / native plugins and installed applications")
+        self.plugins_btn = QToolButton(self)
+        self.plugins_btn.setObjectName("grooveboxPluginsPrimary")
+        self.plugins_btn.setText("🔌  PLUGINS")
+        self.plugins_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.plugins_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.plugins_btn.setToolTip("Open the Plugins launcher: browse, inspect, run, bind and manage plugins")
+        self.plugins_btn.clicked.connect(lambda: self._open_extra("plugins"))
+        self.plugins_btn.setStyleSheet(
+            "QToolButton#grooveboxPluginsPrimary {"
+            " color:#f2fff9; font-weight:900; font-size:12px; letter-spacing:1px;"
+            " text-align:left; padding:7px 38px 5px 10px;"
+            " border:1px solid #65d9ad; border-radius:7px;"
+            " background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #173f3a,stop:0.55 #126b5b,stop:1 #203f67);"
+            "} QToolButton#grooveboxPluginsPrimary:hover {"
+            " background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #226354,stop:1 #315b91);"
+            " border:1px solid #b4ffe0; }"
+            "QToolButton#grooveboxPluginsPrimary:pressed { background:#102c2a; }"
+        )
+        self.programs_btn = QToolButton(self)
+        self.programs_btn.setObjectName("grooveboxProgramsInset")
+        self.programs_btn.setText("Programs")
+        self.programs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.programs_btn.setToolTip("Open Programs · build and run Lua / Python / C / C++ / Rust / Go / Julia / shell projects")
+        self.programs_btn.clicked.connect(lambda: self._open_extra("programs"))
+        self.programs_btn.setStyleSheet(
+            "QToolButton#grooveboxProgramsInset { color:#f8f4ff; font-size:8px; font-weight:800;"
+            " padding:1px 4px; border:1px solid rgba(219,190,255,210); border-radius:4px;"
+            " background:rgba(40,28,66,235); }"
+            "QToolButton#grooveboxProgramsInset:hover { background:#69469a; border-color:#ffffff; }"
+        )
+        self._layout_children()
+
+    def _layout_children(self):
+        self.plugins_btn.setGeometry(self.rect())
+        w, h = 62, 16
+        self.programs_btn.setGeometry(max(0, self.width()-w-4), 3, w, h)
+        self.programs_btn.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._layout_children()
+
+
 class _GrooveboxWindowStrip(QWidget):
     """Always-visible Wayland window recovery strip outside Groovebox windows.
 
@@ -21972,9 +22116,23 @@ class _GrooveboxWindowStrip(QWidget):
         self.new_btn.setToolTip("Open another Performance, Player or Live Player as its own tab — e.g. several players side by side to scan media.")
         self.new_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         _new_menu = QMenu(self.new_btn)
-        for _label, _kind in (("🎛 Performance", "performance"), ("▶ Player", "player"), ("🎧 Live Player", "live_player")):
+        _new_types = (
+            ("🎛 Performance", "performance"), ("▶ Media Player", "player"),
+            ("🎧 Live Player", "live_player"), ("🎹 Multidim Synth", "multidim"),
+            ("🧱 3D / Scenograph", "studio_3d"), ("🎬 Video Synth", "video_synth"),
+            ("🎮 Game Scene Studio", "game_studio"), ("🎼 Composition Lab", "composition_lab"),
+            ("🧬 Seed Atlas", "seed_atlas"), ("🧪 Seed / Script Studio", "script_studio"),
+            ("🔌 Plugin Library", "plugins"), ("🌙 Lua Workspace", "lua"),
+            ("🛠 Program Builder", "programs"), ("📂 File Studio", "files"),
+            ("🗺 Experiences", "experiences"), ("📈 Project / Science Tools", "science"),
+        )
+        for _label, _kind in _new_types:
             _new_menu.addAction(_label, lambda k=_kind: self._open_extra(k))
         self.new_btn.setMenu(_new_menu)
+        # Primary Applications destination is Plugins. Programs is a compact
+        # inset shortcut on the same tile, avoiding a second full taskbar slot.
+        self.apps_btn = _ApplicationsLauncherTile(self._open_extra, self)
+        row.addWidget(self.apps_btn, 0)
         # WINDOW_BAR_R31: export progress dropdown, quick actions, UI-stall report.
         try:
             from window_bar_tools import ExportsButton, ActionsButton, StallLabel, ExportProgressBar
@@ -24546,6 +24704,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if os.environ.get("GROOVEBOX_HEADLESS_WORKER", "") != "1":
             try:
                 install_window_backgrounds(self)
+            except Exception:
+                pass
+            # Warm the optional Go hybrid kernel from sCode's shared worker pool.
+            # Compilation/loading is never performed on the Qt or realtime-audio thread.
+            try:
+                import hybrid_runtime as _hybrid_runtime
+                _hybrid_runtime.warm_go_backend()
             except Exception:
                 pass
             try:
@@ -30695,16 +30860,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_pkp_boost_mod.setDecimals(1); self.slider_pkp_boost_mod.setSingleStep(5.0); self.slider_pkp_boost_mod.setSuffix(" %")
         self.slider_pkp_boost_mod.setToolTip("Seeded per-hit modulation: level up to ±50% and pitch up to ±3 semitones at 100%.")
         self.slider_pkp_boost_mod.valueChanged.connect(lambda v: setattr(self, "pkp_boost_mod", float(v) / 100.0))
-        self.slider_pkp_boost_prob = QDoubleSpinBox(); self.slider_pkp_boost_prob.setRange(0.0, 100.0)
-        self.slider_pkp_boost_prob.setDecimals(1); self.slider_pkp_boost_prob.setSingleStep(5.0); self.slider_pkp_boost_prob.setSuffix(" %")
-        self.slider_pkp_boost_prob.setValue(100.0)
-        self.slider_pkp_boost_prob.setToolTip("Chance each BOOST beat fires (seeded, reproducible). The step cursor always advances.")
-        self.slider_pkp_boost_prob.valueChanged.connect(lambda v: setattr(self, "pkp_boost_prob", float(v) / 100.0))
+        self.slider_pkp_boost_prob = QDoubleSpinBox(); self.slider_pkp_boost_prob.setRange(0.0, 2.0)
+        self.slider_pkp_boost_prob.setDecimals(3); self.slider_pkp_boost_prob.setSingleStep(0.05); self.slider_pkp_boost_prob.setSuffix("×")
+        self.slider_pkp_boost_prob.setValue(1.0)
+        self.slider_pkp_boost_prob.setToolTip("PROB = BOOST responsiveness coefficient (0–2): 0 disables the response, 1 is the native response, 2 doubles it. It is not a chance, percentage, probability, or statistical quantity; every scheduled beat still occurs.")
+        self.slider_pkp_boost_prob.valueChanged.connect(self._on_pkp_boost_responsiveness_changed)
         self.slider_pkp_boost_env = QDoubleSpinBox(); self.slider_pkp_boost_env.setRange(0.0, 1.0)
         self.slider_pkp_boost_env.setDecimals(2); self.slider_pkp_boost_env.setSingleStep(0.05)
         self.slider_pkp_boost_env.setToolTip("PKP Envelope per hit: 0 = attack-heavy pluck · 0.5 = solid held note · 1 = release-heavy swell.")
         self.slider_pkp_boost_env.valueChanged.connect(lambda v: setattr(self, "pkp_boost_env", float(v)))
-        self.pkp_boost_mod = 0.0; self.pkp_boost_prob = 1.0; self.pkp_boost_env = 0.0
+        self.pkp_boost_mod = 0.0; self.pkp_boost_responsiveness = 1.0; self.pkp_boost_prob = 1.0; self.pkp_boost_env = 0.0
         self.lbl_pkp_boost_mod = QLabel(""); self.lbl_pkp_boost_prob = QLabel(""); self.lbl_pkp_boost_env = QLabel("")
         self.lbl_pkp_boost = QLabel("100%")
         self.lbl_pkp_boost_pitch = QLabel("1.00×")
@@ -33548,7 +33713,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self._playlist_lane = _make_lane("playlist-data", max_workers=_par, max_pending=128)
             self._sequencer_lane = _make_lane("sequencer-plan", max_workers=_par, max_pending=128)
             self._canonical_write_lane = _make_lane("canonical-write", max_workers=1, max_pending=96)
-            self._live_audio_fx_lane = _make_lane("live-audio-fx", max_workers=_par, max_pending=64, kind="interactive")
+            self._live_audio_fx_lane = _make_lane("live-audio-fx", max_workers=_par + 1, max_pending=64, kind="interactive")   # R98: +1 audio worker
             self._live_audio_analysis_lane = _make_lane("live-audio-analysis", max_workers=_par, max_pending=64)
         else:
             self._project_memory_lane = ThreadPoolExecutor(max_workers=1, thread_name_prefix="project-memory")
@@ -34458,6 +34623,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         box.blockSignals(False)
         self._on_pkp_boost_steps_changed(box.value())
 
+    def _on_pkp_boost_responsiveness_changed(self, val):
+        """PROB is a bounded response coefficient, never a stochastic gate."""
+        value = float(np.clip(float(val), 0.0, 2.0))
+        self.pkp_boost_responsiveness = value
+        # Historical attribute remains a numeric alias for older modulation maps.
+        self.pkp_boost_prob = value
+        if hasattr(self, "lbl_pkp_boost_prob"):
+            self.lbl_pkp_boost_prob.setText(f"{value:.3f}×")
+
     def _on_pkp_boost_pitch_changed(self, val):
         if hasattr(self, "lbl_pkp_boost_pitch"):
             self.lbl_pkp_boost_pitch.setText(f"{float(val):.3f}×")
@@ -34591,10 +34765,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             voice = names[rng.randrange(len(names))]
             seq_len = max(1, int(self.spin_seq_length.value())) if hasattr(self, "spin_seq_length") else DEFAULT_SEQUENCE_LENGTH
             step_idx = int(getattr(self, "_pkp_boost_cursor", 0.0)) % seq_len
-            # PROB: seeded chance this beat fires (the cursor still advances).
-            _prob = float(getattr(self, "pkp_boost_prob", 1.0))
-            if _prob >= 1.0 or rng.random() < max(0.0, _prob):
-                self._pkp_fire_step_hit(voice, step_idx, amp=1.0, boost_beat=True)
+            # PROB is an operational responsiveness coefficient, not a random
+            # draw: the scheduler always emits the beat and advances the cursor.
+            # 0 = no response, 1 = native response, 2 = doubled response.
+            _response = float(getattr(self, "pkp_boost_responsiveness",
+                                      getattr(self, "pkp_boost_prob", 1.0)))
+            if not math.isfinite(_response): _response = 1.0
+            _response = float(np.clip(_response, 0.0, 2.0))
+            self._pkp_fire_step_hit(voice, step_idx, amp=_response, boost_beat=True)
             cur = float(getattr(self, "_pkp_boost_cursor", 0.0))
             self._pkp_boost_cursor = cur + float(getattr(self, "pkp_boost_step_increment", 1.0))
             self._reschedule_pkp_boost_timer(float(getattr(self, "pkp_boost_step_increment", 1.0)), seq_len)
@@ -36897,6 +37075,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         ``hit_seconds`` sets a playable note length; both default to the original
         PKP audition behaviour.
         """
+        # PKP_RESPONSE_GAIN_AFTER_RMS_MATCH: keep the response coefficient outside
+        # the mix-RMS normalization. Otherwise RMS matching algebraically cancels
+        # PROB (RMS(P*x)=P*RMS(x)). Modulation is likewise applied after matching.
+        _pkp_response_gain = float(amp) if boost_beat else 1.0
+        if boost_beat:
+            amp = 1.0  # reserve amp for deterministic seeded modulation depth
         try:
             sr = 44100
             # One-shot duration = one non-sustained note/step.
@@ -36993,7 +37177,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     _boost_freq = float(base_freq) * _pitch * _boost_pitch_ratio
                     _boost_amount = float(getattr(self, "pkp_boost_amount", 0.5))
                     if math.isfinite(_boost_freq) and _boost_freq > 0.0:
-                        boost_voice = ot_sin_vec_equiv(2 * np.pi * _boost_freq * t + _step_phase) * env * float(amp) * float(_boost_amount)
+                        boost_voice = ot_sin_vec_equiv(2 * np.pi * _boost_freq * t + _step_phase) * env * (1.0 if boost_beat else float(amp)) * float(_boost_amount)
                 except Exception:
                     boost_voice = None
 
@@ -37034,7 +37218,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     body = ot_sin_vec_equiv(2 * np.pi * freq * t + _step_phase)
             # Keep PKP hits strictly pitched; omit the click/transient component.
-            hit = body * env * float(amp)
+            hit = body * env * (1.0 if boost_beat else float(amp))
             # Wave insertion: the n+1 boost-copy voice is layered into the mix
             # on top of the source step hit (boosting the mix as before).
             if boost_voice is not None:
@@ -37047,6 +37231,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
             if target_rms > 0.0 and hit_rms > 0.0:
                 hit *= target_rms / hit_rms
+            # Apply both controls after RMS matching so neither is normalized away.
+            # PROB remains a linear amplitude response: 0=off, 1=native, 2=2x.
+            # 2x amplitude is +6.0206 dB; it is not a chance or event-density value.
+            if boost_beat:
+                hit *= float(_pkp_response_gain) * float(amp)
             hit *= float(getattr(self, 'master_volume', 0.72))
 
             # Scope preview
@@ -37965,12 +38154,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
                        ("🖥 Settings", "System Settings: scale, backgrounds, Party Mode, audio", mod("sos_system_settings", "open_window", self)),
                        ("📏 Loudness", "LUFS / true-peak meter, normalise to a target, time-stretch and pitch-shift",
                         mod("audio_tools", "open_window", self)),
+                       ("🧩 Apps & scripts", "Launch installed Linux apps, install AppImage / .deb / Flatpak, write scripts that make media and send it back",
+                        mod("app_hub", "open_window", self)))),
+            ("Network · code", (
+                       ("🌐 Network", "Radio on air (name, logo, running order) · blog editor · hosted files with embed players · comments, ratings, messages · trust levels · host / repeater network",
+                        mod("net_hub", "open_window", self)),
+                       ("🔌 Plugins", "70+ Groovebox plugins (create · inform · games · live tools) in Python, Lua, C, C++, Rust, Go, Julia, shell · share on LAN · rate · bind to instruments",
+                        mod("plugin_library", "open_window", self)),
+                       ("🎲 Randomize project", "Random seed + random plugins (with random states) and / or random samples, with an original-synth participation %",
+                        mod("plugin_library", "open_randomizer", self)),
+                       ("🌙 Lua", "Lua (LuaJIT) scripting workspace, sandboxed", mod("lua_workspace", "open_window", self)),
+                       ("🛠 Programs", "Compile and run full programs: C, C++, Rust, Go, Julia, Lua, Python, shell", mod("program_builder", "open_window", self)),
+                       ("🌳 sCode tree", "sCode directions, lanes and the process tree", mod("scode_coordinator", "open_window", self)))),
+            ("Studio", (
                        ("🛟 Checkpoints", "Project checkpoints and recovery", mod("project_transactions", "open_window", self)),
                        ("🩺 Project tools", "Health report · compare projects · batch browser · render preview · templates · sequence morph",
                         mod("project_tools", "open_window", self)),
-                       ("🧮 Math Lab", "Mathematical Mapping Laboratory", lambda: __import__("mapping_laboratory").open_mapping_laboratory(self)),
-                       ("🧩 Apps & scripts", "Launch installed Linux apps, install AppImage / .deb / Flatpak, write scripts that make media and send it back",
-                        mod("app_hub", "open_window", self)))),
+                       ("🗺 Experiences", "Every creation and its science: exports, takes, checkpoints, projects, atlas renders · ratings, tags, notes, lineage",
+                        mod("experiences", "open_window", self)),
+                       ("🌌 Seed Atlas", "Every way a seed becomes sound, picture, game or 3D: a bounded fractal tree, each node reproducible from its address",
+                        mod("seed_atlas", "open_window", self)),
+                       ("🧬 Mod matrix", "Master mod matrix: any source (LFOs, seed, canonicals, automation targets, other rows, patch bay, MIDI CC) × any method → any target, with canonical direction",
+                        mod("mod_matrix", "open_window", self)),
+                       ("🎞 Carrier layers", "Layers for the global and instrument carriers: place each import on the playlist, set length, stretch, pitch, gain, loop, mute / solo",
+                        mod("carrier_layers", "open_window", self)),
+                       ("🔔 Notices", "Every notice and diagnostic", mod("notify_center", "open_window", self)),
+                       ("✨ Features", "Piano roll · arrangement · clip launcher · MIDI clock / learn · scale lock · groove · slicer · audio→sequence · video post · camera path · game export · presets · templates · A/B · profiler · plugins · sync",
+                        mod("features_r99", "open_window", self)),
+                       ("🧰 Extras", "Find a control · project history · stems · crash report bundle", mod("studio_extras", "open_window", self)),
+                       ("🧮 Math Lab", "Mathematical Mapping Laboratory", lambda: __import__("mapping_laboratory").open_mapping_laboratory(self)))),
+
         )
         # LARGE LAUNCHERS for the most important jobs (row 0), the full Task pad grid below.
         big = QHBoxLayout(); big.setSpacing(6)
@@ -37985,7 +38198,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             bb.setStyleSheet("QPushButton{font-size:11pt;font-weight:900;background:#173246;border:1px solid #4aa3c8;"
                              "border-radius:8px;} QPushButton:hover{background:#21455f;border-color:#9fe6ff;}")
             big.addWidget(bb, 1)
-        grid.addLayout(big, 0, 0, 1, 12); grid.setRowStretch(0, 2)
+        grid.addLayout(big, 0, 0, 1, 10); grid.setRowStretch(0, 2)
         for r, (title, items) in enumerate(rows, start=1):
             lab = QLabel(title); lab.setStyleSheet("color:#8fb8cc;font-weight:900;")
             grid.addWidget(lab, r, 0)
@@ -38036,7 +38249,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for w in (chk_party, chk_bg, b_ss, b_rs, b_raw):
             sw.addWidget(w)
         sw.addWidget(self._task_pad_status, 1)
-        grid.addLayout(sw, len(rows) + 1, 0, 1, 12)
+        grid.addLayout(sw, len(rows) + 1, 0, 1, 10)
         try:
             __import__("session_snapshot").install_autosave(self)
         except Exception:
@@ -38044,7 +38257,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         QTimer.singleShot(0, lambda: __import__("power_clock").install(self))
         QTimer.singleShot(0, lambda: __import__("project_transactions").install(self))   # checkpoints + unclean-exit recovery
         QTimer.singleShot(0, lambda: __import__("resource_supervisor").install(self))     # CPU · RAM · threads · audio health
-        QTimer.singleShot(0, lambda: __import__("edit_glow").install(self))               # per-seq edit glow + hint   # 🔋 battery · 🕒 time in the status bar
+        QTimer.singleShot(0, lambda: __import__("edit_glow").install(self))               # per-seq edit glow + hint
+        QTimer.singleShot(0, lambda: __import__("studio_extras").install(self))           # provenance inspector + search
+        QTimer.singleShot(0, lambda: __import__("features_r99").install(self))            # change tracker · profiler · a11y · tour
+        QTimer.singleShot(0, lambda: __import__("notify_center").install(self))           # 🔔 notices · diagnostics (pop-out)
+        QTimer.singleShot(0, lambda: __import__("mod_matrix").install(self))              # master mod matrix
+        QTimer.singleShot(0, lambda: __import__("panel_translucency").install(self))      # translucent non-interactive panels
+        QTimer.singleShot(0, lambda: __import__("experiences").install(self))             # creations are catalogued as made
+        QTimer.singleShot(0, lambda: __import__("net_hub").install(self))                 # site radio / blog / files · trust · host network
+        QTimer.singleShot(0, lambda: __import__("plugin_library").install(self))          # plugin bindings: carrier · controls · events   # 🔋 battery · 🕒 time in the status bar
         self.task_pad = box
         return box
 
@@ -38254,6 +38475,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # PROJECT_UNDO_2026: randomizing the seed is a documented, reversible step.
         if not getattr(self, "_undo_in_flight", False):
             self._push_undo("Random seed script")
+        _keep_rs = self._independent_controls_capture()      # INDEPENDENT_CONTROLS_R98
+        _keep_rs["texts"].pop("input_seed_val", None)        # the seed text is what this button writes
         try:
             try:
                 _live_ctx = self._canonical_input_context()
@@ -38280,6 +38503,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if hasattr(self, "scope_status_label"):
             preview = script.replace("\n", " ")[:72]
             self.scope_status_label.setText(f"🎲 Random seed script → {preview}")
+        try:
+            if self._independent_controls_reapply(_keep_rs):
+                print("[Seed] Random seed kept tempo / lengths / other toggles")
+        except Exception:
+            pass
 
     def _on_randomize_global_play_algo(self):
         """Write (but DO NOT apply) a random Global Play Algorithm.
@@ -47668,6 +47896,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _on_scheduled_export_finished(self, job):
         try:
+            __import__("studio_extras").on_export_finished(self, job)    # R98: verify every finished export
+        except Exception:
+            pass
+        try:
             # Export jobs carry the file in result["file_path"] / out_file (the old output_path / path never existed,
             # so a finished export was never played back).
             path = str((getattr(job, "result", {}) or {}).get("file_path") or getattr(job, "out_file", "") or "")
@@ -56517,6 +56749,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if _scope is not None:
                     _scope.__exit__(None, None, None)
             if not _claimed:
+                try:   # R99: say so when an update is skipped because nothing it reads has changed
+                    __import__("notify_center").notify(self, "Canonical update skipped · inputs unchanged", "canonical", key="canon-skip", every_s=8)
+                except Exception:
+                    pass
                 return
 
         active_engines = self._get_active_engine_set()
@@ -57992,11 +58228,68 @@ class MathematiciansGrooveboxApp(QMainWindow):
             % (bg, fg, border, bg)
         )
 
+    # INDEPENDENT_CONTROLS_R98: tempo, lengths, base frequency, the three seed fields and every OTHER engine toggle
+    # belong to the user, not to a randomizer. Turning one randomizer off (or pressing Random seed) undoes only what
+    # that randomizer wrote; these are captured before and put back afterwards.
+    _INDEPENDENT_SPINS = ("spin_bpm", "spin_playlist_length", "spin_seq_length", "spin_base_frequency", "spin_row_beats",
+                          "spin_track_offset", "spin_synth_count")
+    _INDEPENDENT_TEXTS = ("input_seed_val", "input_superseed", "input_starter_patch_seed")
+    _INDEPENDENT_BUTTONS = ("btn_seeded_randomize", "btn_local_randomize", "btn_local_phase_lock", "btn_idealize_rhythm",
+                            "btn_goava", "btn_fractal_seed_mode", "btn_live_dj_goava", "btn_live_dj_random")
+
+    def _independent_controls_capture(self):
+        st = {"spins": {}, "texts": {}, "buttons": {}, "goava": bool(getattr(self, "goava_active", False))}
+        for a in self._INDEPENDENT_SPINS:
+            w = getattr(self, a, None)
+            if w is not None and hasattr(w, "value"):
+                st["spins"][a] = w.value()
+        for a in self._INDEPENDENT_TEXTS:
+            w = getattr(self, a, None)
+            if w is not None:
+                st["texts"][a] = w.toPlainText() if hasattr(w, "toPlainText") else w.text()
+        for a in self._INDEPENDENT_BUTTONS:
+            w = getattr(self, a, None)
+            if w is not None and hasattr(w, "isChecked"):
+                st["buttons"][a] = bool(w.isChecked())
+        return st
+
+    def _independent_controls_reapply(self, st, skip=()):
+        changed = False
+        for a, v in (st.get("spins") or {}).items():
+            w = getattr(self, a, None)
+            if w is not None and w.value() != v:
+                w.blockSignals(True); w.setValue(v); w.blockSignals(False); changed = True
+        for a, v in (st.get("texts") or {}).items():
+            w = getattr(self, a, None)
+            if w is None:
+                continue
+            cur = w.toPlainText() if hasattr(w, "toPlainText") else w.text()
+            if cur != v:
+                w.blockSignals(True)
+                (w.setPlainText if hasattr(w, "setPlainText") else w.setText)(v)
+                w.blockSignals(False); changed = True
+        for a, v in (st.get("buttons") or {}).items():
+            w = getattr(self, a, None)
+            if w is None or w in skip or a in skip:
+                continue
+            if bool(w.isChecked()) != v:
+                w.blockSignals(True); w.setChecked(v); w.blockSignals(False); changed = True
+        if "goava" in st and "btn_goava" not in skip:
+            self.goava_active = bool(st["goava"])
+        try:
+            if "spin_bpm" in st.get("spins", {}):
+                self.global_bpm = float(st["spins"]["spin_bpm"])
+        except Exception:
+            pass
+        return changed
+
     def _randomizer_toggle_restore(self, key, button=None, label="Randomizer"):
-        """Restore the exact pre-randomization state captured for this toggle."""
+        """Restore the exact pre-randomization state captured for this toggle — but never the user's tempo, lengths,
+        seed fields or the other engines' toggles (INDEPENDENT_CONTROLS_R98)."""
         snap = (getattr(self, "_randomizer_toggle_snapshots", {}) or {}).get(key)
         if not isinstance(snap, dict):
             return False
+        _keep = self._independent_controls_capture()
         self._randomizer_toggle_guard = True
         try:
             self._undo_in_flight = True
@@ -58004,6 +58297,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         finally:
             self._undo_in_flight = False
             self._randomizer_toggle_guard = False
+            try:
+                _skip = {button} if button is not None else set()
+                self._independent_controls_reapply(_keep, skip=_skip)
+            except Exception as _ic_exc:
+                print(f"[Randomizer] independent controls not kept: {_ic_exc}")
         self._randomizer_toggle_snapshots.pop(key, None)
         if button is not None:
             try:   # R32.10: the ON snapshot holds this button checked — restoring must not re-check it
@@ -62367,7 +62665,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "boost_steps": _num("slider_pkp_boost_steps", 1.0),
                 "boost_offset": _num("slider_pkp_boost_offset", 0.5),
                 "boost_mod": _num("slider_pkp_boost_mod", 0.0),
-                "boost_prob": _num("slider_pkp_boost_prob", 100.0),
+                "boost_responsiveness": _num("slider_pkp_boost_prob", 1.0),
                 "boost_env": _num("slider_pkp_boost_env", 0.0),
                 "envelope": _num("slider_pkp_envelope", 0.0),
             },
@@ -62535,6 +62833,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         dj = payload.get("dj") if isinstance(payload.get("dj"), dict) else {}
         fx = payload.get("fx") if isinstance(payload.get("fx"), dict) else {}
         fills = list(dj.items()) + list(fx.items())
+        # Legacy projects stored PROB as a 0..100 chance-like field. Migrate
+        # its scalar position to the 0..2 response scale without retaining any
+        # random/statistical interpretation. 100% historically maps to neutral 1.0.
+        if "boost_responsiveness" in dj:
+            fills = [(k, v) for k, v in fills if k != "boost_responsiveness"] + [("slider_pkp_boost_prob", dj.get("boost_responsiveness", 1.0))]
+        elif "boost_prob" in dj:
+            fills = [(k, v) for k, v in fills if k != "boost_prob"] + [("slider_pkp_boost_prob", float(dj.get("boost_prob", 100.0)) / 100.0)]
         for key, val in fills:
             w = getattr(self, key, None)
             if w is None or not hasattr(w, "setValue"):
@@ -64466,6 +64771,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
     def export_mixdown_dialog(self, audio_format="wav"):
+        try:   # R98: pre-export audio integrity check of the cached mixdown (no render is started)
+            import audio_diagnostics as _ad
+            _ok, _msg = _ad.pre_export_check(self)
+            if _msg and hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText(("" if _ok else "⚠ ") + "Pre-export check: " + _msg)
+        except Exception:
+            pass
         """Re-entrancy guard around the interactive export setup.
 
         The non-modal dialog compatibility layer runs a nested Qt event loop.
@@ -64736,9 +65048,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         else:  # mp4 and default
             order = ["libx264", "libopenh264", "h264_mf", "libxvid", "mpeg4",
                      "libvpx-vp9", "libvpx", "mjpeg"]
+            try:   # R99 HARDWARE_ENCODE: System Settings / Features ▸ video encoder = nvenc | qsv (software by default)
+                import compat_settings as _cs_enc
+                _hw = str(_cs_enc.load().get("video_encoder", "software") or "software")
+                if _hw in ("nvenc", "qsv", "auto"):
+                    order = (["h264_nvenc"] if _hw in ("nvenc", "auto") else []) + (["h264_qsv"] if _hw in ("qsv", "auto") else []) + order
+            except Exception:
+                pass
 
         presets = {
             "libx264": ["-preset", "faster", "-crf", "17"],   # ~2× the encode speed of "medium"; CRF 17 keeps the quality
+            "h264_nvenc": ["-preset", "p4", "-cq", "19", "-b:v", "0"],
+            "h264_qsv": ["-global_quality", "20"],
             "libopenh264": ["-b:v", "2M"],
             "h264_mf": ["-b:v", "2M"],
             "libxvid": ["-qscale:v", "5"],
@@ -65139,6 +65460,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "r32_inst":getattr(self,"r32_active_instruments",None),
                 "r32_mix":getattr(self,"r32_inst_mix",None),
                 "r32_perseq":getattr(self,"r32_perseq",None),
+                "r99_mod":getattr(self,"r99_mod_matrix",None),"r99_dist":getattr(self,"r99_canon_dist",None),"r99_layers":getattr(self,"r99_carrier_layers",None),
                 "rand_src":(str(getattr(self,"rand_source","fractal")),int(getattr(self,"_rand_instance_seed",0) or 0)),
                 "conv_track":bool(getattr(self,"convolve_tracks_workspace",True)),
                 "wavetable":getattr(self,"wavetable_projector_state",{}),
@@ -66081,10 +66403,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._mem_watch.start()
 
     def open_extra_window(self, kind):
-        """＋ New window: another Performance / Player / Live Player with its own window-bar tab.
+        """Launch one of the sixteen major workspaces as a managed, independently reachable window.
 
-        The primary instances stay the ones the rest of the app talks to (audio routing,
-        key hits); extras are independent stations, e.g. several players scanning media.
+        Performance / Player / Live Player retain their dedicated multi-instance behavior. Tool
+        workspaces reuse their existing module entry points and are still registered by the
+        application window manager / taskbar when they create a top-level window.
         """
         extras = self.__dict__.setdefault("_extra_windows", [])
         alive = []
@@ -66122,8 +66445,40 @@ class MathematiciansGrooveboxApp(QMainWindow):
             elif kind == "live_player":
                 from live_player import LivePlayerWindow
                 w = LivePlayerWindow(self)
+            elif kind == "video_synth":
+                fn = getattr(self, "_r32_open_clip_editor", None)
+                if not callable(fn): return None
+                return fn()
             else:
-                return None
+                launchers = {
+                    "multidim": ("multidim_ui", "open_multidim_window"),
+                    "studio_3d": ("studio_3d", "open_window"),
+                    "game_studio": ("studio_3d", "open_window"),
+                    "composition_lab": ("composition_workbench", "open_window"),
+                    "seed_atlas": ("seed_atlas", "open_window"),
+                    "script_studio": ("script_studio", "open_window"),
+                    "plugins": ("plugin_library", "open_window"),
+                    "lua": ("lua_workspace", "open_window"),
+                    "programs": ("program_builder", "open_window"),
+                    "files": ("file_studio", "open_window"),
+                    "experiences": ("experiences", "open_window"),
+                    "science": ("project_tools", "open_window"),
+                }
+                target = launchers.get(kind)
+                if target is None:
+                    return None
+                module = __import__(target[0], fromlist=[target[1]])
+                fn = getattr(module, target[1])
+                result = fn(self)
+                if result is None:
+                    return None
+                # Existing launcher windows own their lifecycle. Bring the result forward;
+                # do not wrap/reparent dialogs and accidentally detach them from their host.
+                if hasattr(result, "show"):
+                    result.show(); result.raise_()
+                    try: result.activateWindow()
+                    except Exception: pass
+                return result
             w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
             w._gb_extra_kind = kind
             w.setWindowTitle(f"#{n} {w.windowTitle() or kind.replace('_', ' ').title()}")   # number first: the bar truncates titles

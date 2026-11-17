@@ -14,7 +14,7 @@ from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QDoubleSpinBox, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QComboBox,
+    QComboBox, QCheckBox,
 )
 
 
@@ -94,6 +94,26 @@ def open_window(app):
     scale = QDoubleSpinBox(); scale.setRange(0.1, 3.0); scale.setSingleStep(0.1); scale.setValue(0.8)
     tint_row.addWidget(scale)
     root.addLayout(tint_row)
+
+    # Unified deterministic scene treatment: these values are consumed by the
+    # same obj_scene.render_frame path used for preview and chunked video export.
+    motion_row = QHBoxLayout()
+    motion_controls = {}
+    for label, key, lo, hi, value, step in (
+        ("Opacity", "opacity", 0.0, 1.0, 1.0, 0.05),
+        ("Fade in s", "fade_in", 0.0, 600.0, 0.0, 0.1),
+        ("Fade out s", "fade_out", 0.0, 600.0, 0.0, 0.1),
+        ("Distort", "distortion", 0.0, 1.0, 0.0, 0.05),
+        ("Roll °", "roll_deg", -180.0, 180.0, 0.0, 2.0),
+        ("Pan X", "pan_x", -1.0, 1.0, 0.0, 0.05),
+        ("Pan Y", "pan_y", -1.0, 1.0, 0.0, 0.05),
+        ("Zoom", "zoom", 0.05, 4.0, 1.0, 0.05),
+    ):
+        motion_row.addWidget(QLabel(label))
+        sp = QDoubleSpinBox(); sp.setRange(lo, hi); sp.setDecimals(2); sp.setSingleStep(step); sp.setValue(value)
+        motion_controls[key] = sp; motion_row.addWidget(sp)
+    shadow_toggle = QCheckBox("Shadow"); motion_row.addWidget(shadow_toggle)
+    root.addLayout(motion_row)
 
     scene_row = QHBoxLayout()
     scene_list = QListWidget(); scene_list.setMaximumHeight(100)
@@ -194,6 +214,9 @@ def open_window(app):
             "spin_deg_s": float(spin.value()),
             "scale": float(scale.value()),
             "tilt_deg": 15.0,
+            **{k: float(v.value()) for k, v in motion_controls.items()},
+            "shadow": bool(shadow_toggle.isChecked()),
+            "duration": float(render_duration.value()),
         }
 
     def paint(t=0.0):
@@ -266,6 +289,24 @@ def open_window(app):
         if item["kind"] == "obj" and state["mesh"] is None and os.path.isfile(path):
             try: load_obj(path)
             except Exception as exc: status.setText("scene OBJ failed: " + str(exc))
+
+    def on_video_objs():
+        """🎥 Every OBJ of the scene (and the loaded model) goes into the music video: the first is the centrepiece,
+        the others are placed by the scene (arrangement, keyframes, instrument binding, shots, lights, material)."""
+        objs = [it["path"] for it in state["scene"] if it.get("kind") == "obj" and os.path.isfile(it.get("path", ""))]
+        if state.get("obj") and state["obj"] not in objs:
+            objs.insert(0, state["obj"])
+        if not objs:
+            status.setText("Add OBJ models to the scene first.")
+            return
+        app.video_obj_paths = objs[:13]
+        app.video_obj_path = objs[0]
+        import scene3d as _s3
+        sc = _s3.scene(app)
+        have = {str(it.get("path")): it for it in sc["items"]}
+        sc["items"] = [have.get(p, {"path": p}) for p in objs[1:13]]
+        app.video_obj_scene = sc
+        status.setText("🎥 %d OBJ(s) in the video: %s" % (len(objs[:9]), ", ".join(os.path.basename(p) for p in objs[:9])))
 
     def on_mesh():
         if not state["scene"] and not state["obj"]:
@@ -397,6 +438,14 @@ def open_window(app):
 
         _submit_media_work(win, status, "Processing stereoscopic video…", work)
 
+    for _control in list(motion_controls.values()) + [shadow_toggle, spin, scale] + list(spins):
+        try:
+            if hasattr(_control, "valueChanged"):
+                _control.valueChanged.connect(lambda *_: paint(getattr(app, "_studio3d_preview_time", 0.0)))
+            elif hasattr(_control, "toggled"):
+                _control.toggled.connect(lambda *_: paint(getattr(app, "_studio3d_preview_time", 0.0)))
+        except Exception:
+            pass
     b_obj.clicked.connect(on_obj)
     b_tex.clicked.connect(on_tex)
     b_song.clicked.connect(on_song)
@@ -404,6 +453,87 @@ def open_window(app):
     b_pick.clicked.connect(on_pick)
     b_add.clicked.connect(on_add)
     b_mesh.clicked.connect(on_mesh)
+    b_video_objs = QPushButton("🎥 Use scene OBJs in the video"); b_video_objs.clicked.connect(on_video_objs)
+    # --- scene controls: arrangement · shots · lights · material · per-OBJ transform / binding / keyframes ---------
+    import scene3d as _s3
+    from PyQt6.QtWidgets import QCheckBox as _QCB, QSpinBox as _QSB
+    sc_row = QHBoxLayout(); root.addLayout(sc_row)
+    c_arr = QComboBox(); c_arr.addItems(list(_s3.ARRANGEMENTS)); c_lit = QComboBox(); c_lit.addItems(list(_s3.LIGHTS))
+    c_mat = QComboBox(); c_mat.addItems(list(_s3.MATERIALS)); k_shots = _QCB("🎬 Shot per playlist row"); k_shots.setChecked(True)
+    _sc0 = _s3.scene(app)
+    c_arr.setCurrentText(str(_sc0.get("arrangement", "ring"))); c_lit.setCurrentText(str(_sc0.get("lights", "studio")))
+    c_mat.setCurrentText(str(_sc0.get("material", "glossy"))); k_shots.setChecked(bool(_sc0.get("shots", True)))
+    for _lab, _w in (("Arrangement", c_arr), ("Lights", c_lit), ("Material", c_mat), ("", k_shots)):
+        if _lab:
+            sc_row.addWidget(QLabel(_lab))
+        sc_row.addWidget(_w)
+
+    def _sc_set(**kw):
+        sc = _s3.scene(app); sc.update(kw); app.video_obj_scene = sc
+    c_arr.currentTextChanged.connect(lambda v: _sc_set(arrangement=v)); c_lit.currentTextChanged.connect(lambda v: _sc_set(lights=v))
+    c_mat.currentTextChanged.connect(lambda v: _sc_set(material=v)); k_shots.toggled.connect(lambda v: _sc_set(shots=bool(v)))
+    it_row = QHBoxLayout(); root.addLayout(it_row)
+    sx, sy, ss, sp = (QDoubleSpinBox() for _ in range(4))
+    for _w, _lo, _hi, _v, _st in ((sx, 0, 1, 0.5, 0.05), (sy, 0, 1, 0.5, 0.05), (ss, 0.05, 0.8, 0.22, 0.02), (sp, -360, 360, 30, 10)):
+        _w.setRange(_lo, _hi); _w.setValue(_v); _w.setSingleStep(_st)
+    c_bind = QComboBox(); c_bind.addItem("(no instrument)", "")
+    for _n in list(getattr(app, "instrument_names_48", []) or [])[:128]:
+        c_bind.addItem(app.instrument_label(_n) if hasattr(app, "instrument_label") else _n, _n)
+    c_mode = QComboBox(); c_mode.addItems(["loudness", "pitch"])
+    k_t = _QSB(); k_t.setRange(0, 100); k_t.setSuffix(" % of song")
+    b_apply = QPushButton("Apply to selected OBJ"); b_key = QPushButton("◆ Keyframe")
+    for _lab, _w in (("x", sx), ("y", sy), ("size", ss), ("spin", sp), ("follows", c_bind), ("", c_mode), ("at", k_t), ("", b_apply), ("", b_key)):
+        if _lab:
+            it_row.addWidget(QLabel(_lab))
+        it_row.addWidget(_w)
+
+    def _sel_item():
+        r = scene_list.currentRow()
+        if not (0 <= r < len(state["scene"])) or state["scene"][r].get("kind") != "obj":
+            status.setText("Select an OBJ in the scene list (and press 🎥 Use scene OBJs in the video)."); return None
+        pth = state["scene"][r]["path"]
+        for it in _s3.scene(app)["items"]:
+            if str(it.get("path")) == pth:
+                return it
+        status.setText("This OBJ is the centrepiece or not yet in the video — press 🎥 first."); return None
+
+    def _apply():
+        it = _sel_item()
+        if it is not None:
+            it.update(x=sx.value(), y=sy.value(), scale=ss.value(), spin=sp.value(), bind=c_bind.currentData() or "",
+                      bind_mode=c_mode.currentText())
+            status.setText("OBJ updated: %s" % os.path.basename(str(it["path"])))
+
+    def _key():
+        it = _sel_item()
+        if it is not None:
+            keys = [k for k in it.setdefault("keys", []) if abs(float(k.get("t", -1)) - k_t.value() / 100.0) > 1e-6]
+            keys.append({"t": k_t.value() / 100.0, "x": sx.value(), "y": sy.value(), "scale": ss.value(), "spin": sp.value()})
+            it["keys"] = sorted(keys, key=lambda k: k["t"])
+            status.setText("◆ keyframe at %d %% (%d keys)" % (k_t.value(), len(it["keys"])))
+    b_apply.clicked.connect(_apply); b_key.clicked.connect(_key)
+    tl_row = QHBoxLayout(); root.addLayout(tl_row)
+    b_draw = QPushButton("✏ Draw OBJ"); b_draw.setToolTip("Open the Draw / Record 3D voxel kit to draw a model")
+    b_draw.clicked.connect(lambda: getattr(app, "open_voxel_draw_kit", lambda: status.setText("voxel kit unavailable"))())
+    b_game = QPushButton("🎮 Scene → game level")
+
+    def _game():
+        import json as _json
+        dest = os.path.join(str(app._exports_dir()), "studio3d-multi-obj-level.json")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            _json.dump(_s3.game_scene(app), f, indent=2)
+        status.setText("🎮 level written: " + dest)
+        try:
+            if hasattr(app, "open_extra_window"):
+                app.open_extra_window("game")
+        except Exception:
+            pass
+    b_game.clicked.connect(_game)
+    for _w in (b_draw, b_game):
+        tl_row.addWidget(_w)
+    tl_row.addStretch(1)
+    b_mesh.parentWidget().layout().addWidget(b_video_objs) if b_mesh.parentWidget() is not None and b_mesh.parentWidget().layout() is not None else root.addWidget(b_video_objs)
     b_audio.clicked.connect(on_choose_audio)
     b_clear_audio.clicked.connect(on_clear_audio)
     b_process_pick.clicked.connect(on_process_pick)

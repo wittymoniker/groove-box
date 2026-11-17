@@ -30,3 +30,29 @@ def open_window(app, parent=None):
     c.clicked.connect(lambda: QApplication.clipboard().setText(path))
     lay.addWidget(b); lay.addWidget(c)
     win.show(); win.raise_(); return win
+
+
+# WINDOW_KEEPER_20261112: parentless windows used to be garbage-collected the moment they opened.
+import window_keeper as _window_keeper  # noqa: E402
+open_window = _window_keeper.kept(open_window)
+
+
+def record_mgr_preview(path, kind="audio"):
+    """Remember a playable sibling so UI can open last export quickly."""
+    try:
+        import json, os, time
+        from pathlib import Path as P
+        base = P(path).with_suffix("")
+        meta = {"path": str(path), "kind": kind, "ts": time.time()}
+        for cand in (str(path) + ".preview.wav", str(path) + ".wav", str(path)):
+            if os.path.isfile(cand):
+                meta["playable"] = cand
+                break
+        out = P(path).parent / ".last_export_mgr.json"
+        tmp = str(out) + ".part"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        os.replace(tmp, out)
+        return str(out)
+    except Exception:
+        return ""

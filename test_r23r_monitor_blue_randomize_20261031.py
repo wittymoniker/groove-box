@@ -53,7 +53,7 @@ checks = {
     "scenograph preview marker": "GROOVEBOX_R23R_SCENE_PREVIEW_20261031" in src,
     "scenograph decimal step control": "spin_scene_preview_step" in src,
     "scenograph refresh button": "btn_scene_preview_refresh" in src,
-    "scenograph arrows drawn when stopped": 'if not self._transport_playing():\n            try:\n                total, step, n, rows = self._preview_geometry()\n                for rect, glyph in zip(self._arrow_rects(), ("◀", "▶")):' in src,
+    "scenograph arrows drawn when stopped": 'if not self._transport_playing():\n                try:\n                    total, step, n, rows = self._preview_geometry()\n                    for rect, glyph in zip(self._arrow_rects(), ("◀", "▶")):' in src,
     "scenograph step arrows": "◀" in src and "▶" in src,
     "scenograph midpoint preview": "self.set_preview_position(k + 1.5)     # middle of the step" in src,
     "scenograph decimal position": "Preview at a decimal step position (1-based; 3.5 = middle of step 3)." in src,

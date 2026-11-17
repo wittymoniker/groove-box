@@ -3,6 +3,8 @@ setlocal EnableExtensions
 set "PYTHONHOME="
 set "PYTHONPATH="
 set "PYTHONPYCACHEPREFIX="
+set "PYTHONUTF8=1"
+set "PYTHONUNBUFFERED=1"
 cd /d "%~dp0"
 echo [Groovebox] Windows launcher - runtime verification/provisioning
 

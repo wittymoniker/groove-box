@@ -96,19 +96,60 @@ def render_frame(mesh, w, h, t_sec, params=None, tex=None):
     prm = dict(params or {})
     spin = math.radians(float(prm.get("spin_deg_s", 30.0))) * t_sec + math.radians(float(prm.get("yaw_deg", 0.0)))
     tilt = math.radians(float(prm.get("tilt_deg", 15.0)))
-    scale = float(prm.get("scale", 0.8))
+    roll = math.radians(float(prm.get("roll_deg", 0.0)))
+    scale = max(0.01, min(8.0, float(prm.get("scale", 0.8))))
+    zoom = max(0.05, min(8.0, float(prm.get("zoom", 1.0))))
     color = np.array(prm.get("color", (200, 220, 255)), dtype=np.float64)
     R = _rot(spin, tilt)
-    v = (mesh["v"] @ R.T) * scale
+    cr, sr = math.cos(roll), math.sin(roll)
+    R = np.array([[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]]) @ R
+    v0 = np.asarray(mesh["v"], dtype=np.float64)
+    # Deterministic GOAVA-style geometric response: continuous seeded-coordinate
+    # deformation, never random per frame. It preserves the source mesh identity
+    # while breaking overly regular primitives and exposing non-isosceles forms.
+    deform = max(0.0, min(1.0, float(prm.get("distortion", 0.0))))
+    if deform:
+        freq = max(0.25, min(12.0, float(prm.get("distortion_frequency", 2.7))))
+        phase = float(prm.get("distortion_phase", 0.0)) + t_sec * float(prm.get("distortion_rate", 0.35))
+        x, y, zz = v0[:, 0], v0[:, 1], v0[:, 2]
+        wave = np.sin(freq * (x * 1.71 + y * 0.83 - zz * 1.19) + phase)
+        cross = np.cos(freq * (y * 1.37 + zz * 0.91 + x * 0.57) - phase * 0.73)
+        v0 = v0.copy()
+        v0[:, 0] += deform * (0.23 * wave + 0.09 * cross)
+        v0[:, 1] += deform * (0.19 * cross - 0.07 * wave)
+        v0[:, 2] += deform * (0.21 * np.sin(freq * (zz + x * y) + phase * 1.31))
+    v = (v0 @ R.T) * (scale * zoom)
     dist = 2.6
     z = v[:, 2] + dist
     f = 0.5 * min(w, h) * 1.6
     # Stereo camera offset is expressed in the model's normalized world units.
     # A distinct eye origin creates real perspective disparity across depth.
     camera_x = float(prm.get("_camera_x", 0.0) or 0.0)
-    sx = w / 2.0 + f * (v[:, 0] - camera_x) / z
-    sy = h / 2.0 - f * v[:, 1] / z
+    pan_x = max(-2.0, min(2.0, float(prm.get("pan_x", 0.0)))) * w
+    pan_y = max(-2.0, min(2.0, float(prm.get("pan_y", 0.0)))) * h
+    sx = w / 2.0 + pan_x + f * (v[:, 0] - camera_x) / z
+    sy = h / 2.0 + pan_y - f * v[:, 1] / z
     out = np.zeros((h, w, 4), dtype=np.uint8)
+    opacity = max(0.0, min(1.0, float(prm.get("opacity", 1.0))))
+    fade_in = max(0.0, float(prm.get("fade_in", 0.0)))
+    fade_out = max(0.0, float(prm.get("fade_out", 0.0)))
+    duration = max(0.0, float(prm.get("duration", 0.0)))
+    if fade_in > 0.0:
+        opacity *= max(0.0, min(1.0, t_sec / fade_in))
+    if fade_out > 0.0 and duration > 0.0:
+        opacity *= max(0.0, min(1.0, (duration - t_sec) / fade_out))
+    if opacity <= 0.0:
+        return out
+    # Soft deterministic ground shadow; composited into the transparent RGBA
+    # frame so preview, Live Player and export all share the same treatment.
+    if bool(prm.get("shadow", False)):
+        cx = int(round(w / 2.0 + pan_x)); cy = int(round(h * 0.78 + pan_y * 0.35))
+        rx = max(3, int(min(w, h) * min(0.42, 0.17 * scale * zoom)))
+        ry = max(2, int(rx * 0.22))
+        yy, xx = np.ogrid[:h, :w]
+        field = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
+        sh = np.clip(1.0 - field, 0.0, 1.0) ** 1.7
+        out[..., 3] = np.maximum(out[..., 3], np.rint(sh * 105.0 * opacity).astype(np.uint8))
     zbuf = np.full((h, w), np.inf)
     tris, tu, uv = mesh["t"], mesh["tu"], mesh["uv"]
     p0, p1, p2 = v[tris[:, 0]], v[tris[:, 1]], v[tris[:, 2]]
@@ -117,6 +158,23 @@ def render_frame(mesh, w, h, t_sec, params=None, tex=None):
     nrm = np.divide(nrm, _nl, out=np.zeros_like(nrm), where=_nl != 0)   # degenerate triangle: no normal
     light = np.array([0.4, 0.6, -0.7]); light /= np.linalg.norm(light)
     shade_all = np.clip(np.abs(nrm @ light), 0.15, 1.0)
+    _lights, _mat = prm.get("lights"), str(prm.get("material", "matte"))
+    if _lights:                      # key / fill / rim lighting (scene3d presets); unchanged when no lights are set
+        def _u(v):
+            v = np.asarray(v[:3], dtype=np.float64); return v / (np.linalg.norm(v) or 1.0)
+        shade_all = np.full(len(nrm), float(_lights.get("ambient", 0.15)))
+        for _k in ("key", "fill"):
+            _L = _lights.get(_k)
+            if _L:
+                shade_all = shade_all + float(_L[3]) * np.clip(np.abs(nrm @ _u(_L)), 0.0, 1.0)
+        if _lights.get("rim"):
+            shade_all = shade_all + float(_lights["rim"]) * (1.0 - np.abs(nrm[:, 2])) ** 2
+        if _mat == "glossy":
+            _H = _u(np.asarray(_lights.get("key", (0.4, 0.6, -0.7, 1.0))[:3]) + np.array([0.0, 0.0, -1.0]))
+            shade_all = shade_all + 0.6 * np.abs(nrm @ _H) ** 24
+        shade_all = np.clip(shade_all, 0.05, 1.0)
+    if _mat == "emissive":
+        shade_all = np.clip(0.45 * shade_all + 0.6, 0.0, 1.0)
     th = tw = 0
     if tex is not None:
         th, tw = tex.shape[:2]
@@ -157,7 +215,7 @@ def render_frame(mesh, w, h, t_sec, params=None, tex=None):
             rgb = np.broadcast_to(color * sh, (int(m.sum()), 3))
         blk = out[miny:maxy + 1, minx:maxx + 1]
         blk[m, :3] = np.clip(rgb, 0, 255).astype(np.uint8)
-        blk[m, 3] = 255
+        blk[m, 3] = np.uint8(round(255.0 * opacity))
     return out
 
 

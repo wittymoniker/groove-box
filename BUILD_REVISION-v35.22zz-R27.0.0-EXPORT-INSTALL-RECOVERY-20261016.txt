@@ -1,0 +1,35 @@
+Mathematician's Groovebox / sOS
+Version: v35.22zz-R27.0.0
+Release label: EXPORT-INSTALL-RECOVERY
+Date: 2026-10-16
+Lineage: reconstructed from available v35.22zz-R23r source archive
+
+This is a reconstruction release based on the latest complete source archive
+available in the Library (R23r). It is NOT asserted to be the original R26 FULL3
+build. R24-R26 source patches were not available in the recovered Library results.
+
+Changes:
+- Video render now writes to a suffix-preserving .part output, checks file size
+  and positive duration, verifies an expected audio stream, then atomically
+  replaces the destination. Failed render attempts remove partial output and
+  preserve any existing destination.
+- MP4-family renders request faststart metadata placement.
+- Game-generated WAV assets are written to same-directory temporary files,
+  reopened for validation, and atomically published to avoid half-written assets.
+- Game asset installation logs individual generation errors instead of silently
+  swallowing them, and processes Qt events during progress updates to keep the
+  loading screen responsive.
+- Root and ISO overlay video renderer sources are synchronized.
+
+Versioning policy:
+- SemVer-like R27.0.0 is used for this reconstruction increment.
+- R27.0.0 denotes new reconstructed changes on the R23r base, not a claim that
+  missing historical R24-R26 patches were recovered.
+
+Validation status:
+- Python syntax compilation: pending final build run.
+- Static regression contracts: pending final build run.
+- Full automated project tests: pending final build run.
+- ISO build / VM boot / physical Dell verification: NOT RUN in this environment.
+- WebM audio playback and physical game-launch stall: require runtime integration
+  testing with FFmpeg and target hardware before calling fixed in production.

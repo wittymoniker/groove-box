@@ -111,7 +111,7 @@ def identity_panel(app):
                 pass
         return {"project_uid": str(getattr(app, "_project_uid", "") or "unsaved"), "seed_signature": "%08x" % int(sig or 0),
                 "canonical_mode": getattr(app, "canonical_mode", "protected"), "engines": eng,
-                "divergence": float(getattr(app, "seed_divergence", 0.6) or 0.6), "instrument_seeds": idx}
+                "divergence": __import__("seed_divergence").amount_from(app), "instrument_seeds": idx}
 
     def show():
         d = ident()
@@ -522,13 +522,107 @@ def install(app):
     sc = QScrollArea(); sc.setWidgetResizable(True); sc.setWidget(holder); sc.setMaximumHeight(200); sc.setMinimumHeight(120)
     sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     dock.setWidget(sc)
-    dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable |
-                     QDockWidget.DockWidgetFeature.DockWidgetClosable)
+    # The deck is a persistent part of the Main Window, never an independent
+    # floating/closable window. Visibility is controlled by its Main Window toggle.
+    dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable)
+    dock.setAllowedAreas(Qt.DockWidgetArea.TopDockWidgetArea | Qt.DockWidgetArea.BottomDockWidgetArea)
+    dock.setFloating(False)
     app.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, dock)
     app._r32_deck = dock
     app._r32_deck_scroll = sc
-    QTimer.singleShot(0, lambda: into_splitter(app))
+    app._r32_deck_holder = holder
+    # A stable Main Window-owned toggle survives splitter reparenting and never
+    # creates a second top-level deck window.
+    try:
+        from PyQt6.QtWidgets import QToolBar, QToolButton
+        tb = getattr(app, "_r32_deck_toolbar", None)
+        if tb is None:
+            tb = QToolBar("Main deck controls", app); tb.setObjectName("R32DeckControls")
+            tb.setMovable(False); tb.setFloatable(False); tb.setMaximumHeight(34)
+            toggle = QToolButton(tb); toggle.setText("▤ Deck"); toggle.setCheckable(True)
+            toggle.setToolTip("Show or hide the integrated Groovebox deck")
+            toggle.setChecked(True)
+            toggle.toggled.connect(lambda visible: sc.setVisible(bool(visible)))
+            tb.addWidget(toggle); app.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+            app._r32_deck_toolbar = tb; app._r32_deck_toggle = toggle
+    except Exception:
+        pass
+    # Right-click anywhere on the deck: Top (default) / Bottom; the choice is saved.
+    for _w in (sc, holder):
+        _w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        _w.customContextMenuRequested.connect(lambda pos, ww=_w: _side_menu(app, ww, pos))
+    QTimer.singleShot(0, lambda: place(app, _saved_side()))
     return dock
+
+
+DECK_SIDES = ("top", "left", "right", "bottom")
+
+
+def _saved_side():
+    try:
+        import compat_settings as _cs
+        v = str(_cs.load().get("deck_side", "top") or "top").lower()
+        return v if v in DECK_SIDES else "top"
+    except Exception:
+        return "top"
+
+
+def _side_menu(app, w, pos):
+    from PyQt6.QtWidgets import QMenu
+    m = QMenu(w)
+    cur = getattr(app, "_r32_deck_side", "top")
+    for side in ("top", "bottom"):
+        a = m.addAction(("● " if side == cur else "   ") + "Deck at the " + side)
+        a.triggered.connect(lambda _c=False, s=side: _choose(app, s))
+    m.exec(w.mapToGlobal(pos))
+
+
+def _choose(app, side):
+    place(app, side)
+    try:
+        import compat_settings as _cs
+        _cs.update(deck_side=side)
+    except Exception:
+        pass
+
+
+def place(app, side="top"):
+    """Put the deck at the top / bottom of the main pane splitter, or in a left / right dock (panels stacked)."""
+    side = side if side in DECK_SIDES else "top"
+    sc = getattr(app, "_r32_deck_scroll", None); dock = getattr(app, "_r32_deck", None)
+    holder = getattr(app, "_r32_deck_holder", None)
+    if sc is None:
+        return
+    from PyQt6.QtWidgets import QBoxLayout
+    try:
+        holder.layout().setDirection(QBoxLayout.Direction.TopToBottom if side in ("left", "right")
+                                     else QBoxLayout.Direction.LeftToRight)
+    except Exception:
+        pass
+    app._r32_deck_side = side
+    if side in ("top", "bottom"):
+        sc.setMaximumWidth(16777215)
+        into_splitter(app, at_end=(side == "bottom"))
+        return
+    sp = getattr(app, "render_splitter", None)
+    try:
+        if sp is not None and sp.indexOf(sc) >= 0:
+            sc.setParent(None)
+        if dock is None:
+            dock = app._r32_deck = QDockWidget("Groovebox deck", app); dock.setObjectName("R32Deck")
+        dock.setWidget(sc)
+        dock.setFloating(False)
+        sc.setMinimumHeight(0); sc.setMaximumHeight(16777215)
+        try:
+            scr = app.screen().availableGeometry().width()
+        except Exception:
+            scr = 1366
+        sc.setMinimumWidth(200); sc.setMaximumWidth(max(260, int(scr * 0.28)))
+        area = Qt.DockWidgetArea.LeftDockWidgetArea if side == "left" else Qt.DockWidgetArea.RightDockWidgetArea
+        app.addDockWidget(area, dock)
+        dock.show()
+    except Exception as exc:
+        print("[Deck] could not move to the %s: %s" % (side, exc))
 
 
 # R32.8 THREE_PANES: the deck is the first pane of the main window's vertical splitter (deck · controls ·
@@ -553,23 +647,28 @@ def apply_pane_minimums(app):
             w.setMaximumHeight(16777215)
 
 
-def into_splitter(app, _tries=[0]):
+def into_splitter(app, at_end=False):
     sp = getattr(app, "render_splitter", None); sc = getattr(app, "_r32_deck_scroll", None)
     dock = getattr(app, "_r32_deck", None)
     if sc is None:
         return
     if sp is None:
-        _tries[0] += 1
-        if _tries[0] < 40:
-            QTimer.singleShot(250, lambda: into_splitter(app))
+        # DECK_RETRY_R6: the retry budget was a shared mutable default (one budget for the whole process);
+        # it is per window now.
+        app._r32_deck_tries = int(getattr(app, "_r32_deck_tries", 0)) + 1
+        if app._r32_deck_tries < 40:
+            QTimer.singleShot(250, lambda: into_splitter(app, at_end))
         return
+    want = (sp.count() - 1) if at_end else 0
     if sp.indexOf(sc) >= 0:
+        if sp.indexOf(sc) != want:
+            sp.insertWidget(sp.count() if at_end else 0, sc)
         return
     sc.setMaximumHeight(16777215)
     sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    sp.insertWidget(0, sc)
-    sp.setCollapsible(0, False)
+    sp.insertWidget(sp.count() if at_end else 0, sc)
+    sp.setCollapsible(sp.indexOf(sc), False)
     try:
         if dock is not None:
             dock.setWidget(QWidget()); dock.hide(); app.removeDockWidget(dock)
@@ -582,7 +681,9 @@ def into_splitter(app, _tries=[0]):
         sizes = sp.sizes(); total = sum(sizes) or 1200
         deck = max(sc.minimumHeight(), 200)
         rest = max(1, total - deck)
-        sp.setSizes([deck, int(rest * 0.6), rest - int(rest * 0.6)])
+        if sp.count() == 3:
+            sp.setSizes([deck, int(rest * 0.6), rest - int(rest * 0.6)] if not at_end
+                        else [int(rest * 0.6), rest - int(rest * 0.6), deck])
     except Exception:
         pass
     try:
