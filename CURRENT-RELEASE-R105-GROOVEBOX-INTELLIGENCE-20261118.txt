@@ -1,0 +1,7 @@
+CURRENT SOURCE RELEASE: R105 — GROOVEBOX INTELLIGENCE LAYER
+Date: 2026-11-18
+Base: full source tree recovered from MATGROOVEBOX-SELECTED-INSTRUMENT-TINT-2026-11-18.zip
+Includes: R104 export dependency recovery plus R105 shared intelligence services,
+project schema 4 persistence, adaptive resource budgeting, and schema-5
+content-verified export dependency checkpoints.
+See RELEASE-R105-GROOVEBOX-INTELLIGENCE-LAYER-20261118.md for scope and validation.

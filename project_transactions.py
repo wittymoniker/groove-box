@@ -53,6 +53,49 @@ def _extras(app):
     return ex
 
 
+def _identity_from_document(doc):
+    """Return display-safe project identity from a canonical project document."""
+    if not isinstance(doc, dict):
+        return "Untitled", ""
+    title = str(doc.get("project_title") or "Untitled").strip() or "Untitled"
+    notes = doc.get("project_notes", "")
+    if isinstance(notes, (dict, list, tuple)):
+        try:
+            notes = json.dumps(notes, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            notes = str(notes)
+    notes = str(notes or "").strip()
+    return title[:180], notes[:4000]
+
+
+def _checkpoint_identity(path):
+    """Read identity from new metadata or older project-document fields."""
+    try:
+        data = __import__("safe_io").load_json(path, encoding="utf-8")
+        meta = data.get("_checkpoint", {}) if isinstance(data, dict) else {}
+        title = meta.get("project_title") or (data.get("project_title") if isinstance(data, dict) else None)
+        notes = meta.get("project_notes") or (data.get("project_notes") if isinstance(data, dict) else "")
+        return _identity_from_document({"project_title": title, "project_notes": notes})
+    except Exception:
+        return "Untitled", ""
+
+
+def _current_identity(app):
+    """Prefer the live canonical snapshot; fall back to the active project path."""
+    try:
+        title, notes = _identity_from_document(app._project_snapshot())
+        if title != "Untitled" or notes:
+            return title, notes
+    except Exception:
+        pass
+    try:
+        import groovebox_paths
+        title = groovebox_paths.project_name(getattr(app, "_current_project_path", None))
+        return str(title or "Untitled"), ""
+    except Exception:
+        return "Untitled", ""
+
+
 def checkpoint(app, label="checkpoint"):
     """Write a recoverable checkpoint. Returns its path (or None if the snapshot failed)."""
     try:
@@ -63,7 +106,10 @@ def checkpoint(app, label="checkpoint"):
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in str(label))[:40]
     path = os.path.join(_dir(), time.strftime("%Y%m%d-%H%M%S-") + "%03d-" % int(time.time() * 1000 % 1000) + safe + ".MCC")
     payload = dict(doc) if isinstance(doc, dict) else {"document": doc}
-    payload["_checkpoint"] = {"label": str(label), "time": time.time(), **_extras(app)}
+    project_title, project_notes = _identity_from_document(doc)
+    payload["_checkpoint"] = {"label": str(label), "time": time.time(),
+                               "project_title": project_title, "project_notes": project_notes,
+                               **_extras(app)}
     tmp = path + ".part"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, default=str)
@@ -86,8 +132,7 @@ def checkpoints():
 
 def restore(app, path):
     """Restore a checkpoint through the one project loader, then the selection it was taken with."""
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = __import__("safe_io").load_json(path, encoding="utf-8")
     meta = data.pop("_checkpoint", {}) if isinstance(data, dict) else {}
     app._apply_project_snapshot(data)
     try:
@@ -160,17 +205,31 @@ def install(app):
 
 def open_window(app, unclean=False):
     from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QListWidget, QPushButton, QHBoxLayout
+    from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QHBoxLayout
     d = QDialog(app); d.setWindowTitle("🛟 Project recovery")
-    d.setWindowModality(Qt.WindowModality.NonModal); d.resize(640, 420)
+    d.setWindowModality(Qt.WindowModality.NonModal); d.resize(720, 520)
     lay = QVBoxLayout(d)
-    lay.addWidget(QLabel(("The application did not close normally last time. " if unclean else "") +
-                         "Checkpoints are taken before Clear Memory, around Configure Entire Project and every Autopilot "
-                         "project. Restoring uses the normal project loader; the current project is checkpointed first."))
+    intro = QLabel(("The application did not close normally last time. " if unclean else "") +
+                   "Checkpoints are taken before Clear Memory, around Configure Entire Project and every Autopilot "
+                   "project. Restoring uses the normal project loader; the current project is checkpointed first.")
+    intro.setWordWrap(True)
+    lay.addWidget(intro)
+    current_title, current_notes = _current_identity(app)
+    current = QLabel("Working project: " + current_title + "\nProject notes: " + (current_notes or "(none)"))
+    current.setWordWrap(True)
+    current.setTextFormat(Qt.TextFormat.PlainText)
+    current.setMaximumHeight(110)
+    current.setStyleSheet("padding:8px; border:1px solid palette(mid); border-radius:6px;")
+    lay.addWidget(current)
     lst = QListWidget(); lay.addWidget(lst, 1)
     files = checkpoints()
     for p in files[:KEEP]:
-        lst.addItem(os.path.basename(p))
+        title, notes = _checkpoint_identity(p)
+        note_preview = " ".join(notes.split())[:100]
+        label = title + (" — " + note_preview if note_preview else "")
+        item = QListWidgetItem(label + "  ·  " + os.path.basename(p))
+        item.setToolTip("Project: " + title + "\nNotes: " + (notes or "(none)") + "\nCheckpoint: " + p)
+        lst.addItem(item)
     out = QLabel(""); lay.addWidget(out)
     row = QHBoxLayout(); lay.addLayout(row)
     b_restore = QPushButton("Restore selected"); b_now = QPushButton("Checkpoint now"); b_close = QPushButton("Close")

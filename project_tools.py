@@ -5,8 +5,7 @@ import copy, json, os, time
 
 
 def _load(path):
-    with open(path, "r", encoding="utf-8") as f:
-        d = json.load(f)
+    d = __import__("safe_io").load_json(path, encoding="utf-8")
     d.pop("_checkpoint", None)
     return d
 
@@ -39,6 +38,13 @@ def health(app):
         import audio_diagnostics as ad
         ok, msg = ad.pre_export_check(app)
         if msg: issues.append(("" if ok else "⚠ ") + msg)
+    except Exception:
+        pass
+    try:   # R100: external tools the app relies on
+        import sos_tools
+        for r in sos_tools.report():
+            if not r["found"] and r["fallback"] in ("none", "none (required)"):
+                issues.append("tool missing: %s (%s)" % (r["tool"], r["used_for"]))
     except Exception:
         pass
     return issues or ["no problems found"]
@@ -162,11 +168,11 @@ def open_window(app):
     def tsave():
         name = app._current_instrument_name()
         data = {"params": (app.instrument_param_state or {}).get(name, {}), "script": (app.instrument_scripts or {}).get(name, "")}
-        with open(os.path.join(_tpl_dir(), (nm.text().strip() or name).replace("/", "_") + ".json"), "w") as f: json.dump(data, f, default=str)
+        __import__("safe_io").atomic_write_json(os.path.join(_tpl_dir(), (nm.text().strip() or name).replace("/", "_") + ".json"), data, default=str)
         tfill()
 
     def tload(n):
-        with open(os.path.join(_tpl_dir(), n + ".json")) as f: return json.load(f)
+        return __import__("safe_io").load_json(os.path.join(_tpl_dir(), n + ".json"))
 
     def tapply():
         it = tl.currentItem()
@@ -182,7 +188,7 @@ def open_window(app):
         if len(sel) < 2: return
         a, b2 = tload(sel[0].text())["params"], tload(sel[1].text())["params"]
         mix = {k: (0.5 * a[k] + 0.5 * b2[k]) if isinstance(a.get(k), (int, float)) and isinstance(b2.get(k), (int, float)) else a.get(k, b2.get(k)) for k in set(a) | set(b2)}
-        with open(os.path.join(_tpl_dir(), "%s+%s.json" % (sel[0].text(), sel[1].text())), "w") as f: json.dump({"params": mix}, f, default=str)
+        __import__("safe_io").atomic_write_json(os.path.join(_tpl_dir(), "%s+%s.json" % (sel[0].text(), sel[1].text())), {"params": mix}, default=str)
         tfill()
     tl.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
     bs.clicked.connect(tsave); ba.clicked.connect(tapply); bm.clicked.connect(tmix); tfill()

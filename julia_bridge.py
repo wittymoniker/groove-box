@@ -9,11 +9,20 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 import threading
 import weakref
 from typing import Any, Optional, Sequence, Tuple
 
 import numpy as np
+
+# Prefer the preinstalled sOS/system Julia over juliacall's managed download.
+# This is set before importing juliacall and is a no-op when the caller already
+# selected an explicit interpreter.
+if not os.environ.get("PYTHON_JULIACALL_EXE"):
+    _system_julia = shutil.which("julia")
+    if _system_julia:
+        os.environ["PYTHON_JULIACALL_EXE"] = _system_julia
 
 _JULIA_WANTED = os.environ.get("GROOVEBOX_JULIA", "1").strip().lower() not in {
     "0", "false", "no", "off"

@@ -31,7 +31,7 @@ def canonical_blanket(active: Dict[str,float]):
     return {k:v/norm for k,v in a.items()}
 
 def save_patch(path, patch:ModulePatch):
-    p=Path(path); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(json.dumps(patch.to_dict(),indent=2),encoding='utf-8'); return str(p.resolve())
+    p=Path(path); p.parent.mkdir(parents=True,exist_ok=True); __import__("safe_io").atomic_write_text(p, json.dumps(patch.to_dict(),indent=2), encoding='utf-8'); return str(p.resolve())
 
 def load_patch(path):
     d=json.loads(Path(path).read_text(encoding='utf-8'))

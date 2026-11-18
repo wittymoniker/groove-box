@@ -278,7 +278,7 @@ def stage(source, progress: Progress = None) -> Path:
     if root is None:
         shutil.rmtree(base, ignore_errors=True)
         raise ValueError("no Groovebox (groovebox.py + run_groovebox.py + compat_settings.py) inside " + str(src))
-    (base / "SOURCE.json").write_text(json.dumps({"source": str(src), "root": str(root), "time": time.time()}), encoding="utf-8")
+    __import__("safe_io").atomic_write_text(base / "SOURCE.json", json.dumps({"source": str(src), "root": str(root), "time": time.time()}), encoding="utf-8")
     return root
 
 

@@ -43,7 +43,7 @@ RESOLUTIONS = {"480p": (854, 480), "720p": (1280, 720), "1080p": (1920, 1080), "
 
 # ----------------------------------------------------------------------------- decoding anything
 def _ffmpeg() -> Optional[str]:
-    return shutil.which("ffmpeg")
+    return __import__("sos_tools").which("ffmpeg")
 
 
 def _decode_audio(path: str, sr: int) -> Tuple[np.ndarray, int]:

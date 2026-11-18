@@ -215,7 +215,7 @@ def text_notes(text, bpm=110.0):
 def read_data(path):
     """Numeric columns of a CSV/TSV/JSON file -> {name: np.array}."""
     if path.lower().endswith(".json"):
-        d = json.load(open(path, encoding="utf-8"))
+        d = __import__("safe_io").load_json(path, encoding="utf-8")
         if isinstance(d, dict):
             cols = {k: v for k, v in d.items() if isinstance(v, list)}
         elif isinstance(d, list) and d and isinstance(d[0], dict):
@@ -343,7 +343,7 @@ def to_seed(app, src, base):
     elif k == "game":
         seed, bpm = mt.game_to_seed(src)
     elif k == "project":
-        d = json.load(open(src, encoding="utf-8"))
+        d = __import__("safe_io").load_json(src, encoding="utf-8")
         seed = str(d.get("seed") or "")
         bpm = float(d.get("bpm", 120) or 120)
     else:

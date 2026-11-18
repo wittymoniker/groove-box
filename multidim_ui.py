@@ -728,7 +728,7 @@ class MD3DView(QWidget):
                 if frame is not None and not frame.isNull():
                     qp.drawImage(QRectF(0, 0, self.width(), self.height()), frame, QRectF(frame.rect()))
                 else:
-                    qp.fillRect(self.rect(), QColor(8, 14, 24))
+                    qp.fillRect(self.rect(), QColor(8, 14, 24, 70))   # R99: translucent to the math / party background
             finally:
                 if qp.isActive():
                     qp.end()
@@ -782,7 +782,7 @@ class MD3DView(QWidget):
             w, h = max(2, int(w * k)), max(2, int(h * k))
             t0 = _tm.monotonic()
             img = QImage(int(w), int(h), QImage.Format.Format_ARGB32_Premultiplied)
-            img.fill(QColor(8, 14, 24))
+            img.fill(QColor(0, 0, 0, 0))                      # R99: transparent frame base
             qp = QPainter(img)
             try:
                 self._render_scene(qp, int(w), int(h))
@@ -821,8 +821,8 @@ class MD3DView(QWidget):
         qp.setRenderHint(QPainter.RenderHint.Antialiasing)
         # near-transparent dark bg with subtle radial glow
         g = QRadialGradient(QPointF(w / 2, h / 2), max(w, h) * 0.72)
-        g.setColorAt(0.0, QColor(18, 28, 42, 220))
-        g.setColorAt(1.0, QColor(6, 10, 18, 240))
+        g.setColorAt(0.0, QColor(18, 28, 42, 96))      # R99: the parametric math / party background shows through
+        g.setColorAt(1.0, QColor(6, 10, 18, 128))
         qp.fillRect(self.rect(), QBrush(g))
         p = self.params
         # OPTICAL PHYSICS SYMPTOMATICS — the field's stochastic / lock / fractal state
@@ -1521,6 +1521,12 @@ class MultidimControlMatrix(QWidget):
         ("fold_depth", "Fold", 1, 1600, 0.01, 1.0),
         ("harmonic_lattice", "Lattice", 0, 100, 0.01, 0.35),
     )
+    try:                                   # R101: defaults from the Eski constants (QBM by default; see eski_constants)
+        import eski_constants as _ek
+        _d = _ek.defaults()
+        _FIVE = tuple((k, lab, lo, hi, sc, (_d[k] if _d.get(k) is not None else dv)) for (k, lab, lo, hi, sc, dv) in _FIVE)
+    except Exception:
+        pass
 
     def __init__(self, host, get_name, get_user, set_user_key, parent=None):
         super().__init__(parent)
@@ -1803,12 +1809,23 @@ class MultidimWindow(QDialog):
         self.canvas_scroll.setWidget(canvas)
         top = QHBoxLayout()
         self.cmb_inst = QComboBox()
-        self.cmb_inst.addItems(list(getattr(host, "instrument_names_48", []) or []))
+        for _key in list(getattr(host, "instrument_names_48", []) or []):
+            _label = host.instrument_label(_key) if hasattr(host, "instrument_label") else _key
+            self.cmb_inst.addItem(str(_label), str(_key))
         try:
-            self.cmb_inst.setCurrentText(host.instrument_selector_dropdown.currentText())
+            _selected_key = host.instrument_selector_dropdown.currentText()
+            self.cmb_inst.setCurrentIndex(max(0, self.cmb_inst.findData(_selected_key)))
         except Exception:
             pass
-        self.cmb_inst.currentTextChanged.connect(lambda *_a: self._load())
+        self.cmb_inst.currentIndexChanged.connect(lambda *_a: self._load())
+        self.ed_instrument_label = QLineEdit()
+        self.ed_instrument_label.setMaxLength(48)
+        self.ed_instrument_label.setPlaceholderText("Custom GUI label…")
+        self.ed_instrument_label.setMaximumWidth(190)
+        self.ed_instrument_label.setToolTip("Rename this instrument's Multidim GUI label. Its internal instrument key and saved sequence identity remain unchanged. Clear and apply to restore the default label.")
+        self.btn_apply_instrument_label = QPushButton("Apply name")
+        self.btn_apply_instrument_label.setToolTip("Apply the custom Multidim instrument label")
+        self.btn_apply_instrument_label.clicked.connect(self._apply_instrument_label)
         self.lbl_owner = QLabel("")
         self.sld_mix = QSlider(Qt.Orientation.Horizontal)
         self.sld_mix.setRange(33, 66); self.sld_mix.setFixedWidth(160)
@@ -1829,7 +1846,8 @@ class MultidimWindow(QDialog):
             _b.setStyleSheet(_editor_btn_css)
             _b.setMinimumHeight(40)
             _b.setMinimumWidth(128)
-        for wdg in (QLabel("Instrument"), self.cmb_inst, self.lbl_owner,
+        for wdg in (QLabel("Instrument"), self.cmb_inst,
+                    self.ed_instrument_label, self.btn_apply_instrument_label, self.lbl_owner,
                     QLabel("   Mix"), self.sld_mix, self.lbl_mix,
                     b_aud, b_reset, b_master):
             top.addWidget(wdg)
@@ -2091,7 +2109,41 @@ class MultidimWindow(QDialog):
             pass
 
     def _name(self):
-        return self.cmb_inst.currentText()
+        key = self.cmb_inst.currentData()
+        return str(key if key is not None else self.cmb_inst.currentText())
+
+    def refresh_instrument_labels(self):
+        """Refresh visible labels while preserving the selected stable instrument key."""
+        selected = self._name()
+        self.cmb_inst.blockSignals(True)
+        try:
+            for i in range(self.cmb_inst.count()):
+                key = str(self.cmb_inst.itemData(i) or self.cmb_inst.itemText(i))
+                label = self.host.instrument_label(key) if hasattr(self.host, "instrument_label") else key
+                self.cmb_inst.setItemText(i, str(label))
+            idx = self.cmb_inst.findData(selected)
+            if idx >= 0:
+                self.cmb_inst.setCurrentIndex(idx)
+        finally:
+            self.cmb_inst.blockSignals(False)
+        if hasattr(self, "ed_instrument_label"):
+            custom = (getattr(self.host, "instrument_display_names", {}) or {}).get(selected, "")
+            self.ed_instrument_label.setText(str(custom))
+
+    def _apply_instrument_label(self):
+        key = self._name()
+        setter = getattr(self.host, "_set_instrument_display_name", None)
+        if not callable(setter):
+            self.lbl_owner.setText("Rename unavailable")
+            return
+        ok, message = setter(key, self.ed_instrument_label.text())
+        if ok:
+            self.refresh_instrument_labels()
+            self.lbl_owner.setText("GUI label: %s" % message)
+        else:
+            self.lbl_owner.setText(str(message))
+            self.ed_instrument_label.setText(
+                str((getattr(self.host, "instrument_display_names", {}) or {}).get(key, "")))
 
     def _user(self, create=False):
         ps = self.host.instrument_param_state
@@ -2112,6 +2164,10 @@ class MultidimWindow(QDialog):
     def _load(self):
         self._loading = True
         try:
+            if hasattr(self, "ed_instrument_label"):
+                _key = self._name()
+                _custom = (getattr(self.host, "instrument_display_names", {}) or {}).get(_key, "")
+                self.ed_instrument_label.setText(str(_custom))
             p, seed_int, slot = self._merged()
             u = self._user()
             self.cmb_preset.setCurrentIndex(max(0, self.cmb_preset.findData(u.get("preset", ""))))
@@ -2388,6 +2444,10 @@ def open_multidim_window(host):
     if w is None:
         w = MultidimWindow(host)
         host._multidim_window = w
+        try:                               # R101: Mod Matrix mirrors on either side, following this window
+            __import__("mm_mirror").attach(host, w)
+        except Exception as _mm_exc:
+            print("[Multidim] mirrors unavailable:", _mm_exc)
     else:
         w._load(); w._timer.start()
     w.show(); w.raise_(); w.activateWindow()
@@ -2601,7 +2661,7 @@ class MainMDPanel(QWidget):
         self.control_rack = QFrame(self)
         self.control_rack.setObjectName("mainDimensionalControlRack")
         self.control_rack.setStyleSheet(
-            "QFrame#mainDimensionalControlRack { background:rgba(21,23,47,174); border:2px solid rgba(108,85,184,220); border-radius:10px; }"
+            "QFrame#mainDimensionalControlRack { background:rgba(21,23,47,140); border:2px solid rgba(108,85,184,220); border-radius:10px; }"
             "QLabel { color:#c8f7ed; font-size:8pt; font-weight:900; background:transparent; border:0; }"
             "QLabel[role='value'] { color:#ffd977; font-size:7pt; font-weight:900; }"
         )
@@ -2718,11 +2778,20 @@ class MainMDPanel(QWidget):
             self.bottom_tabs, self.host, lambda: self.host.instrument_selector_dropdown.currentText())   # RECORD_STRIP_R7
         dock_lay.addWidget(self.bottom_tabs, 1)
 
-        self.overlay = QLabel("Synths Master Engine", self)
+        # R101: the hover pill opens the main Multidim synth window; the engine info pill sits just below it.
+        self.overlay = QLabel("", self)
         self.overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.overlay.setVisible(False)
-        self.overlay.mousePressEvent = self._open_status
+        self.overlay.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay.setToolTip("Open the Multidim synth window (geodesic sphere · canonical engine · Mod Path Bay panels)")
+        self.overlay.mousePressEvent = lambda _e=None: open_multidim_window(self.host)
+        self.overlay_info = QLabel("", self)
+        self.overlay_info.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.overlay_info.setVisible(False)
+        self.overlay_info.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay_info.setToolTip("Synths Master Engine: live status, pool hits, wavetable spectra, CA evolution")
+        self.overlay_info.mousePressEvent = self._open_status
         self._wire_anchors = []
         _panel_btn_css = (
             "QPushButton{background:#1a2f48;color:#9fe8ff;border:2px solid #3d7ea6;"
@@ -2893,10 +2962,10 @@ class MainMDPanel(QWidget):
             self.update()
 
     def enterEvent(self, e):
-        self._hover = True; self.overlay.setVisible(True); super().enterEvent(e)
+        self._hover = True; self.overlay.setVisible(True); self.overlay_info.setVisible(True); super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self._hover = False; self.overlay.setVisible(False); self.update(); super().leaveEvent(e)
+        self._hover = False; self.overlay.setVisible(False); self.overlay_info.setVisible(False); self.update(); super().leaveEvent(e)
 
     def resizeEvent(self, e):
         W, H = self.width(), self.height()
@@ -2910,8 +2979,10 @@ class MainMDPanel(QWidget):
         self.control_rack.setGeometry(6, rack_y, max(0, W - 12), rack_h)
         self.bottom_dock.setGeometry(6, dock_y, max(0, W - 12), max(0, H - dock_y - 5))
         self.view.setGeometry(0, stage_y, W, max(1120, dock_y - stage_y - 8))
-        ow = min(260, int(W * 0.60)); oh = 36
+        ow = min(280, int(W * 0.60)); oh = 40
         self.overlay.setGeometry(W // 2 - ow // 2, self.view.geometry().center().y() - oh // 2, ow, oh)
+        iw = min(220, int(W * 0.48)); ih = 28
+        self.overlay_info.setGeometry(W // 2 - iw // 2, self.overlay.geometry().bottom() + 8, iw, ih)
         # R41.2i: enlarged Panel Synth editor buttons — lower left of multidim panel
         try:
             btn_h, gap, x0 = 42, 6, 8
@@ -2925,6 +2996,8 @@ class MainMDPanel(QWidget):
             ):
                 if _b is None:
                     continue
+                if getattr(self.host, "_r102_launch_bay", False):   # R102: the ring-view launch bay replaces these
+                    _b.hide(); continue
                 bw = max(130, _b.minimumWidth())
                 _b.setGeometry(x, y0, bw, btn_h)
                 _b.show()
@@ -2936,6 +3009,11 @@ class MainMDPanel(QWidget):
 
     def _open_multidim_editor(self, which="script"):
         """Open MultidimWindow and surface the panel synth editor (script/domain/patch)."""
+        if which in ("script", "domain", "patch"):
+            try:                                   # R102: scroll to, focus and flash the actual editor
+                return __import__("launch_bay").open_editor(self.host, which)
+            except Exception:
+                pass
         try:
             w = open_multidim_window(self.host)
             # Matrix / form editors live on the scroll side; raise window is enough.
@@ -2973,13 +3051,22 @@ class MainMDPanel(QWidget):
                 return
             try:
                 qp.setRenderHint(QPainter.RenderHint.Antialiasing)
-                qp.fillRect(self.rect(), QColor("#0b111b"))
+                qp.fillRect(self.rect(), QColor(11, 17, 27, 84))   # R99: translucent panel
                 if self._hover and _alive(self.overlay):
                     alpha = int(100 + 60 * math.sin(self._ghost_phase)); r = self.overlay.geometry()
                     g = QLinearGradient(r.left(), r.top(), r.right(), r.bottom())
                     g.setColorAt(0.0, QColor(20, 100, 180, alpha)); g.setColorAt(1.0, QColor(0, 200, 160, alpha))
-                    qp.fillRect(r, QBrush(g)); qp.setPen(QColor(200, 240, 255, alpha + 40))
-                    qp.setFont(QFont("Arial", 13, QFont.Weight.Bold)); qp.drawText(r, Qt.AlignmentFlag.AlignCenter, "Synths Master Engine")
+                    qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QBrush(g)); qp.drawRoundedRect(r, 12, 12)
+                    qp.setPen(QColor(220, 245, 255, min(255, alpha + 70)))
+                    qp.setFont(QFont("Arial", 13, QFont.Weight.Bold)); qp.drawText(r, Qt.AlignmentFlag.AlignCenter, "🌀 Open Multidim Synth")
+                    if _alive(getattr(self, "overlay_info", None)):
+                        ri = self.overlay_info.geometry(); ai = int(80 + 50 * math.sin(self._ghost_phase + 1.2))
+                        gi = QLinearGradient(ri.left(), ri.top(), ri.right(), ri.bottom())
+                        gi.setColorAt(0.0, QColor(110, 70, 200, ai)); gi.setColorAt(1.0, QColor(60, 120, 220, ai))
+                        qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QBrush(gi)); qp.drawRoundedRect(ri, 10, 10)
+                        qp.setPen(QColor(230, 220, 255, min(255, ai + 90))); qp.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+                        qp.drawText(ri, Qt.AlignmentFlag.AlignCenter, "ⓘ Synths Master Engine")
+                    qp.setBrush(Qt.BrushStyle.NoBrush)
             finally:
                 if qp.isActive(): qp.end()
 
@@ -3201,6 +3288,22 @@ class ArcSequencerView(QWidget):
         self.left_layout = self.left_side._content_layout
         self.right_side = self._make_side_panel("right")
         self.right_layout = self.right_side._content_layout
+        # GROOVEBOX_R102_MPB_ARC_PANELS: the Mod Path Bay panels (routing left, perspective right) ride the ring view's
+        # side areas between the sequencer and automator arcs, above the geometric-synth editors. Deferred so the
+        # host's instrument selector and mod-matrix rows exist first.
+        def _mpb_arc(view=self):
+            h = view._host_ref()
+            if h is None or not _alive(view):
+                return
+            try:
+                __import__("mm_mirror").attach_arc(h, view)
+            except Exception as _mpb_exc:
+                print("[Mod Path Bay] ring-view panels unavailable:", _mpb_exc)
+            try:                           # R102: big Multidim + Geometrics launchers, above the Mod Path Bay
+                __import__("launch_bay").attach(h, view)
+            except Exception as _lb_exc:
+                print("[launch bay] unavailable:", _lb_exc)
+        QTimer.singleShot(0, _mpb_arc)
         # Parameter controls were moved into MainMDPanel's labelled rack.
         # The old left/right rails now contain only the four geometric editors.
         self._param_sliders = {}

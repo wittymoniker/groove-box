@@ -236,7 +236,7 @@ def _gb_find_host(widget):
 
 
 def _gb_probe_rate(path: str) -> int:
-    probe = resolve_local_tool("ffprobe", False) or shutil.which("ffprobe")
+    probe = resolve_local_tool("ffprobe", False) or __import__("sos_tools").which("ffprobe")
     if probe:
         try:
             r = subprocess.run([probe, "-v", "error", "-select_streams", "a:0", "-show_entries",
@@ -292,7 +292,7 @@ def _gb_decode_audio_faithful(path: str):
                 return (x.reshape(-1, 1) if x.ndim == 1 else x), int(sr)
             except Exception:
                 pass
-    ff = resolve_local_tool("ffmpeg", False) or shutil.which("ffmpeg")
+    ff = resolve_local_tool("ffmpeg", False) or __import__("sos_tools").which("ffmpeg")
     if not ff:
         raise RuntimeError("no decoder for this format (local FFmpeg missing)")
     sr = _gb_probe_rate(path)
@@ -331,6 +331,7 @@ class _GbFilePlayer:
                 self.done = True
                 return
             chunk = buf[c:c + n]
+            self._cb_t = time.monotonic()            # R99 A/V clock: when this block was handed to the device
             ch = outdata.shape[1]
             if ch == 1:
                 outdata[:n, 0] = chunk.mean(axis=1) * self.gain
@@ -365,6 +366,22 @@ class _GbFilePlayer:
     def position_s(self):
         sr = getattr(self, "rate", 0) or 0
         return (self.cursor / float(sr)) if sr else 0.0
+
+    def clock_s(self):
+        """R99 audible-position clock for A/V sync: samples handed to the device, minus the output latency, plus the
+        time since that block (capped at one block) so the clock moves smoothly between callbacks."""
+        sr = float(getattr(self, "rate", 0) or 0)
+        if not sr or self.stream is None:
+            return None
+        t = self.cursor / sr
+        if not self.paused:
+            t += min(0.1, max(0.0, time.monotonic() - float(getattr(self, "_cb_t", time.monotonic()))))
+        try:
+            lat = self.stream.latency
+            t -= float(lat if not isinstance(lat, (tuple, list)) else lat[-1])
+        except Exception:
+            pass
+        return max(0.0, t)
 
     def play(self, host, x, sr, volume_pct=100):
         import numpy as np
@@ -485,7 +502,7 @@ def _gb_qt_audio_device(preferred: str):
 def _gb_qt_compatible_copy(path: str) -> str:
     """Transcode once to MP4 (H.264 or MPEG-4 + AAC) when Qt cannot decode a container."""
     import hashlib
-    ff = resolve_local_tool("ffmpeg", False) or shutil.which("ffmpeg")
+    ff = resolve_local_tool("ffmpeg", False) or __import__("sos_tools").which("ffmpeg")
     if not ff:
         raise RuntimeError("local FFmpeg is missing")
     st = os.stat(path)
@@ -1590,7 +1607,7 @@ def _launch_physical_pcm_pipeline(path: str, start_s: float = 0.0, preferred_tar
     or unavailable PCM from becoming the silent "successful" fallback.
     """
     ffmpeg=resolve_local_tool("ffmpeg", False)
-    aplay=shutil.which("aplay")
+    aplay=__import__("sos_tools").which("aplay")
     if not ffmpeg or not aplay:
         raise RuntimeError("local ffmpeg or aplay is unavailable")
     try:
@@ -1738,16 +1755,14 @@ def _extract_json_comment(path: str) -> Optional[dict]:
         side = path + suffix
         if os.path.isfile(side):
             try:
-                with open(side, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return __import__("safe_io").load_json(side, encoding="utf-8")
             except Exception:
                 pass
         base, _ = os.path.splitext(path)
         side2 = base + suffix
         if os.path.isfile(side2):
             try:
-                with open(side2, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                return __import__("safe_io").load_json(side2, encoding="utf-8")
             except Exception:
                 pass
     # ffprobe comment
@@ -2314,6 +2329,7 @@ class Performance(QDialog):
         self._add_lazy_performance_tab(right, "🧊 Voxel Editor", self._build_lazy_voxel_editor)
         self._add_lazy_performance_tab(right, "🧊 Voxel Viewer", self._build_lazy_voxel_viewer)
         right.addTab(self._scroll_page(self._build_shared_synth_context_tab()), "∴ Shared Synth Context")
+        right.addTab(self._scroll_page(self._build_canonical_seed_tab()), "✧ Canonical / Seed")
         right.addTab(self._scroll_page(self._build_remix_tab()), "∿ Parametric Remix")
         self._add_lazy_performance_tab(right, "▤ Open Windows", lambda: self._scroll_page(self._build_open_windows_tab()))
         self._add_lazy_performance_tab(right, "◉ Live Broadcast", lambda: self._scroll_page(self._build_performance_tab()))
@@ -2342,6 +2358,7 @@ class Performance(QDialog):
             "📝 Notes": "Write, edit and delete text / diary notes (saved as files in the Groovebox notes folder).",
             "🎞 Recordings": "Recorded live streams and saved chat transcripts, by project and date.",
             "∴ Shared Synth Context": "What the main window is doing, mirrored here.",
+            "✧ Canonical / Seed": "GOAVA sine-voice spectrum and amplitude controls, plus deterministic Fractal Seed interpretation settings.",
             "∿ Parametric Remix": "Remix the current piece with the parametric controls.",
             "▤ Open Windows": "Windows that are open. Click one to bring it back.",
             "◉ Live Broadcast": "Send the performance out live.",
@@ -2785,6 +2802,7 @@ class Performance(QDialog):
     def _rec_trash(self):
         kind,path=self._rec_selected()
         if not path: return
+        if __import__("safe_io").is_system_path(path): QMessageBox.warning(self,"System file protected",__import__("safe_io").protected_message(path,"delete")); return
         if QMessageBox.question(self,"Move to Trash",f"Move “{os.path.basename(path)}” to the Groovebox Trash?")!=QMessageBox.StandardButton.Yes: return
         try:
             import groovebox_paths
@@ -3461,6 +3479,9 @@ class Performance(QDialog):
         menu.addAction("Transmute / reverse-engineer…", lambda: __import__("media_transmuter").open_window(self.host, sel[0] if sel else None))
         def _copy():
             d = QFileDialog.getExistingDirectory(self, "Copy to folder / drive")
+            _blk = [x for x in ([d] + list(sel) if d else []) if __import__("safe_io").is_system_path(x)]
+            if _blk:
+                QMessageBox.warning(self, "System file protected", __import__("safe_io").protected_message(_blk[0], "copy or paste")); return
             if d:
                 import shutil
                 for p in sel:
@@ -3566,8 +3587,7 @@ class Performance(QDialog):
                 # Direct load if host supports path-based apply
                 pass
             if hasattr(self.host, "_apply_project_snapshot") or hasattr(self.host, "load_project_dialog"):
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = __import__("safe_io").load_json(path, encoding="utf-8")
                 # Prefer apply_project_snapshot / restore path
                 applied = False
                 for name in ("_apply_project_snapshot", "apply_project_snapshot",
@@ -4078,6 +4098,8 @@ class Performance(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
         for path in paths:
+            if __import__("safe_io").is_system_path(path):
+                QMessageBox.warning(self, "System file protected", __import__("safe_io").protected_message(path, "delete")); continue
             try:
                 if os.path.isdir(path):
                     shutil.rmtree(path)
@@ -4192,6 +4214,146 @@ class Performance(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Master Studio", f"Could not launch MatGroovebox Master Studio:\n{exc}")
             return None
+
+    # ------------------------------------------------------------------ canonical / seed controls
+    def _build_canonical_seed_tab(self) -> QWidget:
+        """Focused Performance-window controls for GOAVA voices and Fractal Seed."""
+        page = QWidget(); root = QVBoxLayout(page)
+        intro = QLabel(
+            "Canonical generation controls. GOAVA remains a non-instrument harmonic layer: "
+            "it writes its three frequency/amplitude voices into its canonical row metadata, "
+            "not into an instrument identity or sequence slot. Fractal Seed settings alter "
+            "the deterministic finite interpretation, never the authored seed identity."
+        )
+        intro.setWordWrap(True); root.addWidget(intro)
+
+        host = self.host
+        try:
+            from goava_voices import normalize_settings, DEFAULT_SETTINGS
+            goava = normalize_settings(getattr(host, "goava_voice_settings", DEFAULT_SETTINGS))
+        except Exception:
+            goava = {"spectrum_offset": 0.5, "amplitudes": [0.33, 0.22, 0.15]}
+
+        goava_box = QGroupBox("GOAVA · Three sine voices")
+        goava_form = QFormLayout(goava_box)
+        self.spin_goava_spectrum_offset = QDoubleSpinBox()
+        self.spin_goava_spectrum_offset.setRange(0.01, 4.0)
+        self.spin_goava_spectrum_offset.setDecimals(3)
+        self.spin_goava_spectrum_offset.setSingleStep(0.01)
+        self.spin_goava_spectrum_offset.setValue(float(goava.get("spectrum_offset", 0.5)))
+        self.spin_goava_spectrum_offset.setToolTip(
+            "Shared offset. Voice 2 is multiplied by (1 + offset); voice 3 is divided by that same factor."
+        )
+        goava_form.addRow("Spectrum offset", self.spin_goava_spectrum_offset)
+        self.lbl_goava_voice_ratios = QLabel("")
+        self.lbl_goava_voice_ratios.setWordWrap(True)
+        goava_form.addRow("Relative pitch ratios", self.lbl_goava_voice_ratios)
+        self.goava_voice_amp_spins = []
+        for index, default in enumerate((0.33, 0.22, 0.15)):
+            spin = QDoubleSpinBox(); spin.setRange(0.0, 1.0); spin.setDecimals(3)
+            spin.setSingleStep(0.01)
+            spin.setValue(float((goava.get("amplitudes") or [])[index] if len(goava.get("amplitudes") or []) > index else default))
+            spin.setToolTip("Linear sine-voice amplitude, 0.000–1.000")
+            self.goava_voice_amp_spins.append(spin)
+            goava_form.addRow(f"Voice {index + 1} amplitude", spin)
+        root.addWidget(goava_box)
+
+        fractal_box = QGroupBox("Fractal Seed · Bounded interpretation")
+        fractal_form = QFormLayout(fractal_box)
+        try:
+            from groovebox_v3.fractal_seed_engine import normalize_playable_settings, SCALES
+            fs = normalize_playable_settings(getattr(host, "fractal_seed_settings", None))
+        except Exception:
+            fs = {"depth": 6, "steps_per_bar": 16, "bars": 4, "root_midi": 60, "base_frequency_hz": 432.0, "scale": "minor_pentatonic", "symbol_budget": 16384}
+            SCALES = {"minor_pentatonic": [], "major_pentatonic": [], "natural_minor": [], "major": [], "chromatic": []}
+        self.spin_fractal_depth = QSpinBox(); self.spin_fractal_depth.setRange(1, 12); self.spin_fractal_depth.setValue(int(fs["depth"]))
+        self.combo_fractal_steps = QComboBox()
+        for value in (4, 8, 12, 16, 24, 32, 48, 64): self.combo_fractal_steps.addItem(str(value), value)
+        self.combo_fractal_steps.setCurrentIndex(max(0, self.combo_fractal_steps.findData(int(fs["steps_per_bar"]))))
+        self.spin_fractal_bars = QSpinBox(); self.spin_fractal_bars.setRange(1, 64); self.spin_fractal_bars.setValue(int(fs["bars"]))
+        self.spin_fractal_root = QSpinBox(); self.spin_fractal_root.setRange(0, 108); self.spin_fractal_root.setValue(int(fs["root_midi"]))
+        self.spin_fractal_frequency = QDoubleSpinBox(); self.spin_fractal_frequency.setRange(20.0, 20000.0); self.spin_fractal_frequency.setDecimals(2); self.spin_fractal_frequency.setSingleStep(1.0); self.spin_fractal_frequency.setValue(float(fs.get("base_frequency_hz", 432.0))); self.spin_fractal_frequency.setSuffix(" Hz")
+        self.spin_fractal_frequency.setToolTip("Absolute Fractal Seed root frequency. Canonical pitch ratios are normalized against the current global base frequency so the audible root remains this value.")
+        self.combo_fractal_scale = QComboBox()
+        for key in SCALES: self.combo_fractal_scale.addItem(key.replace("_", " ").title(), key)
+        self.combo_fractal_scale.setCurrentIndex(max(0, self.combo_fractal_scale.findData(fs["scale"])))
+        self.spin_fractal_budget = QSpinBox(); self.spin_fractal_budget.setRange(256, 100000); self.spin_fractal_budget.setSingleStep(256); self.spin_fractal_budget.setValue(int(fs["symbol_budget"]))
+        for label, widget in (("Rewrite depth", self.spin_fractal_depth),
+                              ("Steps per bar", self.combo_fractal_steps),
+                              ("Interpretation bars", self.spin_fractal_bars),
+                              ("Root MIDI note", self.spin_fractal_root),
+                              ("Root frequency", self.spin_fractal_frequency),
+                              ("Scale", self.combo_fractal_scale),
+                              ("Symbol/event budget", self.spin_fractal_budget)):
+            fractal_form.addRow(label, widget)
+        self.lbl_fractal_seed_settings = QLabel(
+            "Recommended starting point: depth 6 · 16 steps/bar · 4 bars · C4 · 432 Hz root · minor pentatonic · 16,384 budget. "
+            "No omission or phase-shift scenario is selected by default; event selection remains deterministic."
+        )
+        self.lbl_fractal_seed_settings.setWordWrap(True); fractal_form.addRow(self.lbl_fractal_seed_settings)
+        root.addWidget(fractal_box)
+
+        action_row = QHBoxLayout()
+        self.btn_canonical_seed_defaults = QPushButton("Restore recommended defaults")
+        action_row.addWidget(self.btn_canonical_seed_defaults)
+        root.addLayout(action_row); root.addStretch(1)
+
+        self._canonical_seed_apply_timer = QTimer(self); self._canonical_seed_apply_timer.setSingleShot(True)
+        self._canonical_seed_apply_timer.setInterval(220)
+
+        def current_goava():
+            return {
+                "schema": 1,
+                "spectrum_offset": float(self.spin_goava_spectrum_offset.value()),
+                "amplitudes": [float(w.value()) for w in self.goava_voice_amp_spins],
+            }
+
+        def update_ratio_label():
+            factor = 1.0 + float(self.spin_goava_spectrum_offset.value())
+            self.lbl_goava_voice_ratios.setText(
+                f"Voice 1 = 1.000× root   ·   Voice 2 = ×{factor:.3f}   ·   "
+                f"Voice 3 = ÷{factor:.3f} = {1.0 / factor:.5f}× root"
+            )
+
+        def apply_controls():
+            update_ratio_label()
+            apply_goava = getattr(host, "_apply_goava_voice_settings", None)
+            if callable(apply_goava): apply_goava(current_goava())
+            apply_fractal = getattr(host, "_apply_fractal_seed_settings", None)
+            if callable(apply_fractal):
+                apply_fractal({
+                    "schema": 1, "depth": self.spin_fractal_depth.value(),
+                    "steps_per_bar": self.combo_fractal_steps.currentData(),
+                    "bars": self.spin_fractal_bars.value(),
+                    "root_midi": self.spin_fractal_root.value(),
+                    "base_frequency_hz": self.spin_fractal_frequency.value(),
+                    "scale": self.combo_fractal_scale.currentData(),
+                    "symbol_budget": self.spin_fractal_budget.value(),
+                })
+
+        def queue_apply(*_):
+            update_ratio_label()
+            self._canonical_seed_apply_timer.start()
+
+        self._canonical_seed_apply_timer.timeout.connect(apply_controls)
+        self.spin_goava_spectrum_offset.valueChanged.connect(queue_apply)
+        for spin in self.goava_voice_amp_spins: spin.valueChanged.connect(queue_apply)
+        for widget in (self.spin_fractal_depth, self.spin_fractal_bars, self.spin_fractal_root, self.spin_fractal_frequency, self.spin_fractal_budget):
+            widget.valueChanged.connect(queue_apply)
+        self.combo_fractal_steps.currentIndexChanged.connect(queue_apply)
+        self.combo_fractal_scale.currentIndexChanged.connect(queue_apply)
+
+        def restore_defaults():
+            self.spin_goava_spectrum_offset.setValue(0.5)
+            for spin, value in zip(self.goava_voice_amp_spins, (0.33, 0.22, 0.15)): spin.setValue(value)
+            self.spin_fractal_depth.setValue(6); self.combo_fractal_steps.setCurrentIndex(self.combo_fractal_steps.findData(16))
+            self.spin_fractal_bars.setValue(4); self.spin_fractal_root.setValue(60); self.spin_fractal_frequency.setValue(432.0)
+            self.combo_fractal_scale.setCurrentIndex(self.combo_fractal_scale.findData("minor_pentatonic"))
+            self.spin_fractal_budget.setValue(16384)
+            self._canonical_seed_apply_timer.start()
+        self.btn_canonical_seed_defaults.clicked.connect(restore_defaults)
+        update_ratio_label()
+        return page
 
     # ------------------------------------------------------------------ playlist tab
     def _build_shared_synth_context_tab(self) -> QWidget:
@@ -5608,6 +5770,18 @@ class Performance(QDialog):
         if not hasattr(self, "lst_radio_peers"): return
         self.lst_radio_peers.clear()
         svc = self._goava_radio_service
+        if hasattr(self, "lbl_radio_status"):
+            if svc is None:
+                self.lbl_radio_status.setText("OFF AIR · no active local stream")
+            else:
+                try:
+                    state = svc.status_snapshot()
+                    badge = "ON AIR" if state.get("on_air") else "OFF AIR"
+                    now = str(state.get("now_playing") or "Preparing stream")
+                    self.lbl_radio_status.setText(
+                        f"{badge} · {svc.url} · {int(state.get('listeners', 0))} listener(s) · {now}")
+                except Exception:
+                    self.lbl_radio_status.setText(f"Radio service active · {svc.url}")
         peers = svc.peer_list() if svc is not None else []
         if not peers:
             self.lst_radio_peers.addItem("No nearby Groovebox radios discovered yet.")
@@ -5961,7 +6135,7 @@ class Performance(QDialog):
         meta=dict(row.get('meta') or {}); backend=str(row.get('backend') or meta.get('backend') or 'sounddevice')
         if backend=='alsa':
             dev=str(row.get('device') or meta.get('alsa_device') or '')
-            arecord=shutil.which('arecord')
+            arecord=__import__("sos_tools").which('arecord')
             if not (arecord and dev):
                 self.quick_mic_meter.setFormat('Mic Level — no ALSA capture route'); return
             # R23n: SOF DMICs are commonly 2/4-channel hardware.  A forced mono
@@ -6240,7 +6414,7 @@ class Performance(QDialog):
             _combined = _ensure_all_pulse_outputs_sink()
             setattr(self.host, "_preferred_audio_output_name", _combined or "")
             if _combined:
-                subprocess.run([shutil.which("pactl") or "pactl", "set-default-sink", _combined],
+                subprocess.run([__import__("sos_tools").which("pactl") or "pactl", "set-default-sink", _combined],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5, check=False)
         except Exception:
             if self._output_audio:
@@ -6576,7 +6750,15 @@ class Performance(QDialog):
                     if _sel and h.get("node_id")==_sel: self.lst_nearby_history.setCurrentItem(item)
             caps=svc.direct.capabilities() if getattr(svc,'direct',None) is not None else {}
             self.lbl_nearby_direct.setText(f"Direct link: host={'yes' if caps.get('host') else 'no'} · scan={'yes' if caps.get('scan') else 'no'} · join={'yes' if caps.get('join') else 'no'} · SSID {caps.get('ssid','—')}" + (f"\n{caps.get('reason')}" if caps.get('reason') else ""))
-        except Exception as e: self.lbl_nearby_progress.setText(f"Nearby refresh: {e}")
+        except Exception as e:
+            try:
+                self.lbl_nearby_progress.setText(f"Nearby refresh: {e}")
+            except RuntimeError:
+                # R33: this panel's widgets were deleted (window closed) but its timer kept firing; the error
+                # handler itself raised, so every tick logged an uncaught traceback on the UI thread.
+                try: self._nearby_ui_timer.stop()
+                except Exception: pass
+                return
         try: self._refresh_nearby_messages()
         except Exception: pass
         try: self._ptt_autolisten()
@@ -6772,7 +6954,7 @@ class Performance(QDialog):
         try:
             from notes_editor import notes_dir, _safe_title, _unique
             path=_unique(notes_dir()/f"{_safe_title(title)} {time.strftime('%Y-%m-%d %H-%M')}.md")
-            path.write_text(f"# {title}\n\n{text or '_No messages._'}\n",encoding="utf-8")
+            __import__("safe_io").atomic_write_text(path, f"# {title}\n\n{text or '_No messages._'}\n", encoding="utf-8")
             self.lbl_nearby_progress.setText(f"Transcript saved to Notes: {path}")
         except Exception as e:
             QMessageBox.warning(self,"Save transcript",str(e))
@@ -6972,7 +7154,7 @@ class Performance(QDialog):
         def run():
             import tempfile, mcc_media
             td=tempfile.mkdtemp(prefix="groovebox_share_")
-            with open(os.path.join(td,f"{name}.MCC"),"w",encoding="utf-8") as f: json.dump(snap,f)
+            __import__("safe_io").atomic_write_json(os.path.join(td,f"{name}.MCC"), snap, encoding="utf-8")
             os.makedirs(os.path.join(td,"samples"),exist_ok=True)
             for sp in dict.fromkeys(samples): shutil.copy2(sp,os.path.join(td,"samples",os.path.basename(sp)))
             bundle=os.path.join(tempfile.mkdtemp(),f"{name} · shared project.MCC")
@@ -7882,7 +8064,7 @@ class Performance(QDialog):
         self.btn_audio_io_test.setEnabled(False)
         self.txt_hardware.append("\nPHYSICAL AUDIO I/O TEST\n  Playing a brief 997 Hz test tone and measuring its return through the physical microphone…")
         def work():
-            cmd=shutil.which('sos-audio-io-test') or '/usr/bin/sos-audio-io-test'
+            cmd=__import__("sos_tools").which('sos-audio-io-test') or '/usr/bin/sos-audio-io-test'
             try:
                 cp=subprocess.run([cmd],capture_output=True,text=True,timeout=12.0,check=False)
                 text=(cp.stdout or '') + (("\n"+cp.stderr) if cp.stderr else '')
@@ -8194,8 +8376,7 @@ class Performance(QDialog):
                     "max_rows": (self.host._live_preview_max_rows() if self.chk_batch_preview.isChecked()
                                  and hasattr(self.host, "_live_preview_max_rows") else None)}
             jp = os.path.join(tmp, "job.json")
-            with open(jp, "w", encoding="utf-8") as fh:
-                _json.dump(spec, fh)
+            __import__("safe_io").atomic_write_json(jp, spec, encoding="utf-8")
             proc = QProcess(self)
             proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
             proc.finished.connect(lambda *_a, p=proc, jj=j, sp=spec, td=tmp: finished(p, jj, sp, td))
@@ -8215,7 +8396,7 @@ class Performance(QDialog):
             if ok:
                 try:
                     import numpy as np
-                    meta = _json.load(open(spec["out_meta"], encoding="utf-8"))
+                    meta = __import__("safe_io").load_json(spec["out_meta"], encoding="utf-8")
                     master = np.load(spec["out_npy"]); sr = int(meta["sample_rate"])
                     try:
                         from audio_export_integrity import quantize_float_master
@@ -8282,8 +8463,7 @@ class Performance(QDialog):
                 self._batch_log(f"  skip: no linked project for {os.path.basename(path)}")
                 continue
             try:
-                with open(project_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                data = __import__("safe_io").load_json(project_path, encoding="utf-8")
                 applied = False
                 for name in ("_apply_project_snapshot", "apply_project_snapshot"):
                     fn = getattr(self.host, name, None)
@@ -8505,7 +8685,7 @@ class Performance(QDialog):
             default=os.path.splitext(path)[0]+'.MGshare.json'
             out,_=QFileDialog.getSaveFileName(self,'Share .MG Identity',default,'Groovebox share card (*.MGshare.json);;JSON (*.json)')
             if not out: return
-            with open(out,'w',encoding='utf-8') as f: json.dump(card,f,indent=2,sort_keys=True)
+            __import__("safe_io").atomic_write_json(out, card, indent=2, sort_keys=True, encoding='utf-8')
             self.lbl_status.setText(f"Shared identity card → {os.path.basename(out)}")
         except Exception as e:
             QMessageBox.warning(self,'Share identity failed',str(e))
@@ -9035,7 +9215,7 @@ class _AudioVisualizer(QWidget):
     def _decode_env(cls, path):
         try:
             import numpy as np
-            ff = shutil.which("ffmpeg") or "ffmpeg"
+            ff = __import__("sos_tools").which("ffmpeg") or "ffmpeg"
             pr = subprocess.Popen([ff, "-v", "quiet", "-i", path, "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             lv, br, rm, pk, tail = [], [], [], [], np.zeros(0, np.float32)
@@ -10507,8 +10687,13 @@ class FileManagerDialog(QDialog):
         btn_player=QPushButton("▶ Open in Player"); btn_player.clicked.connect(self._open_in_player)
         btn_add_playlist=QPushButton("→ Add to Performance Playlist"); btn_add_playlist.clicked.connect(self._add_to_performance_playlist)
         btn_open=QPushButton("Open Project / Launch Game"); btn_open.clicked.connect(self._open_project_or_game)
+        btn_open.setToolTip("Projects open, games launch, and a Groovebox export reopens the exact project that made it (provenance).")
         btn_view=QPushButton("🖼 View Image"); btn_view.clicked.connect(self._view_image)
         row2.addWidget(btn_player); row2.addWidget(btn_view); row2.addWidget(btn_add_playlist); row2.addWidget(btn_open); root.addLayout(row2)
+        try:                                   # R101: copy path · provenance
+            __import__("jam_tools").file_accessories(self, root)
+        except Exception as _fa_exc:
+            print("[File Manager] accessories unavailable:", _fa_exc)
         # GROOVEBOX_R23R_FILE_TOOLS_20261101: duplicate index + source archive export.
         row3=QHBoxLayout()
         btn_dups=QPushButton("🔍 Index Duplicates"); btn_dups.setToolTip("Find byte-identical files under this folder and select copies to remove.")
@@ -10702,7 +10887,7 @@ class FileManagerDialog(QDialog):
             else:
                 # Desktop fallback: udisksctl is allowed when the host desktop
                 # provides it; do not require it in sOS.
-                tool=shutil.which("udisksctl")
+                tool=__import__("sos_tools").which("udisksctl")
                 if tool:
                     subprocess.Popen([tool,"mount","-b",dev], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     QTimer.singleShot(800, self._refresh_storage_devices)
@@ -10864,6 +11049,19 @@ class FileManagerDialog(QDialog):
         except Exception:
             pass
         return False
+    def _system_blocked(self, *paths, action="change") -> bool:
+        """R101: system files can be browsed and viewed, never edited, deleted, renamed, moved, copied or pasted."""
+        try:
+            import safe_io
+            for p_ in paths:
+                if p_ and safe_io.is_system_path(p_):
+                    QMessageBox.warning(self, "System file protected", safe_io.protected_message(p_, action))
+                    try: self.lbl_status.setText("System file protected: " + str(p_))
+                    except Exception: pass
+                    return True
+        except Exception:
+            pass
+        return False
     @staticmethod
     def _valid_leaf(name: str) -> bool:
         n=name.strip()
@@ -10994,7 +11192,7 @@ class FileManagerDialog(QDialog):
                     except Exception:
                         dur = None
                 if dur is None:
-                    ff = shutil.which("ffprobe")
+                    ff = __import__("sos_tools").which("ffprobe")
                     if ff:
                         r = subprocess.run([ff, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
                                            capture_output=True, text=True, timeout=8)
@@ -11060,6 +11258,7 @@ class FileManagerDialog(QDialog):
     def _copy_into_dir(self,paths):
         """Copy dropped/uploaded files into the folder being shown (a removable's mount counts). Never overwrites."""
         dest=self._dir
+        if self._system_blocked(dest, *paths, action="copy or paste"): return
         if not self._destination_write_probe(dest,"Copy into folder"): return
         self.lbl_status.setText(f"Copying {len(paths)} item(s) into {dest} …")
         def run():
@@ -11099,13 +11298,16 @@ class FileManagerDialog(QDialog):
         if not ok:return
         if not self._valid_leaf(name): QMessageBox.warning(self,"New Folder","Use a simple folder name without path separators or '..'."); return
         dest=os.path.join(self._dir,name)
+        if self._system_blocked(dest, action="create folders in"): return
         if os.path.exists(dest): QMessageBox.warning(self,"New Folder","An item with that name already exists."); return
         try: os.mkdir(dest); self.refresh(); self.lbl_status.setText(f"Created folder: {name}")
         except Exception as e: QMessageBox.warning(self,"New Folder failed",str(e))
     def _rename_selected(self):
         paths=self._selected_paths()
         if len(paths)!=1: QMessageBox.information(self,"Rename","Select exactly one file or folder to rename."); return
-        old_path=paths[0]; old_name=os.path.basename(old_path.rstrip(os.sep)); new_name,ok=QInputDialog.getText(self,"Rename","New name:",text=old_name); new_name=new_name.strip()
+        old_path=paths[0]
+        if self._system_blocked(old_path, action="rename"): return
+        old_name=os.path.basename(old_path.rstrip(os.sep)); new_name,ok=QInputDialog.getText(self,"Rename","New name:",text=old_name); new_name=new_name.strip()
         if not ok or new_name==old_name:return
         if not self._valid_leaf(new_name): QMessageBox.warning(self,"Rename","Use a simple name without path separators or '..'."); return
         if old_path.lower().endswith((".mcc", ".mgpr")) and not new_name.lower().endswith((".mcc", ".mgpr")):
@@ -11254,8 +11456,10 @@ class FileManagerDialog(QDialog):
         paths=self._selected_paths()
         if not paths:
             QMessageBox.information(self,title,"Select one or more files or folders first."); return [],""
+        if self._system_blocked(*paths, action="move or copy"): return [],""
         dest_dir=self._choose_transfer_dir(title)
         if not dest_dir:return [],""
+        if self._system_blocked(dest_dir, action="paste into"): return [],""
         return paths,dest_dir
     def _move_selected(self):
         paths,dest_dir=self._prepare_transfer("Move selected items")
@@ -11319,6 +11523,7 @@ class FileManagerDialog(QDialog):
     def _delete_selected(self):
         paths=self._selected_paths()
         if not paths:return
+        if self._system_blocked(*paths, action="delete"): return
         if QMessageBox.question(self,"Move to Trash",f"Move {len(paths)} item(s) to Groovebox Trash?\nYou can undo the most recent operation.",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
         moved=[]
         for path in paths:
@@ -11339,6 +11544,11 @@ class FileManagerDialog(QDialog):
 
     def _trash_duplicates(self, paths):
         moved=[]; errors=[]
+        try:
+            import safe_io as _sio
+            paths=[p_ for p_ in paths if not _sio.is_system_path(p_)]
+        except Exception:
+            pass
         for path in paths:
             if os.path.realpath(path) in self._safe_roots: continue
             try:
@@ -11412,6 +11622,17 @@ class FileManagerDialog(QDialog):
         for path in paths:
             ext=_gb_ext(path)
             try:
+                if ext not in PROJECT_EXT and ext not in GAME_EXT:
+                    # R101: any Groovebox export can reopen the exact project that produced it
+                    import provenance as _pv
+                    main=next((c for c in (getattr(host,"host",None),host) if c is not None and hasattr(c,"open_project_path")),None)
+                    doc=_pv.lookup(path)
+                    if doc and QMessageBox.question(self,"Rebuild project",_pv.summary(doc)+"\n\nOpen the project that made this file?",
+                                                    QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:
+                        ok,msg=_pv.rebuild(main,path); self.lbl_status.setText(msg)
+                    elif not doc:
+                        self.lbl_status.setText(_pv.summary(None))
+                    continue
                 if ext in PROJECT_EXT:
                     if host is not None and hasattr(host,"_open_project"): host._open_project(path)
                     elif host is not None and hasattr(host,"host") and hasattr(host.host,"open_project_path"): host.host.open_project_path(path)

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Read-only sOS / installed application trees must not create import caches.
+export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUTF8="${PYTHONUTF8:-1}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

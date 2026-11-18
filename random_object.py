@@ -134,7 +134,7 @@ def generate_random_object(host, kind: str, seed: Any = 0, *, instrument: Option
     elif kind == "video":
         width = max(64, min(1920, int(width))); height = max(64, min(1080, int(height)))
         fps = max(1, min(60, int(fps))); frames = max(2, min(240, int(round(float(duration) * fps))))
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = __import__("sos_tools").which("ffmpeg")
         path = outdir / f"random_{stamp}.mp4"
         if ffmpeg:
             cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
@@ -205,7 +205,7 @@ def generate_random_object(host, kind: str, seed: Any = 0, *, instrument: Option
             "source": "random_object",
             "alias_pct": int(getattr(host, "voxel_alias_pct", 0) or 0),
         }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        __import__("safe_io").atomic_write_text(path, json.dumps(payload, indent=2), encoding="utf-8")
         record["path"] = str(path)
         # Prefer the host's normalizer/importer when available so the editor and
         # project state stay consistent with the rest of the system.

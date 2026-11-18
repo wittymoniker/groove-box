@@ -123,7 +123,7 @@ class SignalLab(QWidget):
             if not p:return
             payload={'format':'MathematiciansGrooveboxDrawn'+mode,'version':1,'userdata':False,'points':self.canvas.normalized_points(),
                      'traversal_index':self.traversal.value(),'phase_index':self.phase.value(),'cycles':self.cycles.value()}
-            Path(p).write_text(json.dumps(payload,indent=2),encoding='utf-8')
+            __import__("safe_io").atomic_write_text(Path(p), json.dumps(payload,indent=2), encoding='utf-8')
         self.last_generated=os.path.abspath(p); self.report.setPlainText('Saved: '+self.last_generated)
     def _send_to_host(self,local):
         if self.mode.currentText() not in ('Carrier','Sample'):

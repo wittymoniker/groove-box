@@ -25,8 +25,7 @@ class ProjectManager:
                 "channels": {name: self.serialize_channel(name, obj) for name, obj in channels.items()}
             }
             
-            with open(self.filename, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, indent=4)
+            __import__("safe_io").atomic_write_json(self.filename, project_data, indent=4, encoding='utf-8')
                 
             print(f"[ProjectManager] Project successfully saved to {os.path.abspath(self.filename)}")
             return True
@@ -41,8 +40,7 @@ class ProjectManager:
             return {}
             
         try:
-            with open(self.filename, 'r', encoding='utf-8') as f:
-                project_data = json.load(f)
+            project_data = __import__("safe_io").load_json(self.filename, encoding='utf-8')
                 
             print(f"[ProjectManager] Project successfully loaded from {os.path.abspath(self.filename)}")
             return project_data

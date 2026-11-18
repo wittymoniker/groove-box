@@ -1,0 +1,3 @@
+Mathematician's Groovebox / sOS — R108
+Canonical Fractal Seed frequency and GOAVA amplitude propagation; RAND RNG continuity; in-app console wiring and diagnostics; no-bytecode finalizer cleanup; Latitude dialog geometry clamp; five-newest-ISO seven-partition USB writer.
+See RELEASE-R108-CANONICAL-FREQUENCY-UI-ISO-WRITER-20261118.md and FINAL-SWEEP-R108-20261118.md.

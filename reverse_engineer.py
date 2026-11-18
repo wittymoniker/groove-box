@@ -121,4 +121,4 @@ def analyze(path: str, max_instruments: int=16, simplicity_weight: float=.35, lo
     return {"descriptor":asdict(d),"candidates":[c.to_dict() for c in cands],"best":cands[0].to_dict() if cands else None,"effectively_unique_in_tested_space":unique}
 
 def save_analysis(result,path):
-    Path(path).write_text(json.dumps(result,indent=2),encoding='utf-8'); return str(Path(path).resolve())
+    __import__("safe_io").atomic_write_text(Path(path), json.dumps(result,indent=2), encoding='utf-8'); return str(Path(path).resolve())

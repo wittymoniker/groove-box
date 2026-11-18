@@ -68,7 +68,7 @@ def build_rust_accel(root: Path|None=None):
     root=Path(root or ROOT); helper=root/'scripts'/'build_rust_accel.py'
     if not helper.is_file(): return None
     try:
-        subprocess.run([os.fspath(shutil.which('python3') or shutil.which('python') or os.sys.executable),str(helper)],cwd=root,check=True)
+        subprocess.run([os.fspath(__import__("sos_tools").which('python3') or __import__("sos_tools").which('python') or os.sys.executable),str(helper)],cwd=root,check=True)
     except Exception:
         return None
     return find_rust_accel(root)
@@ -79,17 +79,17 @@ def build_accel(root: Path|None=None):
     s,_=platform_key()
     try:
         if s=='windows':
-            cl=shutil.which('cl'); gxx=shutil.which('g++')
+            cl=__import__("sos_tools").which('cl'); gxx=__import__("sos_tools").which('g++')
             out=outdir/'groovebox_accel.dll'
             if cl: subprocess.run([cl,'/nologo','/std:c++17','/O2','/DNDEBUG','/LD',str(src),f'/Fe:{out}'],cwd=root,check=True)
             elif gxx: subprocess.run([gxx,'-std=c++17','-O3','-DNDEBUG','-shared',str(src),'-o',str(out)],cwd=root,check=True)
             else: return None
         elif s=='darwin':
-            c=shutil.which('clang++') or shutil.which('c++'); out=outdir/'libgroovebox_accel.dylib'
+            c=__import__("sos_tools").which('clang++') or __import__("sos_tools").which('c++'); out=outdir/'libgroovebox_accel.dylib'
             if not c: return None
             subprocess.run([c,'-std=c++17','-O3','-DNDEBUG','-dynamiclib',str(src),'-o',str(out)],cwd=root,check=True)
         elif s=='linux':
-            c=shutil.which('g++') or shutil.which('c++'); out=outdir/'libgroovebox_accel.so'
+            c=__import__("sos_tools").which('g++') or __import__("sos_tools").which('c++'); out=outdir/'libgroovebox_accel.so'
             if not c: return None
             subprocess.run([c,'-std=c++17','-O3','-DNDEBUG','-fPIC','-shared',str(src),'-o',str(out)],cwd=root,check=True)
         else: return None

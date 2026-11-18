@@ -21,9 +21,17 @@ import time
 
 ROOTS = ("r32_fx_state", "r32_time_fx", "r32_synth_engine", "r32_predictive", "r32_mod_osc", "r32_eq",
          "geometric_synth_mixer_state", "ball_synth_params", "cellular_synth_params", "wavetable_projector_state",
-         "r32_expression_matrix", "r32_game_overrides", "r32_game_macros", "r32_inst_mix")
+         "r32_expression_matrix", "r32_game_overrides", "r32_game_macros", "r32_inst_mix", "global_tuning",
+         # R99: the global panel and the FX / mod panels beside the multidim synth
+         "global_mod_state", "global_algo_state", "sidechain_state", "global_eq_state", "patch_motion_state",
+         "hyperdrive_state", "master_vector_state", "sample_morph_state", "r32_perseq",
+         # R101 Mod Path Bay: every instrument's synth parameters and Multidim macros (md_clones)
+         "instrument_param_state")
 SPANS = {"hz": (0.01, 20000.0), "ms": (0.0, 2000.0), "unison": (1, 7), "echoes": (1, 8), "rule": (0, 255),
-         "gravity": (-4.0, 4.0), "tilt": (-1.0, 1.0), "low": (-18, 18), "mid": (-18, 18), "high": (-18, 18)}
+         "gravity": (-4.0, 4.0), "tilt": (-1.0, 1.0), "low": (-18, 18), "mid": (-18, 18), "high": (-18, 18),
+         # R101 Multidim macros (MDCloneRack ranges)
+         "morph": (0.01, 10.0), "harmonic_freq": (20.0, 20000.0), "chaos": (0.0, 1.0), "fold_depth": (0.01, 16.0),
+         "harmonic_lattice": (0.0, 1.0)}
 
 
 def targets(app):
@@ -41,6 +49,11 @@ def targets(app):
             elif isinstance(v, dict):
                 walk(p, v, depth + 1)
     for r in ROOTS:
+        if r == "instrument_param_state":      # R101: only the Multidim macros, not every synth parameter of 48 instruments
+            for inst, st in (getattr(app, r, None) or {}).items():
+                if isinstance(st, dict) and isinstance(st.get("md_clones"), dict):
+                    walk("%s/%s/md_clones" % (r, inst), st["md_clones"], 2)
+            continue
         walk(r, getattr(app, r, None))
     return out
 
@@ -114,21 +127,32 @@ def _user_curve(lane, beat):
 
 
 def tick(app, beat):
+    try:   # R99 master mod matrix (rows evaluated after the lanes, so a lane value is a modulation base)
+        import mod_matrix as _mm
+        _after = _mm.tick
+    except Exception:
+        _after = None
     for lane in list(lanes(app)):
         d, k = _resolve(app, lane["path"])
         if d is None:
             continue
         c = _canonical_curve(app, lane, beat) if lane.get("owner") == "canonical" else _user_curve(lane, beat)
-        lo, hi = _span(k, lane["base"])
+        sp = lane.get("span")                               # RECORD_STRIP_R7: a lane may carry its control's span
+        lo, hi = (float(sp[0]), float(sp[1])) if isinstance(sp, (list, tuple)) and len(sp) == 2 else _span(k, lane["base"])
         v = lane["base"] + lane["amount"] * (c - 0.5) * (hi - lo)
         v = max(lo, min(hi, v))
         d[k] = int(round(v)) if isinstance(d.get(k), int) and not isinstance(d.get(k), bool) else v
+    if _after is not None:
+        try:
+            _after(app, beat)
+        except Exception:
+            pass
 
 
 def render_tick(app, beat):
     """R32.8: called by the offline render at the start of every playlist row, so exports carry
     the same automation as live playback (row resolution; deterministic for canonical lanes)."""
-    if not lanes(app):
+    if not lanes(app) and not getattr(app, "r99_mod_matrix", None):
         return False
     try:
         tick(app, float(beat))
@@ -139,6 +163,11 @@ def render_tick(app, beat):
 
 def restore_bases(app):
     """Put every automated parameter back to its lane base after an offline render."""
+    try:
+        import mod_matrix as _mm
+        _mm.restore_bases(app)
+    except Exception:
+        pass
     for lane in list(lanes(app)):
         d, k = _resolve(app, lane["path"])
         if d is not None and "base" in lane:
@@ -153,7 +182,7 @@ def install(app):
     t = app._r32_auto_timer = QTimer(app); t.setInterval(50)
 
     def _t():
-        if not lanes(app) or not getattr(app, "is_playing", False):
+        if (not lanes(app) and not getattr(app, "r99_mod_matrix", None)) or not getattr(app, "is_playing", False):
             return
         try:
             sr = float(getattr(app, "play_sample_rate", 48000) or 48000)

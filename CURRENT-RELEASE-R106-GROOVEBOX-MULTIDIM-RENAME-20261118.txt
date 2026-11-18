@@ -1,0 +1,6 @@
+CURRENT SOURCE RELEASE: R106 — MULTIDIM INSTRUMENT GUI LABELS
+Date: 2026-11-18
+Base: R105 intelligence-layer source archive.
+Includes: R104 dependency-aware export recovery; R105 shared intelligence services and project schema 4; R106 synchronized Multidim/main-window instrument display labels with stable instrument-key identity.
+Documentation: README.md, RELEASE-R104-EXPORT-RECOVERY-DEPENDENCIES-20261118.md, RELEASE-R105-GROOVEBOX-INTELLIGENCE-LAYER-20261118.md, RELEASE-R106-MULTIDIM-INSTRUMENT-RENAMES-20261118.md, FINAL-SWEEP-R106-20261118.md.
+Validation: full-tree Python compileall passed; 18 focused R104-R106 regression tests passed; six source/active-overlay module pairs match. PyQt6 GUI runtime, full pytest collection, ISO mastering, and hardware boot were not validated.

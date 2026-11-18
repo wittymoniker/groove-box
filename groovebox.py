@@ -47,6 +47,25 @@ GROOVEBOX_V35_22ZZ_R5_PERFORMANCE_HIDE_SUSPEND_20260927 = True
 #   FullWeight Seed + Seed Weight uniqueness controls, GLOBAL PLAY PATCHER.
 # =============================================================================
 
+# R108_DIRECT_LAUNCH_UNIFICATION_20261118: direct invocation of this legacy
+# module must take the exact same bytecode-safe, single-instance launch path as
+# the desktop/ISO wrapper. Do this before importing any project module.
+if __name__ == "__main__":
+    import os as _gb_direct_os
+    import sys as _gb_direct_sys
+    _gb_direct_sys.dont_write_bytecode = True
+    _gb_direct_os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    from pathlib import Path as _GbDirectPath
+    _gb_direct_root = _GbDirectPath(__file__).resolve().parent
+    _gb_direct_sys.path.insert(0, str(_gb_direct_root))
+    import runpy as _gb_direct_runpy
+    _gb_direct_runpy.run_path(str(_gb_direct_root / "run_groovebox.py"), run_name="__main__")
+    raise SystemExit(0)
+
+try:   # R100: a trimmed PATH must never hide system tools (dd, findmnt, mkfs …)
+    __import__("sos_tools").ensure_path()
+except Exception:
+    pass
 import sys
 import os
 # Direct script execution follows the same interpreter/encoding contract as
@@ -13473,8 +13492,7 @@ class VideoSynthViewer(QFrame):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = {"geometry": [self.x(), self.y(), self.width(), self.height()],
                     "project": getattr(self, "_current_project_path", None)}
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+            __import__("safe_io").atomic_write_json(path, data, encoding="utf-8")
         except Exception:
             pass
 
@@ -13484,8 +13502,7 @@ class VideoSynthViewer(QFrame):
             path = os.path.join(groovebox_paths.metadata_dir(getattr(self, "_current_project_path", None)), "session_layout.json")
             if not os.path.isfile(path):
                 return
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
+            data = __import__("safe_io").load_json(path, encoding="utf-8")
             g = data.get("geometry")
             if isinstance(g, list) and len(g) == 4:
                 self.setGeometry(*g)
@@ -15421,6 +15438,22 @@ class ParametricMathBackground(QWidget):
             val = fmt.format(value)
             painter.drawText(rect.adjusted(8, 18, -8, -3), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), f"{meaning}  {val}")
 
+    def _paint_instrument_tint(self, painter):
+        """Subtle selected-instrument cue, painted only on the background layer."""
+        tint = getattr(self, "_instrument_tint", None)
+        if not tint:
+            return
+        try:
+            c = QColor(str(tint))
+            if not c.isValid():
+                return
+            # Alpha 13/255 is intentionally slight: visible as ambient context,
+            # never strong enough to compete with controls or the math field.
+            c.setAlpha(13)
+            painter.fillRect(self.rect(), c)
+        except Exception:
+            pass
+
     def paintEvent(self, event):
         if self.width() < 10 or self.height() < 10:
             return
@@ -15433,6 +15466,8 @@ class ParametricMathBackground(QWidget):
                 if img is not None and not img.isNull():
                     p.setOpacity(0.55)
                     p.drawImage(QRectF(self.rect()), img)       # fast (non-smooth) scale; readability veil above
+                p.setOpacity(1.0)
+                self._paint_instrument_tint(p)
             finally:
                 p.end()
             return
@@ -15450,6 +15485,7 @@ class ParametricMathBackground(QWidget):
         p = QPainter(self)
         try:
             p.drawImage(QRectF(self.rect()), img)
+            self._paint_instrument_tint(p)
             self._paint_overlay(p)
         finally:
             p.end()
@@ -19322,8 +19358,7 @@ class GrooveboxEngine:
             pass
 
     def deserialize_project(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = __import__("safe_io").load_json(filepath, encoding='utf-8')
         self.global_bpm = data.get("global_bpm", 112.0)
         # Restore composition pathways when present (OT toggle, fractal policy)
         try:
@@ -21984,62 +22019,6 @@ class _LongHoldQuitButton(QToolButton):
             print(f"[Quit] emergency hold action failed: {exc}")
 
 
-class _ApplicationsLauncherTile(QWidget):
-    """Prominent Plugins launcher with a compact Programs shortcut inset.
-
-    The Programs control is intentionally overlaid in the upper-right corner
-    of the Plugins tile: Plugins is the primary destination, while Programs
-    remains one-click accessible without consuming another taskbar slot.
-    """
-    def __init__(self, open_extra, parent=None):
-        super().__init__(parent)
-        self._open_extra = open_extra
-        self.setObjectName("grooveboxApplicationsLauncherTile")
-        self.setFixedSize(154, 34)
-        self.setToolTip("Plugins launcher · shipped Lua / hybrid / native plugins and installed applications")
-        self.plugins_btn = QToolButton(self)
-        self.plugins_btn.setObjectName("grooveboxPluginsPrimary")
-        self.plugins_btn.setText("🔌  PLUGINS")
-        self.plugins_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.plugins_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.plugins_btn.setToolTip("Open the Plugins launcher: browse, inspect, run, bind and manage plugins")
-        self.plugins_btn.clicked.connect(lambda: self._open_extra("plugins"))
-        self.plugins_btn.setStyleSheet(
-            "QToolButton#grooveboxPluginsPrimary {"
-            " color:#f2fff9; font-weight:900; font-size:12px; letter-spacing:1px;"
-            " text-align:left; padding:7px 38px 5px 10px;"
-            " border:1px solid #65d9ad; border-radius:7px;"
-            " background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #173f3a,stop:0.55 #126b5b,stop:1 #203f67);"
-            "} QToolButton#grooveboxPluginsPrimary:hover {"
-            " background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #226354,stop:1 #315b91);"
-            " border:1px solid #b4ffe0; }"
-            "QToolButton#grooveboxPluginsPrimary:pressed { background:#102c2a; }"
-        )
-        self.programs_btn = QToolButton(self)
-        self.programs_btn.setObjectName("grooveboxProgramsInset")
-        self.programs_btn.setText("Programs")
-        self.programs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.programs_btn.setToolTip("Open Programs · build and run Lua / Python / C / C++ / Rust / Go / Julia / shell projects")
-        self.programs_btn.clicked.connect(lambda: self._open_extra("programs"))
-        self.programs_btn.setStyleSheet(
-            "QToolButton#grooveboxProgramsInset { color:#f8f4ff; font-size:8px; font-weight:800;"
-            " padding:1px 4px; border:1px solid rgba(219,190,255,210); border-radius:4px;"
-            " background:rgba(40,28,66,235); }"
-            "QToolButton#grooveboxProgramsInset:hover { background:#69469a; border-color:#ffffff; }"
-        )
-        self._layout_children()
-
-    def _layout_children(self):
-        self.plugins_btn.setGeometry(self.rect())
-        w, h = 62, 16
-        self.programs_btn.setGeometry(max(0, self.width()-w-4), 3, w, h)
-        self.programs_btn.raise_()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._layout_children()
-
-
 class _GrooveboxWindowStrip(QWidget):
     """Always-visible Wayland window recovery strip outside Groovebox windows.
 
@@ -22129,9 +22108,10 @@ class _GrooveboxWindowStrip(QWidget):
         for _label, _kind in _new_types:
             _new_menu.addAction(_label, lambda k=_kind: self._open_extra(k))
         self.new_btn.setMenu(_new_menu)
-        # Primary Applications destination is Plugins. Programs is a compact
-        # inset shortcut on the same tile, avoiding a second full taskbar slot.
-        self.apps_btn = _ApplicationsLauncherTile(self._open_extra, self)
+        self.apps_btn = QToolButton(self)
+        self.apps_btn.setText("▦ Apps")
+        self.apps_btn.setToolTip("Applications launcher · 73 shipped Lua / hybrid plugins plus installed apps and studio tools")
+        self.apps_btn.clicked.connect(lambda: self._open_extra("plugins"))
         row.addWidget(self.apps_btn, 0)
         # WINDOW_BAR_R31: export progress dropdown, quick actions, UI-stall report.
         try:
@@ -24706,13 +24686,6 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 install_window_backgrounds(self)
             except Exception:
                 pass
-            # Warm the optional Go hybrid kernel from sCode's shared worker pool.
-            # Compilation/loading is never performed on the Qt or realtime-audio thread.
-            try:
-                import hybrid_runtime as _hybrid_runtime
-                _hybrid_runtime.warm_go_backend()
-            except Exception:
-                pass
             try:
                 from window_bar_tools import UiWatchdog
                 self._ui_watchdog = UiWatchdog(self)          # WINDOW_BAR_R31: UI-stall reporting
@@ -25130,6 +25103,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_active = False
         self.goava_seed_values = []
         self.goava_note_events = []
+        # GOAVA uses one root and a reciprocal multiply/divide pair around it.
+        # Values are persistent composition inputs and are shared by preview,
+        # canonical playlist metadata, and final render event construction.
+        from goava_voices import DEFAULT_SETTINGS as _GOAVA_VOICE_DEFAULTS
+        self.goava_voice_settings = dict(_GOAVA_VOICE_DEFAULTS)
+        self.fractal_seed_settings = {
+            "schema": 1, "depth": 6, "steps_per_bar": 16, "bars": 4,
+            "root_midi": 60, "base_frequency_hz": 432.0, "scale": "minor_pentatonic", "symbol_budget": 16384,
+        }
         self.goava_steps = []
         self.goava_pitches = []
         self.goava_frequencies = []
@@ -26558,6 +26540,50 @@ class MathematiciansGrooveboxApp(QMainWindow):
         """
         return list(self.get_seed_values(t_value=float(t_value)))
 
+    def _goava_voice_settings_normalized(self):
+        from goava_voices import normalize_settings
+        self.goava_voice_settings = normalize_settings(getattr(self, "goava_voice_settings", None))
+        return copy.deepcopy(self.goava_voice_settings)
+
+    def _apply_goava_voice_settings(self, settings):
+        """Apply GOAVA voice pitch/amplitude settings to every canonical consumer."""
+        from goava_voices import normalize_settings
+        self.goava_voice_settings = normalize_settings(settings)
+        self.goava_note_events = self._build_goava_composition()
+        try:
+            self._push_undo("GOAVA sine voice settings")
+        except Exception:
+            pass
+        # This canonical source-change path rebuilds the owned playlist rows in
+        # cooperative slices. The exact three frequencies and amplitudes are
+        # embedded in each GOAVA canonical row before render/preview consumes it.
+        try:
+            self._on_live_source_changed()
+        except Exception as exc:
+            print(f"[GOAVA voices] canonical refresh deferred: {exc}")
+        return copy.deepcopy(self.goava_voice_settings)
+
+    def _fractal_seed_settings_normalized(self):
+        from groovebox_v3.fractal_seed_engine import normalize_playable_settings
+        self.fractal_seed_settings = normalize_playable_settings(getattr(self, "fractal_seed_settings", None))
+        return copy.deepcopy(self.fractal_seed_settings)
+
+    def _apply_fractal_seed_settings(self, settings):
+        """Set deterministic Fractal Seed view controls and refresh active canonicals."""
+        from groovebox_v3.fractal_seed_engine import normalize_playable_settings
+        self.fractal_seed_settings = normalize_playable_settings(settings)
+        self._fractal_seed_plan_cache = None
+        try:
+            self._push_undo("Fractal Seed interpretation settings")
+        except Exception:
+            pass
+        if bool(getattr(self, "btn_fractal_seed_mode", None) and self.btn_fractal_seed_mode.isChecked()):
+            try:
+                self._on_live_source_changed()
+            except Exception as exc:
+                print(f"[Fractal Seed] canonical refresh deferred: {exc}")
+        return copy.deepcopy(self.fractal_seed_settings)
+
     def _build_goava_composition(self, t_value=0.0, true_time_index=None):
         """Build GOAVA pitched-sine chord events from the seed numeric list.
 
@@ -26595,12 +26621,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pitch = float(hz / _den) if math.isfinite(hz) and _den != 0.0 else 1.0
             if not math.isfinite(pitch) or pitch <= 0.0:
                 pitch = 1.0
-            # Build a small pitched-sine chord (root + 5th + octave) from the
-            # same centered ratio so each seed numeric entry becomes a chord
-            # rather than a single partial.
-            chord_ratios = [1.0, 1.5, 2.0]
-            chord_freqs = [float(hz) * r for r in chord_ratios]
-            chord_amps = [0.33, 0.22, 0.15]
+            # Three sine voices: fixed root, one reciprocal multiply voice,
+            # and one reciprocal divide voice. This exact array is propagated
+            # into canonical playlist metadata as well as the audio mixer.
+            from goava_voices import voice_parameters, normalize_settings
+            _voice_cfg = normalize_settings(getattr(self, "goava_voice_settings", None))
+            _voices = voice_parameters(float(hz), _voice_cfg)
+            chord_freqs = list(_voices["frequencies"])
+            chord_amps = list(_voices["amplitudes"])
             events.append({
                 "step": true_idx,
                 "list_index": i,
@@ -26612,6 +26640,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 "pitch": pitch,
                 "chord_freqs": chord_freqs,
                 "chord_amps": chord_amps,
+                "voice_frequencies": list(_voices["frequencies"]),
+                "voice_relative_pitches": list(_voices["relative_pitches"]),
+                "voice_amplitudes": list(_voices["amplitudes"]),
                 "enabled": True,
                 "source": "GOAVA",
                 "weight": 1.0,
@@ -26731,20 +26762,31 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # at an ideal 33% amplitude on top of the programmed groove. The
                 # row keeps only non-identity harmonic metadata for visuals; the
                 # operator/sequence lattice and sequence banks are untouched.
+                _voice_freqs = [float(v) for v in (ev.get("voice_frequencies") or ev.get("chord_freqs") or [ev["frequency"]])]
+                _voice_ratios = [float(v) for v in (ev.get("voice_relative_pitches") or [1.0, 1.5, 1.0 / 1.5])]
+                _voice_amps = [float(v) for v in (ev.get("voice_amplitudes") or ev.get("chord_amps") or [0.33, 0.22, 0.15])]
                 e["goava_harmonic"] = {
                     "frequency": float(ev["frequency"]),
                     "pitch": float(ev["pitch"]),
                     "seed": float(ev["seed"]),
-                    "amplitude": 0.33,
+                    "amplitude": float(_voice_amps[0]) if _voice_amps else 0.33,
+                    "voice_frequencies": _voice_freqs,
+                    "voice_relative_pitches": _voice_ratios,
+                    "voice_amplitudes": _voice_amps,
                     "step": int(r), "enabled": bool(ev.get("enabled", True)),
                 }
                 e["goava_sequence"] = (
-                    f"GOAVA harmonic hz={ev['frequency']:.6f} "
-                    f"pitch={ev['pitch']:.6f} amp=0.33 on={int(ev['enabled'])}"
+                    f"GOAVA voices hz=" + ",".join(f"{v:.6f}" for v in _voice_freqs) +
+                    " ratios=" + ",".join(f"{v:.5f}" for v in _voice_ratios) +
+                    " amps=" + ",".join(f"{v:.3f}" for v in _voice_amps) +
+                    f" on={int(ev['enabled'])}"
                 )
                 e["goava_frequency"] = ev["frequency"]
                 e["goava_pitch"] = ev["pitch"]
                 e["goava_seed"] = ev["seed"]
+                e["goava_voice_frequencies"] = _voice_freqs
+                e["goava_voice_relative_pitches"] = _voice_ratios
+                e["goava_voice_amplitudes"] = _voice_amps
                 e["goava_active"] = True
                 e["goava_generated_by_engine"] = True
                 self._goava_write_ledger.append({
@@ -30316,6 +30358,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         global_context_layout.addWidget(self.spin_goava_off_bleed)
         global_context_layout.addWidget(self.btn_fractal_seed_mode)
         global_context_layout.addWidget(self._build_fractal_seed_mod_menu())
+        self.btn_command_console = QPushButton("⌨ Console")
+        self.btn_command_console.setToolTip("Open the in-app diagnostic and control console (Ctrl+Shift+`)")
+        self.btn_command_console.clicked.connect(lambda: __import__("command_console").open_window(self))
+        global_context_layout.addWidget(self.btn_command_console)
+        try:
+            import command_console as _command_console
+            self._command_console_shortcut = _command_console.install_shortcut(self, self)
+        except Exception as _console_shortcut_exc:
+            print(f"[Command Console] shortcut install failed: {_console_shortcut_exc}")
         # UNION_ENTROPY_2026 live fixed-point badge: mean of the shared draw at
         # 0.5 (input-invariant) with the realized per-seed min..max range shown,
         # proving "some seeds genuinely entropic, others not — and the centre
@@ -33984,10 +34035,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
     def _r32_show_instrument_color(self):
         b = getattr(self, "btn_instrument_color", None)
-        if b is None or not hasattr(self, "instrument_selector_dropdown"):
+        if not hasattr(self, "instrument_selector_dropdown"):
             return
         c = self._r32_instrument_color(self.instrument_selector_dropdown.currentText())
-        b.setStyleSheet("QPushButton{background:%s;color:#05070b;font-weight:900;border-radius:6px;}" % c)
+        if b is not None:
+            b.setStyleSheet("QPushButton{background:%s;color:#05070b;font-weight:900;border-radius:6px;}" % c)
+        # The selected synth gets a very restrained tint in the existing
+        # mathematical background layer.  Keep it in the background widget's
+        # paint path (not a stylesheet on the central widget), so child controls
+        # retain their own palettes and no extra overlay widget/timer is needed.
+        bg = getattr(self, "parametric_background", None)
+        if bg is not None:
+            try:
+                bg._instrument_tint = str(c)
+                bg.update()
+            except Exception:
+                pass
 
     def _r32_pick_instrument_color(self):
         from PyQt6.QtWidgets import QColorDialog
@@ -34020,30 +34083,47 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 except Exception:
                     pass
 
+    def _set_instrument_display_name(self, key, value):
+        """Set a user-facing instrument label without changing its stable instrument key."""
+        key = str(key or "")
+        if key not in (getattr(self, "instrument_names_48", []) or []):
+            return False, "Unknown instrument"
+        dd = self.__dict__.setdefault("instrument_display_names", {})
+        new = " ".join(str(value or "").split())[:48]
+        if not new or new == key:
+            dd.pop(key, None)
+        else:
+            taken = {k for k in self.instrument_names_48 if k != key}
+            taken |= {v for k, v in dd.items() if k != key}
+            if new in taken:
+                return False, "Name already in use: %s" % new
+            dd[key] = new
+        try:
+            self.instrument_selector_dropdown.refresh_labels()
+        except Exception:
+            pass
+        if str(self.instrument_selector_dropdown.currentText()) == key:
+            self._sync_instrument_name_box()
+        # The Multidim selector is a separate view over the same stable keys.
+        try:
+            win = getattr(self, "_multidim_window", None)
+            if win is not None and hasattr(win, "refresh_instrument_labels"):
+                win.refresh_instrument_labels()
+        except Exception:
+            pass
+        return True, dd.get(key, key)
+
     def _commit_instrument_display_name(self):
         """Apply the text box to the selected instrument's display name only."""
         try:
-            box = self.qe_instrument
-            dd = self.instrument_display_names
             key = str(self.instrument_selector_dropdown.currentText())
             if not key:
                 return
-            new = " ".join(str(box.text() or "").split())[:48]
-            if not new or new == key:
-                dd.pop(key, None)
-            else:
-                taken = {k for k in self.instrument_names_48 if k != key}
-                taken |= {v for k, v in dd.items() if k != key}
-                if new in taken:
-                    if hasattr(self, "scope_status_label"):
-                        self.scope_status_label.setText("Name already in use: %s" % new)
-                    self._sync_instrument_name_box()
-                    return
-                dd[key] = new
-            self.instrument_selector_dropdown.refresh_labels()
-            self._sync_instrument_name_box()
+            ok, message = self._set_instrument_display_name(key, self.qe_instrument.text())
             if hasattr(self, "scope_status_label"):
-                self.scope_status_label.setText("Instrument name: %s" % dd.get(key, key))
+                self.scope_status_label.setText(("Instrument name: " if ok else "") + str(message))
+            if not ok:
+                self._sync_instrument_name_box()
         except Exception as exc:
             print(f"[InstrumentName] rename failed safely: {exc}")
 
@@ -34054,6 +34134,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.instrument_display_names.update(names)
             self.instrument_selector_dropdown.refresh_labels()
             self._sync_instrument_name_box()
+            try:
+                win = getattr(self, "_multidim_window", None)
+                if win is not None and hasattr(win, "refresh_instrument_labels"):
+                    win.refresh_instrument_labels()
+            except Exception:
+                pass
         except Exception as exc:
             print(f"[InstrumentName] load skipped: {exc}")
 
@@ -35473,13 +35559,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     "change_point": int(getattr(self, "_buffer_change_point", 0) or 0),
                 }
                 path = os.path.join(out_dir, ".finish_resume.json")
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(resume, f)
+                __import__("safe_io").atomic_write_json(path, resume, encoding="utf-8")
                 # Also keep a copy next to the project so a reboot can find it.
                 proj = getattr(self, "current_project_path", None)
                 if proj:
-                    with open(os.path.splitext(proj)[0] + ".resume.json", "w", encoding="utf-8") as f:
-                        json.dump(resume, f)
+                    __import__("safe_io").atomic_write_json(os.path.splitext(proj)[0] + ".resume.json", resume, encoding="utf-8")
             except Exception:
                 pass
             return results
@@ -35765,7 +35849,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 ffmpeg = None
                 try: ffmpeg = self._resolve_ffmpeg_binary()
                 except Exception: pass
-                ffmpeg = ffmpeg or shutil.which("ffmpeg")
+                ffmpeg = ffmpeg or __import__("sos_tools").which("ffmpeg")
                 if not ffmpeg: raise FileNotFoundError("FFmpeg is not installed or provisioned")
                 mode = str(capture.currentData() or "window")
                 screen_obj = None
@@ -37425,12 +37509,30 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except Exception: seed_text = "0"
         try: tempo = int(round(float(self.spin_bpm.value()))) if hasattr(self, "spin_bpm") else 110
         except Exception: tempo = 110
-        key = (seed_text, tempo, 6, "minor_pentatonic", 16, 16)
+        from groovebox_v3.fractal_seed_engine import (
+            project_seed_config, evaluate_seed, normalize_playable_settings,
+        )
+        settings = normalize_playable_settings(getattr(self, "fractal_seed_settings", None))
+        key = (seed_text, tempo, settings["depth"], settings["scale"],
+               settings["steps_per_bar"], settings["bars"], settings["root_midi"],
+               settings["base_frequency_hz"], float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
+               settings["symbol_budget"])
         cached = getattr(self, "_fractal_seed_plan_cache", None)
         if isinstance(cached, dict) and cached.get("key") == key and isinstance(cached.get("plan"), dict):
             return cached["plan"]
-        from groovebox_v3.fractal_seed_engine import project_seed_config, evaluate_seed
-        config = project_seed_config(seed_text, tempo=tempo, depth=6)
+        config = project_seed_config(seed_text, tempo=tempo, depth=settings["depth"])
+        config.update({
+            "steps_per_bar": settings["steps_per_bar"],
+            "bars": settings["bars"],
+            "root_midi": settings["root_midi"],
+            "base_frequency_hz": settings["base_frequency_hz"],
+            "reference_frequency_hz": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
+            "scale": settings["scale"],
+            "symbol_budget": settings["symbol_budget"],
+            # Scenario omission/phase shifting is an explicit Canonical-only
+            # decision; these general defaults keep every seed event eligible.
+            "scenario": "none", "canonical_controls": True,
+        })
         plan = evaluate_seed(config)
         if plan.get("evaluation", {}).get("truncated"):
             raise RuntimeError("Fractal Seed event plan hit its symbol budget; refusing a partial composition silently")
@@ -38174,7 +38276,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         mod("experiences", "open_window", self)),
                        ("🌌 Seed Atlas", "Every way a seed becomes sound, picture, game or 3D: a bounded fractal tree, each node reproducible from its address",
                         mod("seed_atlas", "open_window", self)),
-                       ("🧬 Mod matrix", "Master mod matrix: any source (LFOs, seed, canonicals, automation targets, other rows, patch bay, MIDI CC) × any method → any target, with canonical direction",
+                       ("🧬 Mod Path Bay", "Mod Path Bay (master mod matrix ⇄ Multidim): any source (LFOs, seed, canonicals, automation targets, other rows, patch bay, MIDI CC) × any method → any target, with canonical direction",
                         mod("mod_matrix", "open_window", self)),
                        ("🎞 Carrier layers", "Layers for the global and instrument carriers: place each import on the playlist, set length, stretch, pitch, gain, loop, mute / solo",
                         mod("carrier_layers", "open_window", self)),
@@ -38183,8 +38285,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         mod("features_r99", "open_window", self)),
                        ("🧰 Extras", "Find a control · project history · stems · crash report bundle", mod("studio_extras", "open_window", self)),
                        ("🧮 Math Lab", "Mathematical Mapping Laboratory", lambda: __import__("mapping_laboratory").open_mapping_laboratory(self)))),
-
         )
+        try:                                   # R101: 15 management windows, two rows
+            _mg = __import__("manage_windows").entries(self)
+            rows = rows + (("Manage", tuple(_mg[:8])), ("Manage ·2", tuple(_mg[8:])))
+        except Exception as _mg_exc:
+            print("[Task pad] manage windows unavailable:", _mg_exc)
         # LARGE LAUNCHERS for the most important jobs (row 0), the full Task pad grid below.
         big = QHBoxLayout(); big.setSpacing(6)
         for text, tip, fn in (("▶ Play / Stop", "Play or stop the composition", meth("toggle_playback")),
@@ -38206,6 +38312,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 b = QPushButton(text); b.setToolTip(tip); b.clicked.connect(fn)
                 b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)   # no label-width demand
                 b.setMinimumSize(36, 30)
+                try:                           # R101 cloud: size by relevance + use, colour by category, translucent
+                    __import__("taskpad_cloud").style(self, b, title, text, c)
+                except Exception:
+                    pass
                 grid.addWidget(b, r, 1 + c)
             grid.setRowStretch(r, 1)
         # live switches + session
@@ -38250,22 +38360,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
             sw.addWidget(w)
         sw.addWidget(self._task_pad_status, 1)
         grid.addLayout(sw, len(rows) + 1, 0, 1, 10)
+        try:                                   # R101: stopwatch · quick note · colour picker
+            from PyQt6.QtWidgets import QVBoxLayout as _VB
+            _acc = _VB(); __import__("jam_tools").taskpad_accessories(self, _acc); grid.addLayout(_acc, len(rows) + 2, 0, 1, 10)
+        except Exception as _ta_exc:
+            print("[Task pad] accessories unavailable:", _ta_exc)
         try:
             __import__("session_snapshot").install_autosave(self)
         except Exception:
             pass
+        # R101: recovery / power / resources install at once; cosmetic and network layers are staggered after first paint
         QTimer.singleShot(0, lambda: __import__("power_clock").install(self))
         QTimer.singleShot(0, lambda: __import__("project_transactions").install(self))   # checkpoints + unclean-exit recovery
         QTimer.singleShot(0, lambda: __import__("resource_supervisor").install(self))     # CPU · RAM · threads · audio health
-        QTimer.singleShot(0, lambda: __import__("edit_glow").install(self))               # per-seq edit glow + hint
-        QTimer.singleShot(0, lambda: __import__("studio_extras").install(self))           # provenance inspector + search
-        QTimer.singleShot(0, lambda: __import__("features_r99").install(self))            # change tracker · profiler · a11y · tour
-        QTimer.singleShot(0, lambda: __import__("notify_center").install(self))           # 🔔 notices · diagnostics (pop-out)
-        QTimer.singleShot(0, lambda: __import__("mod_matrix").install(self))              # master mod matrix
-        QTimer.singleShot(0, lambda: __import__("panel_translucency").install(self))      # translucent non-interactive panels
-        QTimer.singleShot(0, lambda: __import__("experiences").install(self))             # creations are catalogued as made
-        QTimer.singleShot(0, lambda: __import__("net_hub").install(self))                 # site radio / blog / files · trust · host network
-        QTimer.singleShot(0, lambda: __import__("plugin_library").install(self))          # plugin bindings: carrier · controls · events   # 🔋 battery · 🕒 time in the status bar
+        QTimer.singleShot(400, lambda: __import__("manage_windows").startup_enabled("edit_glow") and __import__("edit_glow").install(self))               # per-seq edit glow + hint
+        QTimer.singleShot(700, lambda: __import__("manage_windows").startup_enabled("studio_extras") and __import__("studio_extras").install(self))           # provenance inspector + search
+        QTimer.singleShot(900, lambda: __import__("manage_windows").startup_enabled("features_r99") and __import__("features_r99").install(self))            # change tracker · profiler · a11y · tour
+        QTimer.singleShot(150, lambda: __import__("notify_center").install(self))           # 🔔 notices · diagnostics (pop-out)
+        QTimer.singleShot(1100, lambda: __import__("manage_windows").startup_enabled("mod_matrix") and __import__("mod_matrix").install(self))              # master mod matrix
+        QTimer.singleShot(1300, lambda: __import__("manage_windows").startup_enabled("panel_translucency") and __import__("panel_translucency").install(self))      # translucent non-interactive panels
+        QTimer.singleShot(1600, lambda: __import__("manage_windows").startup_enabled("experiences") and __import__("experiences").install(self))             # creations are catalogued as made
+        QTimer.singleShot(2200, lambda: __import__("manage_windows").startup_enabled("net_hub") and __import__("net_hub").install(self))                 # site radio / blog / files · trust · host network
+        QTimer.singleShot(1900, lambda: __import__("manage_windows").startup_enabled("plugin_library") and __import__("plugin_library").install(self))          # plugin bindings: carrier · controls · events   # 🔋 battery · 🕒 time in the status bar
         self.task_pad = box
         return box
 
@@ -38442,7 +38558,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 report = _ac.system_report(self)
                 tests = _ac.playback_tests(self, announce=br.msg.emit)
                 path = _ac.logs_dir() / f"audio-check-{time.strftime('%Y%m%d-%H%M%S')}.txt"
-                path.write_text(report + "\n\n===== playback tests =====\n" + "\n".join(f"{l}: {r}" for l, r in tests), encoding="utf-8")
+                __import__("safe_io").atomic_write_text(path, report + "\n\n===== playback tests =====\n" + "\n".join(f"{l}: {r}" for l, r in tests), encoding="utf-8")
                 br.done.emit(str(path), tests)
             except Exception as exc:
                 br.done.emit(f"(failed: {exc})", [])
@@ -40225,6 +40341,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
             dlg = getattr(self, "_live_jam_dialog", None)
             if dlg is None:
                 dlg = self._live_jam_dialog = LiveJamDialog(self, self)
+                try:                           # R101: modern look + 12 accessories
+                    __import__("jam_tools").modernize_live_jam(dlg)
+                except Exception as _jt_exc:
+                    print("[Live Jam] accessories unavailable:", _jt_exc)
             dlg.show(); dlg.raise_(); dlg.activateWindow()
         except Exception as exc:
             QMessageBox.warning(self, "Live Jam", f"Could not open Live Jam: {exc}")
@@ -42879,8 +42999,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         # and the length and is only read below, so every instrument with the same
                         # length reuses one projection instead of recomputing it (1024 calls per update).
                         _fr_hash = str(fractal_plan.get("event_plan_sha256", "") or "")
-                        _fr_key = (_fr_hash, int((fractal_plan.get("interpretation") or {}).get("window_steps", 0) or 0),
-                                   str((fractal_plan.get("seed") or {}).get("identity", "")), int(n)) if _fr_hash else None
+                        _fr_interp = fractal_plan.get("interpretation") or {}
+                        _fr_key = (
+                            _fr_hash,
+                            int(_fr_interp.get("window_steps", 0) or 0),
+                            str((fractal_plan.get("seed") or {}).get("identity", "")),
+                            float(_fr_interp.get("base_frequency_hz", 432.0) or 432.0),
+                            float(_fr_interp.get("reference_frequency_hz", 432.0) or 432.0),
+                            int(_fr_interp.get("root_midi", 60) or 60),
+                            str(_fr_interp.get("scale", "minor_pentatonic")),
+                            int(n),
+                        ) if _fr_hash else None
                         _fr_cache = self.__dict__.setdefault("_fractal_raster_cache", {})
                         fractal_raster = _fr_cache.get(_fr_key) if _fr_key is not None else None
                         if fractal_raster is None:
@@ -42964,6 +43093,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                         "seed_identity": fractal_raster.get("seed_identity"),
                         "event_plan_sha256": fractal_raster.get("event_plan_sha256"),
                         "depth_requested": (fractal_plan.get("seed") or {}).get("depth_requested"),
+                        "base_frequency_hz": (fractal_plan.get("interpretation") or {}).get("base_frequency_hz", 432.0),
+                        "reference_frequency_hz": (fractal_plan.get("interpretation") or {}).get("reference_frequency_hz", 432.0),
                         "depth_completed": (fractal_plan.get("seed") or {}).get("depth_completed"),
                         "symbol_budget": (fractal_plan.get("evaluation") or {}).get("symbol_budget"),
                         "symbols_evaluated": (fractal_plan.get("evaluation") or {}).get("symbols_evaluated"),
@@ -45807,6 +45938,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.goava_active = False
         self.goava_seed_values = []
         self.goava_note_events = []
+        from goava_voices import DEFAULT_SETTINGS as _GOAVA_RESET_DEFAULTS
+        self.goava_voice_settings = dict(_GOAVA_RESET_DEFAULTS)
+        self.fractal_seed_settings = {
+            "schema": 1, "depth": 6, "steps_per_bar": 16, "bars": 4,
+            "root_midi": 60, "base_frequency_hz": 432.0, "scale": "minor_pentatonic", "symbol_budget": 16384,
+        }
         self.goava_steps = []
         self.goava_pitches = []
         self.goava_frequencies = []
@@ -46080,6 +46217,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         state["game_last_identity"] = getattr(self, "_last_videogame_identity", None)
         state["game_last_path"] = getattr(self, "_last_videogame_path", None)
         state["goava_active"] = bool(getattr(self, "goava_active", False))
+        state["goava_voice_settings"] = self._goava_voice_settings_normalized()
+        state["fractal_seed_settings"] = self._fractal_seed_settings_normalized()
         state["seed_reach"] = float(getattr(self, "seed_reach", 1.0))
         state["canonical_ownership_policy"] = copy.deepcopy(getattr(self, "canonical_ownership_policy", {}))
         state["canonical_operation_mode"] = str(getattr(self, "canonical_operation_mode", "Seeded Baseline → Canonical Control"))
@@ -46620,6 +46759,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if hasattr(self, "domain_eq_engine") and self.domain_eq_engine else {}
             ),
             "goava_active": bool(getattr(self, "goava_active", False)),
+            "goava_voice_settings": _safe_json(self._goava_voice_settings_normalized()),
+            "fractal_seed_settings": _safe_json(self._fractal_seed_settings_normalized()),
             "fractal_seed_mode_enabled": bool(getattr(self, "btn_fractal_seed_mode", None) and self.btn_fractal_seed_mode.isChecked()),
             "engines": {
                 "seeded": bool(getattr(self, "btn_seeded_randomize", None) and self.btn_seeded_randomize.isChecked()),
@@ -47510,6 +47651,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as _mc_exc:
             print(f"[Load] media carrier: {_mc_exc}")
         self.goava_active = bool(data.get("goava_active", False))
+        from goava_voices import normalize_settings as _normalize_goava_voice_settings
+        from groovebox_v3.fractal_seed_engine import normalize_playable_settings as _normalize_fractal_settings
+        self.goava_voice_settings = _normalize_goava_voice_settings(data.get("goava_voice_settings", getattr(self, "goava_voice_settings", None)))
+        self.fractal_seed_settings = _normalize_fractal_settings(data.get("fractal_seed_settings", getattr(self, "fractal_seed_settings", None)))
+        self._fractal_seed_plan_cache = None
+        self.goava_note_events = self._build_goava_composition() if self.goava_active else []
         self.live_dj_goava = bool(data.get("live_dj_goava", False))
         self.live_dj_random = bool(data.get("live_dj_random", False))
         self._restore_live_dj_effects(data.get("live_dj_effects", {}))
@@ -47792,6 +47939,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         m.addAction("🖥 System Settings…   Ctrl+,", self._show_system_settings)
         m.addAction("⚙ Compatibility…", lambda: self._show_compat_dialog())
         m.addAction("🩺 System / Performance Health…", self._open_system_health_panel)
+        m.addAction("⌨ Command Console…   Ctrl+Shift+`", lambda: __import__("command_console").open_window(self))
         m.addSeparator()
         m.addAction("🧩 Window panes…", self._show_ui_panes)
         return m
@@ -48343,8 +48491,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     pass
                 validation_problem = ""
                 try:
-                    with open(recovery_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
+                    data = __import__("safe_io").load_json(recovery_path, encoding="utf-8")
                     if not isinstance(data, dict):
                         validation_problem = "The recovery document root is not an object."
                     elif "master_playlist_data" in data:
@@ -48599,8 +48746,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if str(load_path).lower().endswith(".mcc"):
                 from mcc_integrity import select_verified
                 load_path, integrity_status = select_verified(load_path)
-            with open(load_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = __import__("safe_io").load_json(load_path, encoding="utf-8")
             self._apply_project_snapshot(data)
             self._current_project_path = path
             try:
@@ -49853,7 +49999,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             f"Seed={self._seed_text() if hasattr(self, 'input_seed_val') else seed}"
         )
 
-    def _engines_write_automation_lanes(self, source="seeded"):
+    def _engines_write_automation_lanes(self, source="seeded", rng=None):
         """
         Randomizer / Euclidean may envelope automation amounts on empty playlist
         automation slots only — never overwrites user-painted automation lanes.
@@ -49866,7 +50012,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         names = list(getattr(self, 'instrument_names_48', []))
         params = ["eqr", "fractalizer", "pkp_envelope", "filter", "drive"]
         seed = self.get_numeric_seed() if hasattr(self, 'get_numeric_seed') else 1
-        rng = np.random.default_rng(int(seed) % (2**31) + (0 if source == "seeded" else 17))
+        # RAND must use its captured entropy-derived engine RNG, not silently
+        # fall back to the project seed. Other legacy callers keep their exact
+        # deterministic seed-derived stream when no RNG is supplied.
+        if rng is None:
+            rng = np.random.default_rng(int(seed) % (2**31) + (0 if source == "seeded" else 17))
         written = 0
         for r in range(rows):
             if self.playlist_automation[r]:
@@ -50836,8 +50986,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 path, _ = QFileDialog.getSaveFileName(dlg, "Save canonical data", "canonical_data.json", "JSON (*.json)")
                 if path:
                     try:
-                        with open(path, "w", encoding="utf-8") as f:
-                            json.dump(state["snap"], f, indent=2, default=str)
+                        __import__("safe_io").atomic_write_json(path, state["snap"], indent=2, default=str, encoding="utf-8")
                     except Exception as exc:
                         QMessageBox.warning(dlg, "Canonical Data", str(exc))
 
@@ -51418,7 +51567,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _voxelize_imported_video_frame(self, grid_size=None, z_slice=0):
         path = str(getattr(self, 'imported_video_path', '') or '')
         if not path or not os.path.isfile(path): raise RuntimeError('Load or record a video first.')
-        ffmpeg = self._resolve_ffmpeg_binary() if hasattr(self, '_resolve_ffmpeg_binary') else shutil.which('ffmpeg')
+        ffmpeg = self._resolve_ffmpeg_binary() if hasattr(self, '_resolve_ffmpeg_binary') else __import__("sos_tools").which('ffmpeg')
         if not ffmpeg: raise RuntimeError('FFmpeg is required to voxelize a video frame.')
         n = max(4, min(64, int(grid_size or getattr(self, 'voxel_grid_size', 16) or 16)))
         cmd = [ffmpeg, '-v', 'error', '-ss', '0.25', '-i', path, '-frames:v', '1',
@@ -51492,13 +51641,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "source": "groovebox_voxel_export",
         }
         os.makedirs(os.path.dirname(os.path.abspath(file_path)) or '.', exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
+        __import__("safe_io").atomic_write_json(file_path, payload, indent=2, encoding='utf-8')
 
     def _load_voxel_json(self, file_path, layered=False):
         """Load a voxel JSON (Random Object or native export) into the project."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = __import__("safe_io").load_json(file_path, encoding='utf-8')
         if not isinstance(data, dict):
             raise ValueError('Voxel JSON must be an object')
         cells = data.get('voxels') or data.get('cells') or []
@@ -51572,8 +51719,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # canonical levels/RAND token/voxel state without bloating model headers.
         try:
             payload = json.loads(self._export_provenance_payload())
-            with open(path + '.mgpr', 'w', encoding='utf-8') as f:
-                json.dump(payload, f, indent=2, sort_keys=True)
+            __import__("safe_io").atomic_write_json(path + '.mgpr', payload, indent=2, sort_keys=True, encoding='utf-8')
         except Exception:
             pass
         self.export_counter += 1
@@ -57490,7 +57636,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         try:
-            self._engines_write_automation_lanes(source="randomizer")
+            self._engines_write_automation_lanes(source="randomizer", rng=rng)
         except Exception:
             pass
         if hasattr(self, "_canonical_playlist_paint"):
@@ -63519,8 +63665,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     ("payload", bundle.get("payload"), "provenance_recovered.mgpr"),
                 ):
                     if isinstance(obj, dict):
-                        with open(os.path.join(out_dir, label), "w", encoding="utf-8") as f:
-                            json.dump(obj, f, indent=2, sort_keys=True)
+                        __import__("safe_io").atomic_write_json(os.path.join(out_dir, label), obj, indent=2, sort_keys=True, encoding="utf-8")
                         saved.append(label)
                 with open(os.path.join(out_dir, "recovered_README.md"), "w", encoding="utf-8") as f:
                     f.write("# Reverse-engineered from .zip\n\nSource: %s\n\n```\n%s\n```\n"
@@ -64186,8 +64331,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                    "out_meta": os.path.join(tmp, "master.json"), "kind": "audio", "purpose": str(purpose),
                    "max_rows": (int(max_rows) if max_rows else None)}
             jpath = os.path.join(tmp, "job.json")
-            with open(jpath, "w", encoding="utf-8") as f:
-                _json.dump(job, f)
+            __import__("safe_io").atomic_write_json(jpath, job, encoding="utf-8")
             proc = _track_child_process(QProcess(self))
             proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
             loop = QEventLoop()
@@ -64207,7 +64351,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             def _done(*_a):
                 try:
                     if proc.exitCode() == 0 and not state["fail"] and os.path.isfile(job["out_npy"]):
-                        meta = _json.load(open(job["out_meta"], "r", encoding="utf-8"))
+                        meta = __import__("safe_io").load_json(job["out_meta"], encoding="utf-8")
                         buf = np.load(job["out_npy"])
                         self._export_log(f"{purpose}: worker finished ({buf.shape[0]} frames).")
                         if hasattr(self, "scope_status_label"):
@@ -64264,8 +64408,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                    "out_meta": os.path.join(tmp, "master.json"), "kind": "audio", "purpose": str(purpose),
                    "max_rows": (int(max_rows) if max_rows else None)}
             jpath = os.path.join(tmp, "job.json")
-            with open(jpath, "w", encoding="utf-8") as f:
-                _json.dump(job, f)
+            __import__("safe_io").atomic_write_json(jpath, job, encoding="utf-8")
         except Exception as exc:
             self._export_worker_busy = False
             _sh.rmtree(tmp, ignore_errors=True)
@@ -64295,7 +64438,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 if proc.exitCode() != 0 or state["fail"] or not os.path.isfile(job["out_npy"]):
                     err = state["fail"] or f"render process exit {proc.exitCode()}"
                 else:
-                    meta = _json.load(open(job["out_meta"], "r", encoding="utf-8"))
+                    meta = __import__("safe_io").load_json(job["out_meta"], encoding="utf-8")
                     buf = np.load(job["out_npy"]); sr = int(meta["sample_rate"])
                     try:
                         if key is not None and key == self._shared_mixdown_key(max_rows):
@@ -65244,6 +65387,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "playlist_rows": int(self.spin_playlist_length.value()) if hasattr(self, "spin_playlist_length") else DEFAULT_PLAYLIST_ROWS,
             "n_instruments": len(getattr(self, "instrument_names_48", []) or []),
             "goava_active": bool(getattr(self, "goava_active", False)),
+            "goava_voice_settings": _safe_json(self._goava_voice_settings_normalized()),
+            "fractal_seed_settings": _safe_json(self._fractal_seed_settings_normalized()),
             # Preserve any continuous GOAVA activation control if present; legacy
             # projects without one retain deterministic binary toggle semantics.
             "goava_activation": max(0.0, min(1.0, float(getattr(self, "goava_activation", 1.0 if getattr(self, "goava_active", False) else 0.0) or 0.0))),
@@ -67614,7 +67759,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                       "integrity": bool(chk_integrity.isChecked()),
                       "resume": bool(chk_resume_parts.isChecked()),
                       "duration_s": float(self._last_plan_duration),
-                      "ffmpeg": str(ffmpeg), "ffprobe": str(resolve_local_tool("ffprobe") or shutil.which("ffprobe") or ""),
+                      "ffmpeg": str(ffmpeg), "ffprobe": str(resolve_local_tool("ffprobe") or __import__("sos_tools").which("ffprobe") or ""),
                       "video_codec": str(vcodec), "video_args": list(vargs),
                       "audio_codec": str(acodec),
                       "provenance": str(self._export_provenance_payload() or "")}
@@ -68094,7 +68239,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 raise RuntimeError("Final mux produced no usable video file; recoverable .part segments were kept.")
             # ffprobe is optional, but when installed it must see a video stream
             # before the staged file can replace a previously valid export.
-            _ffprobe = shutil.which("ffprobe")
+            _ffprobe = __import__("sos_tools").which("ffprobe")
             if _ffprobe:
                 _probe = subprocess.run(
                     [_ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -70514,6 +70659,12 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     _GROOVEBOX_STARTUP_ACTIVE = True
 
     dlg = QDialog(None, Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
+    # Latitude/Wayland black-window guard: this chooser is an opaque styled
+    # top-level surface, never a transparent native window over an unpainted
+    # compositor buffer.
+    dlg.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    dlg.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
+    dlg.setAutoFillBackground(True)
     dlg.setWindowTitle("Mathematician's Groovebox · Startup Mode")
     dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
     dlg.setModal(True)
@@ -70534,8 +70685,10 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     # LAUNCHER_LAYOUT_20261112: three resizable columns. The chooser (centre) always gets the most width and
     # never scrolls sideways; projects + last saves share the left column; Quick Launch is a narrow right column.
     # (Before: four equal-ish columns squeezed the chooser so its title and buttons were clipped.)
-    _outer = QHBoxLayout(dlg); _outer.setContentsMargins(0, 0, 0, 0)
+    _outer = QHBoxLayout(dlg); _outer.setContentsMargins(8, 8, 8, 8); _outer.setSpacing(8)
     _cols = QSplitter(Qt.Orientation.Horizontal); _cols.setChildrenCollapsible(True)
+    _cols.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+    _cols.setAutoFillBackground(True)
     _outer.addWidget(_cols)
     _startup_avail = None
     try:
@@ -70548,8 +70701,11 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
     _startup_compact = (_startup_aw < 1180 or _startup_ah < 760)
     _scroll = QScrollArea(); _scroll.setWidgetResizable(True); _scroll.setFrameShape(QFrame.Shape.NoFrame)
     _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if _startup_compact else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     _scroll.setMinimumWidth(300 if _startup_compact else 420)
-    _body = QWidget(); _scroll.setWidget(_body)
+    _scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+    _scroll.viewport().setAutoFillBackground(True)
+    _body = QWidget(); _body.setAutoFillBackground(True); _scroll.setWidget(_body)
     _sp = None
     _left = QSplitter(Qt.Orientation.Vertical); _left.setChildrenCollapsible(False)
     try:
@@ -70602,6 +70758,10 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         _sg = (app.primaryScreen().availableGeometry())
         dlg.setMinimumSize(min(560, int(_sg.width() * 0.96)), min(560, int(_sg.height() * 0.9)))
         dlg.resize(min(1380, int(_sg.width() * 0.96)), min(860, int(_sg.height() * 0.94)))
+        # The second responsive resize used to occur after the initial fit and
+        # could leave the chooser off-centre/partly outside a scaled work area.
+        import compat_settings as _cs_fit_final
+        _cs_fit_final.fit_dialog_to_screen(dlg, width_frac=0.96, height_frac=0.94, min_w=320, min_h=240)
     except Exception:
         pass
     heading = QLabel("Welcome to Mathematician's Groovebox")
@@ -70958,7 +71118,7 @@ def launch_startup_mode_selector(player, app, *, project_path=None, skip=False, 
         pass
     try:
         last_path.parent.mkdir(parents=True, exist_ok=True)
-        last_path.write_text(json.dumps({
+        __import__("safe_io").atomic_write_text(last_path, json.dumps({
             "mode": selected,
         }), encoding="utf-8")
     except Exception:
@@ -71208,6 +71368,15 @@ if __name__ == "__main__":
     except Exception:
         pass
     app = QApplication(sys.argv)
+    try:
+        __import__("safe_io").install_qt_save_guard()   # R101: save dialogs refuse system files
+    except Exception:
+        pass
+    try:                                               # R101 user accounts: sign in, then every path is that account's
+        import accounts as _accounts
+        _accounts.activate(_accounts.sign_in())
+    except Exception as _acc_exc:
+        print("[Accounts] single-user mode:", _acc_exc)
     try:   # EMOJI_FONTS_R7
         import emoji_fonts as _emoji_fonts
         _emoji_fonts.install(app)

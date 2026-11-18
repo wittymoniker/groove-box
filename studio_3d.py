@@ -521,8 +521,7 @@ def open_window(app):
         import json as _json
         dest = os.path.join(str(app._exports_dir()), "studio3d-multi-obj-level.json")
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "w", encoding="utf-8") as f:
-            _json.dump(_s3.game_scene(app), f, indent=2)
+        __import__("safe_io").atomic_write_json(dest, _s3.game_scene(app), indent=2, encoding="utf-8")
         status.setText("🎮 level written: " + dest)
         try:
             if hasattr(app, "open_extra_window"):

@@ -235,8 +235,7 @@ def main():
             hdr = read_header(src)
             if hdr is None:   # project .MCC (plain JSON)
                 try:
-                    with open(src, "r", encoding="utf-8") as f:
-                        doc = json.load(f)
+                    doc = __import__("safe_io").load_json(src, encoding="utf-8")
                     keys = ("title", "seed", "seed_script", "bpm", "base_frequency_hz", "project_notes")
                     rows = "".join(f"<tr><td>{k}</td><td>{html.escape(str(doc.get(k))[:120])}</td></tr>" for k in keys if k in doc)
                     cards.append(card(name, f"<table>{rows}</table><div class=meta>{size:,} bytes · project</div>", "project"))
@@ -278,7 +277,7 @@ def main():
     page = f"""<!doctype html><meta charset=utf-8><title>MCC gallery — {html.escape(os.path.basename(here))}</title>
 <style>body{{background:#0b1020;color:#e8f0ff;font:14px system-ui,sans-serif;margin:24px}}
 h1{{font-size:20px}} .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}}
-.card{{background:#141b30;border:1px solid #2f6fe0;border-radius:10px;padding:12px}} .kind{{font-size:11px;color:#7fb3ff;letter-spacing:.1em}}
+.card{{background:#141b30;border:1px solid #2f6fe0;border-radius:10px;padding:12px}} .kind{{font-size:11px;color:#7fb3ff;}}
 .title{{font-weight:700;margin:4px 0 8px;word-break:break-all}} img,video{{max-width:100%;border-radius:6px;background:#000}}
 .thumb{{width:48%;margin:1%}} audio{{width:100%}} .meta{{color:#9cb0d0;font-size:12px;margin-top:6px}} table td{{padding:2px 6px;vertical-align:top}}
 .err{{color:#ff8a8a}} ul{{padding-left:18px;margin:6px 0}}</style>

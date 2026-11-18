@@ -45,8 +45,7 @@ def record(kind, seconds, parts=1):
     h[kind] = per if prev is None else 0.7 * float(prev) + 0.3 * per
     try:
         os.makedirs(os.path.dirname(_path()), exist_ok=True)
-        with open(_path(), "w", encoding="utf-8") as f:
-            json.dump(h, f)
+        __import__("safe_io").atomic_write_json(_path(), h, encoding="utf-8")
     except Exception:
         pass
 

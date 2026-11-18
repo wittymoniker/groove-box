@@ -97,7 +97,7 @@ class NotesWidget(QWidget):
         self.btn_save = QPushButton("💾 Save"); self.btn_save.clicked.connect(self.save); top.addWidget(self.btn_save)
         rv.addLayout(top)
         self.editor = QPlainTextEdit(); self.editor.setPlaceholderText("Select or create a note…")
-        f = QFont("monospace"); f.setStyleHint(QFont.StyleHint.Monospace); f.setPointSize(11)
+        f = QFont("Consolas"); f.setStyleHint(QFont.StyleHint.Monospace); f.setPointSize(11)
         self.editor.setFont(f)
         self.editor.setEnabled(False)
         self.editor.textChanged.connect(self._changed)
@@ -201,7 +201,7 @@ class NotesWidget(QWidget):
     def _create(self, title, body=""):
         self.save()
         path = _unique(self.folder / (_safe_title(title) + ".md"))
-        path.write_text(body, encoding="utf-8")
+        __import__("safe_io").atomic_write_text(path, body, encoding="utf-8")
         self.current = path
         self.search.blockSignals(True); self.search.clear(); self.search.blockSignals(False)
         self.reload()
@@ -325,3 +325,16 @@ try:
     _gb_nonmodal.install()
 except Exception:
     pass
+
+
+def save_notes_document(path, title, body, meta=None):
+    try:
+        import document_io
+        return document_io.write_session_doc(path, title, body, meta=meta)
+    except Exception as exc:
+        try:
+            import quiet_log
+            quiet_log.refresh_fail("notes_editor.save", exc)
+        except Exception:
+            pass
+        return ""

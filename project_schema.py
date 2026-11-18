@@ -1,4 +1,4 @@
-"""project_schema.py — GROOVEBOX_R32_PROJECT_SCHEMA_20261110
+"""project_schema.py — GROOVEBOX_R105_PROJECT_SCHEMA_20261118
 
 Keeps the project document stable while the program keeps growing, and lets Groovebox describe
 (reverse-engineer) its own state.
@@ -20,7 +20,7 @@ import copy
 import hashlib
 import json
 
-SCHEMA = 3
+SCHEMA = 4
 
 # key: (attribute on the app, owner module, default)
 STATE = {
@@ -28,6 +28,7 @@ STATE = {
     "time_fx": ("r32_time_fx", "fx_panels", None),
     "synth_engine": ("r32_synth_engine", "synth_engine_panel", None),
     "canonical_mode": ("canonical_mode", "canonical_mode", "protected"),
+    "canonical_owned": ("_canon_user_owned", "canonical_vector", None),   # CANON_VECTOR_R7: controls you own
     "divergence": ("seed_divergence", "seed_divergence", None),
     "divergence_user": ("_r32_divergence_user", "seed_divergence", None),
     "game_overrides": ("r32_game_overrides", "game_editor", None),
@@ -48,7 +49,9 @@ STATE = {
     "instrument_colors": ("r32_instrument_colors", "groovebox", None),
     "predictive_fx": ("r32_predictive", "predictive_fx", None),
     "automation": ("r32_automation", "automation_bus", None),
+    "step_automation": ("step_automation_state", "step_automation", None),   # STEP_AUTOMATION_R7
     "live_rig_scale": ("live_rig_scale", "live_player", None),
+    "live_morph": ("live_morph_state", "live_player", None),   # CANON_MORPH_R7 + PREDICTIVE_PATHWAY_R7
     "inst_mix": ("r32_inst_mix", "instrument_mixer", None),
     "perseq": ("r32_perseq", "perseq_vars", None),
     "game_morph": ("r32_game_morph", "game_editor", None),
@@ -60,7 +63,26 @@ STATE = {
     "video_obj_wire": ("video_obj_wire", "project_obj", True),
     "video_lsystem": ("video_lsystem", "project_obj", True),
     "video_obj_opacity": ("video_obj_opacity", "project_obj", 1.0),
+    "video_context_fx": ("video_context_fx", "project_obj", False),
+    "video_context_strength": ("video_context_strength", "project_obj", 0.5),
+    "live_visuals_follow_canonicals": ("live_visuals_follow_canonicals", "live_player", True),
+    "video_obj_paths": ("video_obj_paths", "project_obj", None),
+    "video_obj_scene": ("video_obj_scene", "project_obj", None),
+    "mod_matrix": ("r99_mod_matrix", "mod_matrix", None),
+    "mod_matrix_canonical": ("r99_mod_matrix_canonical", "mod_matrix", 0.5),
+    "mod_matrix_governor": ("r101_mm_governor", "mod_matrix", None),
+    "mod_matrix_mirror": ("r101_mm_mirror", "mod_matrix", None),
+    "quick_note": ("r101_quick_note", "groovebox", ""),
+    "mod_matrix_fields": ("r101_mm_fields", "mod_matrix", None),       # R101 reroute + perspective fields       # R101 mirrors beside the Multidim synth   # R101 governor + fair canonical share
+    "canonical_distribution": ("r99_canon_dist", "canonical_distributor", None),
+    "plugin_bindings": ("r99_plugin_bindings", "plugin_library", None),
+    "carrier_layers": ("r99_carrier_layers", "carrier_layers", None),
+    "inst_user_synths": ("instrument_user_synth_numbers", "groovebox", None),
     "sample_routes": (None, "sample_generator", None),          # special: routes + settings per scope
+    "video_obj_embed": (None, "project_obj", None),             # special: the video OBJ travels with the project
+    "performance_scenes": ("groovebox_performance_scenes", "groovebox_intelligence", None),
+    "parameter_registry": ("groovebox_parameter_registry", "groovebox_intelligence", None),
+    "intelligence_settings": ("groovebox_intelligence_settings", "groovebox_intelligence", None),
 }
 
 # Ordered upgrades: (from_version, function(section) -> section)
@@ -72,13 +94,21 @@ def _m1_to_2(sec):
     return sec
 
 
+def _m3_to_4(sec):
+    # R105: unified intelligence layer state; absent keys remain backward-compatible.
+    sec.setdefault("performance_scenes", {})
+    sec.setdefault("parameter_registry", {"schema": 1, "parameters": [], "routes": {}})
+    sec.setdefault("intelligence_settings", {"schema": 1})
+    return sec
+
+
 def _m2_to_3(sec):
     # R32.6: canonical share defaults moved to 100 % — documents without a mode get the default
     sec.setdefault("canonical_mode", "protected")
     return sec
 
 
-MIGRATIONS = ((1, _m1_to_2), (2, _m2_to_3))
+MIGRATIONS = ((1, _m1_to_2), (2, _m2_to_3), (3, _m3_to_4))
 
 
 def _jsonable(v):
@@ -131,6 +161,15 @@ def snapshot(app):
     for key, (attr, _owner, default) in STATE.items():
         if key == "sample_routes":
             sec[key] = _sample_state(app); continue
+        if key == "video_obj_embed":
+            try:
+                import project_obj as _po
+                v = _po.embed_state(app)
+                if v is not None:
+                    sec[key] = v
+            except Exception:
+                pass
+            continue
         v = getattr(app, attr, default)
         if v is not None:
             sec[key] = _jsonable(v)
@@ -163,6 +202,13 @@ def apply(app, sec):
             continue
         if key == "sample_routes":
             _restore_samples(app, sec[key]); restored.append(key); continue
+        if key == "video_obj_embed":
+            try:
+                import project_obj as _po
+                _po.restore_embed(app, sec[key]); restored.append(key)
+            except Exception:
+                pass
+            continue
         v = copy.deepcopy(sec[key])
         cur = getattr(app, attr, None)
         if isinstance(cur, dict) and isinstance(v, dict):

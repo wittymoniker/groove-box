@@ -3,6 +3,11 @@
 import sys, subprocess, os, time, traceback, threading, faulthandler
 from pathlib import Path
 
+# R107: deployed/read-only application trees must never attempt to create
+# __pycache__ beside the shipped modules. Release archives also omit all .pyc.
+sys.dont_write_bytecode = True
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+
 # Runtime baseline is checked before importing the application tree or Qt.
 from runtime_contract import MIN_PYTHON, interpreter_is_supported, interpreter_error, REQUIRED
 _runtime_error = interpreter_error()
@@ -260,10 +265,7 @@ except Exception as _fh_exc:
 
 def _write_latest(kind: str, detail: str = ""):
     try:
-        _LATEST_PTR.write_text(
-            f"kind={kind}\nsession={_SESSION_LOG}\nnative={_NATIVE_LOG}\ndetail={detail}\n",
-            encoding="utf-8",
-        )
+        __import__("safe_io").atomic_write_text(_LATEST_PTR, f"kind={kind}\nsession={_SESSION_LOG}\nnative={_NATIVE_LOG}\ndetail={detail}\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -427,6 +429,22 @@ if __name__ == "__main__":
         except Exception:
             pass
         app = QApplication(sys.argv)
+        # R107: normal GUI launches are single-instance. Helper/game dispatch
+        # above remains independent and never claims the desktop session.
+        _SINGLE_INSTANCE_GUARD = None
+        try:
+            from groovebox_single_instance import acquire_or_activate
+            _SINGLE_INSTANCE_GUARD = acquire_or_activate(app, Path(__file__).resolve().parent)
+            if _SINGLE_INSTANCE_GUARD is None:
+                print("[Startup] existing Groovebox session activated; duplicate launch suppressed")
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception as _single_instance_exc:
+            # Fail closed: if we cannot prove this is the primary session, do
+            # not silently create another full application instance.
+            print(f"[Startup] single-instance guard failed: {_single_instance_exc}", file=sys.stderr)
+            raise SystemExit(73)
         try:   # EMOJI_FONTS_R7: colour emoji on every button, every OS
             import emoji_fonts as _emoji_fonts
             _emoji_fonts.install(app)
@@ -476,6 +494,11 @@ if __name__ == "__main__":
             except Exception as _scode_register_exc:
                 print(f"[sCodeHost] main-window scope unavailable: {_scode_register_exc}", file=sys.stderr)
         print("[Startup] main window constructed")
+        if _SINGLE_INSTANCE_GUARD is not None:
+            try:
+                _SINGLE_INSTANCE_GUARD.set_main_window(player)
+            except Exception as _single_instance_bind_exc:
+                print(f"[Startup] single-instance activation binding failed: {_single_instance_bind_exc}", file=sys.stderr)
         _mcc_path = None
         try:
             from mcc_filetype import project_argument, register_filetype
@@ -503,9 +526,54 @@ if __name__ == "__main__":
                 from groovebox import startup_fallback_enter as _sfe
                 _startup_choice = _sfe(player)
             except Exception as _gate_exc:
-                print(f"[Startup] project gate failed too; exiting: {_gate_exc}", file=sys.stderr)
-                sys.stdout.flush(); sys.stderr.flush()
-                os._exit(70)
+                # GROOVEBOX_R23R_GUI_GATE_RECOVERY_R1_20261117
+                # The chooser and its minimal QMessageBox gate both failed.
+                # Do not terminate an otherwise constructed Qt application with
+                # rc=70: recover into a clean, empty project and expose Main so
+                # the user can continue. This is an explicit emergency path;
+                # it never loads or overwrites a project without user action.
+                print(f"[Startup] project gate failed; entering empty-project recovery: {_gate_exc}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                try:
+                    try:
+                        player._clear_project_memory()
+                    except Exception as _clear_exc:
+                        print(f"[Startup] emergency project reset: {_clear_exc}", file=sys.stderr)
+                    player._current_project_path = None
+                    try:
+                        player._install_project_autosave()
+                    except Exception as _autosave_exc:
+                        print(f"[Startup] emergency autosave setup: {_autosave_exc}", file=sys.stderr)
+                    # Try the normal reveal helper first, then independent Qt
+                    # show calls for window managers where it is unavailable.
+                    try:
+                        from groovebox import _startup_show_main as _show_main
+                        _show_main(player)
+                    except Exception as _show_exc:
+                        print(f"[Startup] normal reveal helper failed: {_show_exc}", file=sys.stderr)
+                    for _show_method in ("showNormal", "show", "showMaximized"):
+                        try:
+                            getattr(player, _show_method)()
+                            app.processEvents()
+                            if player.isVisible():
+                                break
+                        except Exception as _show_exc:
+                            print(f"[Startup] {_show_method} failed: {_show_exc}", file=sys.stderr)
+                    if not player.isVisible():
+                        raise RuntimeError("main window remained hidden after emergency reveal")
+                    try:
+                        _status = getattr(player, "statusBar", lambda: None)()
+                        if _status is not None:
+                            _status.showMessage("Startup recovery: opened an empty project because the project chooser failed", 15000)
+                    except Exception:
+                        pass
+                    _startup_choice = "emergency-empty-project-recovery"
+                    print("[Startup] EMERGENCY_EMPTY_PROJECT_WINDOW|PASS", file=sys.stderr)
+                except Exception as _recovery_exc:
+                    print(f"[Startup] emergency GUI recovery failed: {_recovery_exc}", file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
+                    sys.stdout.flush(); sys.stderr.flush()
+                    os._exit(70)
         print(f"[Startup] selector complete ({_startup_choice}); entering event loop")
         try:
             import command_console as _cc

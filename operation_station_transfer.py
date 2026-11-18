@@ -111,7 +111,7 @@ def copy_bundle(bundle: str, destination: str) -> str:
     target=dst/Path(bundle).name
     shutil.copy2(bundle,target)
     shutil.copy2(bundle,str(target)+'.sha256.tmp') if False else None
-    Path(str(target)+'.sha256').write_text(sha256_file(target)+'  '+target.name+'\n',encoding='utf-8')
+    __import__("safe_io").atomic_write_text(Path(str(target)+'.sha256'), sha256_file(target)+'  '+target.name+'\n', encoding='utf-8')
     return str(target)
 
 
@@ -195,7 +195,7 @@ def ensure_self_iso(source: Optional[str] = None, *, force: bool = False) -> Opt
         with open(SELF_ISO_PATH, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
-        (SELF_ISO_PATH.with_suffix(".iso.sha256")).write_text(h.hexdigest() + "\n")
+        __import__("safe_io").atomic_write_text(SELF_ISO_PATH.with_suffix(".iso.sha256"), h.hexdigest() + "\n", encoding='utf-8')
         return SELF_ISO_PATH
     except Exception:
         return src
@@ -277,7 +277,7 @@ def copy_iso_to_mount(iso: str, destination: str, *, subdir: str='Groovebox/ISO'
         shutil.copystat(src,part)
         os.replace(part,target)
         digest=sha256_file(target)
-        Path(str(target)+'.sha256').write_text(f'{digest}  {target.name}\n',encoding='utf-8')
+        __import__("safe_io").atomic_write_text(Path(str(target)+'.sha256'), f'{digest}  {target.name}\n', encoding='utf-8')
     finally:
         try:
             if part.exists(): part.unlink()
@@ -330,26 +330,63 @@ def write_bootable_installer(iso: str, device: str, *, progress=None) -> dict:
     dev = assert_safe_target(device)
     # Refuse if any partition of the device is mounted.
     try:
-        mounts = subprocess.check_output(["findmnt", "-n", "-o", "SOURCE"], text=True)
+        import sos_tools as _st
+        mounts = subprocess.check_output((_st.find("findmnt") or ["findmnt"]) + ["-n", "-o", "SOURCE"], text=True, timeout=15)
         if any(line.startswith(dev) for line in mounts.splitlines()):
             raise PermissionError(f"{dev} has a mounted partition. Unmount it first.")
     except FileNotFoundError:
         pass
-    dd = shutil.which("dd")
-    if not dd:
-        raise RuntimeError("dd not found")
     total = src.stat().st_size
     if progress:
         progress(0, total, "writing")
-    # bs=4M, conv=fsync so the stick is complete before we return.
-    cmd = [dd, f"if={src}", f"of={dev}", "bs=4M", "conv=fsync", "status=progress"]
-    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True)
-    proc.wait()
-    if proc.returncode != 0:
-        raise RuntimeError(f"dd failed: {proc.returncode}")
+    # R100: no dependency on dd. When this process may open the device (root, or the disk group), the ISO is
+    # written here in 4 MiB blocks with fsync and progress. Otherwise the same writer runs through the system's
+    # privilege path (pkexec / sudo), and only if Python cannot be used there does it fall back to dd.
+    import os as _os, sys as _sys
+    if _os.access(dev, _os.W_OK):
+        _write_blocks(str(src), dev, total, progress)
+    else:
+        import sos_tools
+        helper = [_sys.executable, "-c",
+                  "import sys; sys.path.insert(0, %r); import operation_station_transfer as o; o._write_blocks(sys.argv[1], sys.argv[2], int(sys.argv[3]), None)"
+                  % _os.path.dirname(_os.path.abspath(__file__)), str(src), dev, str(total)]
+        r = subprocess.run(sos_tools.privileged(helper), capture_output=True, text=True)
+        if r.returncode != 0:
+            dd = sos_tools.find("dd")
+            if not dd:
+                raise RuntimeError("could not write %s: %s" % (dev, (r.stderr or "permission denied").strip()[-300:]))
+            r2 = subprocess.run(sos_tools.privileged(dd + [f"if={src}", f"of={dev}", "bs=4M", "conv=fsync"]), capture_output=True, text=True)
+            if r2.returncode != 0:
+                raise RuntimeError("could not write %s: %s" % (dev, (r2.stderr or r.stderr or "").strip()[-300:]))
     if progress:
         progress(total, total, "done")
     return {"device": dev, "iso": str(src), "bytes": total}
+
+
+def _write_blocks(src, dev, total, progress=None, block=4 << 20):
+    """Write src onto the raw device in 4 MiB blocks, fsync, and verify the first and last blocks."""
+    import os as _os
+    fd = _os.open(dev, _os.O_WRONLY | getattr(_os, "O_SYNC", 0))
+    done = 0
+    try:
+        with open(src, "rb") as f:
+            while True:
+                b = f.read(block)
+                if not b:
+                    break
+                mv = memoryview(b)
+                while mv:
+                    n = _os.write(fd, mv); mv = mv[n:]
+                done += len(b)
+                if progress and done % (64 << 20) < block:
+                    progress(done, total, "writing")
+        _os.fsync(fd)
+    finally:
+        _os.close(fd)
+    with open(src, "rb") as f, open(dev, "rb") as g:
+        if f.read(block) != g.read(block):
+            raise RuntimeError("verification failed: the first block on %s differs from the ISO" % dev)
+    return done
 
 
 def reclaim_usb_space(device: str, *, label: str = "GROOVEBOX") -> dict:
@@ -363,15 +400,17 @@ def reclaim_usb_space(device: str, *, label: str = "GROOVEBOX") -> dict:
     dev = assert_safe_target(device)
     # Unmount any partitions of this device first.
     try:
-        mounts = subprocess.check_output(["findmnt", "-n", "-o", "SOURCE,TARGET"], text=True)
+        import sos_tools as _st
+        mounts = subprocess.check_output((_st.find("findmnt") or ["findmnt"]) + ["-n", "-o", "SOURCE,TARGET"], text=True, timeout=15)
         for line in mounts.splitlines():
             src, _, tgt = line.partition(" ")
             if src.startswith(dev):
                 subprocess.run(["udisksctl", "unmount", "-b", src], capture_output=True, timeout=15)
     except Exception:
         pass
-    parted = shutil.which("parted")
-    mkfs = shutil.which("mkfs.vfat") or shutil.which("mkfs.fat")
+    import sos_tools as _st
+    parted = _st.path_of("parted")
+    mkfs = _st.path_of("mkfs.vfat") or _st.path_of("mkfs.fat")
     if parted:
         # Print free space, then make a primary FAT32 in the largest free region.
         subprocess.run([parted, "-s", dev, "print"], check=False, capture_output=True, timeout=20)
@@ -386,7 +425,7 @@ def reclaim_usb_space(device: str, *, label: str = "GROOVEBOX") -> dict:
         if r.returncode != 0:
             raise RuntimeError("parted could not add a data partition: " + (r.stderr or r.stdout or "").strip()[-200:])
     else:
-        sfdisk = shutil.which("sfdisk")
+        sfdisk = __import__("sos_tools").which("sfdisk")
         if not sfdisk:
             raise RuntimeError("Neither parted nor sfdisk is installed. Install parted to reclaim USB space.")
         # Append a partition that fills the rest of the disk.

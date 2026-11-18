@@ -81,8 +81,7 @@ def contact_all(app):
                 page = r.read(2 * 1024 * 1024)
             os.makedirs(d, exist_ok=True)
             info.update({"base": base, "via": via, "seen": time.time()})
-            with open(os.path.join(d, "info.json"), "w", encoding="utf-8") as f:
-                json.dump(info, f)
+            __import__("safe_io").atomic_write_json(os.path.join(d, "info.json"), info, encoding="utf-8")
             with open(os.path.join(d, "index.html"), "wb") as f:
                 f.write(page)
             got += 1
@@ -125,8 +124,7 @@ def ads(app=None):
     root = _cache_root()
     for d in sorted(os.listdir(root)):
         try:
-            with open(os.path.join(root, d, "info.json"), encoding="utf-8") as f:
-                info = json.load(f)
+            info = __import__("safe_io").load_json(os.path.join(root, d, "info.json"), encoding="utf-8")
         except Exception:
             continue
         live = time.time() - float(info.get("seen", 0)) < 300

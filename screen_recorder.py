@@ -43,7 +43,7 @@ class ScreenRecorderSession:
         if self.format != "gif" and (self.width % 2 or self.height % 2):
             raise ValueError("MP4/MKV/WebM recording dimensions must be even")
         self.expected_frame_bytes = self.width * self.height * 4
-        self.ffmpeg = str(ffmpeg or shutil.which("ffmpeg") or "")
+        self.ffmpeg = str(ffmpeg or __import__("sos_tools").which("ffmpeg") or "")
         if not self.ffmpeg:
             raise FileNotFoundError("FFmpeg was not found; install or provision FFmpeg first")
         self.include_microphone = bool(include_microphone and self.format != "gif")

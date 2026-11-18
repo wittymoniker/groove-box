@@ -67,8 +67,7 @@ def clean_name(name) -> str:
 
 def load_store() -> dict:
     try:
-        with open(store_path(), encoding="utf-8") as fh:
-            raw = json.load(fh)
+        raw = __import__("safe_io").load_json(store_path(), encoding="utf-8")
     except (OSError, ValueError):
         raw = {}
     raw = raw if isinstance(raw, dict) else {}
@@ -147,14 +146,12 @@ def active_name() -> str:
 
 
 def export_format(name, fmt, path) -> str:
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"groovebox_ui_panes": 1, "name": name, "format": sanitize(fmt)}, fh, indent=1, ensure_ascii=False)
+    __import__("safe_io").atomic_write_json(path, {"groovebox_ui_panes": 1, "name": name, "format": sanitize(fmt)}, indent=1, ensure_ascii=False, encoding="utf-8")
     return path
 
 
 def import_preset(path) -> str:
-    with open(path, encoding="utf-8") as fh:
-        raw = json.load(fh)
+    raw = __import__("safe_io").load_json(path, encoding="utf-8")
     raw = raw if isinstance(raw, dict) else {}
     fmt = raw.get("format", raw)
     name = clean_name(raw.get("name")) or os.path.splitext(os.path.basename(path))[0]

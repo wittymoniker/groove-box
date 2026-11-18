@@ -45,9 +45,10 @@ def test_startup_selector_failure_reveals_main_window_and_keeps_event_loop_alive
     source = (ROOT / "run_groovebox.py").read_text(encoding="utf-8")
     selector = source[source.index("try:\n            _startup_choice = launch_startup_mode_selector"):source.index('print(f"[Startup] selector complete', source.index("try:\n            _startup_choice = launch_startup_mode_selector"))]
     assert 'except Exception as _selector_exc' in selector
-    assert 'player.showNormal()' in selector and 'player.show()' in selector
+    assert 'for _show_method in ("showNormal", "show", "showMaximized")' in selector
+    assert 'getattr(player, _show_method)()' in selector
     assert 'player._install_project_autosave()' in selector
-    assert '_startup_choice = "main-fallback"' in selector
+    assert '_startup_choice = "emergency-empty-project-recovery"' in selector
 
 
 def test_flatpak_and_installed_linux_launchers_use_shared_runner_with_fallbacks():

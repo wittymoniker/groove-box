@@ -97,8 +97,7 @@ def stamp_export(path: str, packet: dict) -> str:
         return ""
     side = path + ".seed.json"
     try:
-        with open(side, "w", encoding="utf-8") as f:
-            json.dump(packet, f, indent=2, default=str)
+        __import__("safe_io").atomic_write_json(side, packet, indent=2, default=str, encoding="utf-8")
         return side
     except Exception:
         return ""

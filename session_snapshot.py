@@ -53,16 +53,14 @@ def save(app):
     state["session_name"] = str(getattr(app, "_session_name", "") or "")
     state["project"] = str(getattr(app, "_current_project_path", "") or "")
     tmp = _path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=1)
+    __import__("safe_io").atomic_write_json(tmp, state, indent=1, encoding="utf-8")
     os.replace(tmp, _path())
     return len(rows)
 
 
 def load():
     try:
-        with open(_path(), encoding="utf-8") as f:
-            st = json.load(f)
+        st = __import__("safe_io").load_json(_path(), encoding="utf-8")
         return st if isinstance(st, dict) else {"windows": st if isinstance(st, list) else []}
     except Exception:
         return {}

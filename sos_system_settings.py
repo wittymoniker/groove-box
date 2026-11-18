@@ -137,8 +137,7 @@ def _settings_file():
 
 def load():
     try:
-        with open(_settings_file(), encoding="utf-8") as f:
-            d = json.load(f)
+        d = __import__("safe_io").load_json(_settings_file(), encoding="utf-8")
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
@@ -147,8 +146,7 @@ def load():
 def save(d):
     try:
         os.makedirs(os.path.dirname(_settings_file()), exist_ok=True)
-        with open(_settings_file(), "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2)
+        __import__("safe_io").atomic_write_json(_settings_file(), d, indent=2, encoding="utf-8")
     except Exception:
         pass
 
@@ -170,11 +168,11 @@ def apply_background():
         return False
     mode = d.get("background_mode", "fill")
     try:
-        if shutil.which("swaybg") and (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland"):
+        if __import__("sos_tools").which("swaybg") and (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland"):
             subprocess.run(["pkill", "-x", "swaybg"], capture_output=True, timeout=2)
             subprocess.Popen(["swaybg", "-i", path, "-m", mode], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
-        if shutil.which("feh"):
+        if __import__("sos_tools").which("feh"):
             subprocess.Popen(["feh", "--bg-%s" % ("fill" if mode == "fill" else "center"), path],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
@@ -342,6 +340,49 @@ def _open_window(app=None, parent=None):
     chk_emoji = QCheckBox("Emoji labels (buttons, tabs, titles; applies to windows opened after saving)")   # EMOJI_UI_R7
     chk_emoji.setChecked(bool(st.get("emoji_labels", True)))
     form.addRow("", chk_emoji)
+    chk_math_bg = QCheckBox("Window backgrounds on every window (mathematical field, or your image / GIF)")
+    chk_math_bg.setChecked(bool(st.get("math_background_enabled", True)))
+    chk_math_bg.setToolTip("Seeded math graphics behind every window, painted on a background thread (the UI thread only "
+                           "shows finished frames). Choose an image or animated GIF below to use it instead.")
+    form.addRow("", chk_math_bg)
+    _bg_row = QWidget(body); _bg_l = QHBoxLayout(_bg_row); _bg_l.setContentsMargins(0, 0, 0, 0)
+    _bg_lbl = QLabel(os.path.basename(str(st.get("window_background_image", "") or "")) or "mathematical field")
+    _bg_pick = QPushButton("🖼 Image / GIF…"); _bg_clear = QPushButton("∑ Math field"); _bg_make = QPushButton("🎞 Make a GIF…")
+    _bg_make.setToolTip("Turn any video or image sequence into a looping GIF (File Converter) and use it as the background")
+    _bg_state = {"path": str(st.get("window_background_image", "") or "")}
+    def _bg_apply(pth):
+        _bg_state["path"] = pth or ""
+        _bg_lbl.setText(os.path.basename(pth) if pth else "mathematical field")
+        try:
+            cs.update(window_background_image=_bg_state["path"], math_background_enabled=True)
+            import groovebox as _gbm
+            _gbm.refresh_window_backgrounds(app)
+        except Exception as _e:
+            print(f"[Background] {_e}")
+    def _bg_choose():
+        from PyQt6.QtWidgets import QFileDialog as _FD
+        pth, _f = _FD.getOpenFileName(win, "Window background", os.path.expanduser("~"),
+                                      "Images and GIFs (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if pth:
+            _bg_apply(pth)
+    def _bg_gif():
+        try:
+            import format_converter as _fc
+            pth = _fc.make_background_gif_dialog(win)
+            if pth:
+                _bg_apply(pth)
+        except Exception as _e:
+            print(f"[Background] GIF maker: {_e}")
+    _bg_pick.clicked.connect(_bg_choose); _bg_clear.clicked.connect(lambda: _bg_apply("")); _bg_make.clicked.connect(_bg_gif)
+    for _w in (_bg_lbl, _bg_pick, _bg_make, _bg_clear):
+        _bg_l.addWidget(_w)
+    form.addRow("Window background", _bg_row)
+    sp_wait = QDoubleSpinBox(); sp_wait.setRange(0.25, 4.0); sp_wait.setSingleStep(0.25); sp_wait.setDecimals(2)
+    sp_wait.setValue(float(st.get("wait_factor", 1.0))); sp_wait.setSuffix(" ×")
+    sp_wait.setToolTip("How long hardware checks (audio cards, PipeWire, devices) keep trying before giving up. Every "
+                       "check still ends the moment the device is ready; raise this only for slow or unusual hardware.")
+    sp_wait.valueChanged.connect(lambda v: cs.update(wait_factor=float(v)))
+    form.addRow("Hardware wait", sp_wait)
     # UI_PANES_R6: window pane formats (sizes, order, stacked / side by side, docks) for every window.
     try:
         import ui_panels_ui as _upu
@@ -380,7 +421,8 @@ def _open_window(app=None, parent=None):
     def do_save():
         st2 = cs.load_saved()
         st2.update({"party_mode": chk_party.isChecked(), "party_intensity": sl_party.value() / 1000.0,
-                    "party_sounds": chk_party_snd.isChecked(), "emoji_labels": chk_emoji.isChecked()})
+                    "party_sounds": chk_party_snd.isChecked(), "emoji_labels": chk_emoji.isChecked(),
+                    "math_background_enabled": chk_math_bg.isChecked()})
         st2.update({"ui_scale": sp_ui.value(), "window_scale": sp_win.value(), "smooth_mode": cb_smooth.currentText(),
                     "thread_quality": cb_quality.currentText(), "compat_profile": cb_profile.currentText(),
                     "threads": sp_thr.value(), "audio_rate": cb_rate.currentText(), "scene_size": cb_size.currentText(),
@@ -396,6 +438,13 @@ def _open_window(app=None, parent=None):
         if not ok:
             out.setPlainText("Could NOT write the settings file:\n" + cs.settings_path())
             return
+        try:
+            import sys as _sys_bg
+            _gb_bg = _sys_bg.modules.get("groovebox")
+            if _gb_bg is not None and hasattr(_gb_bg, "set_window_backgrounds_enabled"):
+                _gb_bg.set_window_backgrounds_enabled(chk_math_bg.isChecked())
+        except Exception:
+            pass
         out.setPlainText("Saved. Scale changes apply at the next launch.\n\n" + "\n".join(cs.describe(st2)))
 
     # GROOVEBOX_LID_DISPLAY_20261111

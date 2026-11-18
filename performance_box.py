@@ -10,7 +10,7 @@ class BoxStatus:
 
 def status(path:str='.') -> BoxStatus:
     du=shutil.disk_usage(os.path.abspath(path))
-    return BoxStatus(validate_local_tool('ffmpeg'), validate_local_tool('ffprobe'), bool(shutil.which('mpv')), bool(shutil.which('pw-cli') or shutil.which('pactl')), bool(shutil.which('bluetoothctl')), du.free/1e9, os.cpu_count() or 1)
+    return BoxStatus(validate_local_tool('ffmpeg'), validate_local_tool('ffprobe'), bool(__import__("sos_tools").which('mpv')), bool(__import__("sos_tools").which('pw-cli') or __import__("sos_tools").which('pactl')), bool(__import__("sos_tools").which('bluetoothctl')), du.free/1e9, os.cpu_count() or 1)
 
 def systemd_unit(repo_dir:str)->str:
     runner=os.path.join(os.path.abspath(repo_dir),'run_groovebox.py')

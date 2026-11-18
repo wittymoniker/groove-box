@@ -79,8 +79,49 @@ def _field(text, key):
     return ""
 
 
+def _is_this_groovebox_entry(name: str, desktop_path: str, exec_line: str) -> bool:
+    """Do not offer the running workstation as an external application.
+
+    Desktop launchers start a fresh process (and may use a different Flatpak
+    namespace), so relying only on the process single-instance endpoint is not
+    sufficient for this in-app Apps list. Match our own installed desktop IDs
+    and the exact product launcher names/commands, not generic audio apps.
+    """
+    base = os.path.basename(desktop_path).lower()
+    if base in {
+        "io.github.wittymoniker.mathematiciansgroovebox.desktop",
+        "app.wasmer.eski19758.groovebox.desktop",
+        "mathematicians-groovebox.desktop", "groovebox.desktop",
+    } or ("groovebox" in base and base.endswith(".desktop") and
+          any(token in base for token in ("mathematician", "matgroove", "sos", "groovebox"))):
+        return True
+    if str(name).strip().casefold() in {"mathematician's groovebox", "mathematician’s groovebox"}:
+        return True
+    try:
+        argv = shlex.split(exec_line, posix=(os.name != "nt"))
+    except ValueError:
+        argv = []
+    # Desktop field codes are not executables. Check the first executable token
+    # and Flatpak app ID forms used by our two supported desktop packages.
+    first = os.path.basename(argv[0]).lower() if argv else ""
+    if first in {"mathematicians-groovebox", "groovebox", "groovebox.exe"}:
+        return True
+    # Catch desktop entries that invoke Python/uv/bash with a script path rather
+    # than the product command. Use exact basenames to avoid hiding unrelated
+    # applications whose arguments merely mention Groovebox media folders.
+    script_names = {"run_groovebox.py", "launch_groovebox.py", "groovebox.py",
+                    "LAUNCH_GROOVEBOX.sh".lower(), "launch_entry.sh"}
+    if any(os.path.basename(str(token)).lower() in script_names for token in argv[1:]):
+        return True
+    joined = " ".join(argv).replace("\\", "/").casefold()
+    return any(token in joined for token in (
+        "app.wasmer.eski19758.groovebox", "io.github.wittymoniker.mathematiciansgroovebox",
+        "mathematicians-groovebox", "/opt/groovebox/run_groovebox.py",
+    ))
+
+
 def list_apps():
-    """[{name, exec, path, comment}] of launchable desktop applications, sorted by name, without duplicates."""
+    """[{name, exec, path, comment}] of external desktop apps, sorted without duplicates."""
     out, seen = [], set()
     for d in DESKTOP_DIRS:
         for p in sorted(glob.glob(os.path.join(d, "*.desktop"))):
@@ -91,7 +132,7 @@ def list_apps():
             if "[Desktop Entry]" not in t or _field(t, "NoDisplay").lower() == "true" or _field(t, "Type") not in ("", "Application"):
                 continue
             name, ex = _field(t, "Name"), _field(t, "Exec")
-            if not name or not ex or name in seen:
+            if not name or not ex or name in seen or _is_this_groovebox_entry(name, p, ex):
                 continue
             seen.add(name)
             out.append({"name": name, "exec": ex, "path": p, "comment": _field(t, "Comment")})
@@ -112,18 +153,23 @@ def launch(app_entry_or_argv):
 
 
 def _priv(cmd):
+    __import__("sos_tools").check_privileged(cmd)   # R101: never hand a system file to a root command
+    try:
+        __import__("accounts").require("install")    # R101: installs need an owner / member account
+    except ImportError:
+        pass
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return cmd
-    if shutil.which("pkexec"):
+    if __import__("sos_tools").which("pkexec"):
         return ["pkexec"] + cmd
     return ["sudo", "-n"] + cmd
 
 
 def install_methods():
     m = ["appimage"]
-    if shutil.which("apt-get"):
+    if __import__("sos_tools").which("apt-get"):
         m += ["deb", "apt"]
-    if shutil.which("flatpak"):
+    if __import__("sos_tools").which("flatpak"):
         m += ["flatpak"]
     return m
 
@@ -145,7 +191,11 @@ def install_cmd(method, target):
     if method == "deb":
         return _priv(["apt-get", "install", "-y", os.path.abspath(target)])
     if method == "apt":
-        return _priv(["apt-get", "install", "-y", str(target).strip()])
+        _pkg = str(target).strip()
+        import re as _re
+        if not _re.fullmatch(r"[a-z0-9][a-z0-9+.\-]{0,127}(=[A-Za-z0-9.+:~\-]+)?", _pkg):   # R101: a package name, nothing else
+            raise ValueError("not a valid package name: %r" % _pkg)
+        return _priv(["apt-get", "install", "-y", _pkg])
     if method == "flatpak":
         return ["flatpak", "install", "--user", "-y", str(target).strip()]
     raise ValueError(method)
@@ -381,7 +431,7 @@ def open_window(app=None):
         except Exception as exc:
             slog.appendPlainText("⚠ %s" % exc)
     b_new.clicked.connect(lambda: (sfill(), slst.addItem(new_script(tmpl.currentText())), sfill()))
-    b_open.clicked.connect(lambda: launch(["xdg-open", SCRIPTS_DIR]) if shutil.which("xdg-open") else None)
+    b_open.clicked.connect(lambda: launch(["xdg-open", SCRIPTS_DIR]) if __import__("sos_tools").which("xdg-open") else None)
     slst.itemClicked.connect(sel); b_save.clicked.connect(save); b_run.clicked.connect(run); outs.itemDoubleClicked.connect(back)
     fill(); sfill()
     w.show()

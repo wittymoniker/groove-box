@@ -122,8 +122,7 @@ class RenderQueueDialog(QWidget):
         if not path or self.jobs or not os.path.isfile(path):
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = __import__("safe_io").load_json(path, encoding="utf-8")
             if isinstance(data, list):
                 self.jobs.extend(j for j in data if isinstance(j, dict))
                 if self.jobs:
@@ -138,8 +137,7 @@ class RenderQueueDialog(QWidget):
         try:
             if self.jobs:
                 tmp = path + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(self.jobs, f)
+                __import__("safe_io").atomic_write_json(tmp, self.jobs, encoding="utf-8")
                 os.replace(tmp, path)
             elif os.path.isfile(path):
                 os.remove(path)
@@ -152,8 +150,7 @@ class RenderQueueDialog(QWidget):
 
     def _history(self):
         try:
-            with open(self._hist_file(), "r", encoding="utf-8") as f:
-                d = json.load(f)
+            d = __import__("safe_io").load_json(self._hist_file(), encoding="utf-8")
             return d if isinstance(d, dict) else {}
         except Exception:
             return {}
@@ -162,8 +159,7 @@ class RenderQueueDialog(QWidget):
         h = self._history(); lst = [float(x) for x in h.get(key, [])][-4:] + [float(secs)]
         h[key] = lst
         try:
-            with open(self._hist_file(), "w", encoding="utf-8") as f:
-                json.dump(h, f)
+            __import__("safe_io").atomic_write_json(self._hist_file(), h, encoding="utf-8")
         except Exception:
             pass
 

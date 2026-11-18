@@ -16,9 +16,9 @@ def synth_snapshot(host,name):
             'user_owned':True}
 
 def save_one(host,name,path):
-    d={'format':FORMAT_ONE,'version':VERSION,'synth':synth_snapshot(host,name)}; Path(path).write_text(json.dumps(d,indent=2,default=str),encoding='utf-8'); return str(Path(path).resolve())
+    d={'format':FORMAT_ONE,'version':VERSION,'synth':synth_snapshot(host,name)}; __import__("safe_io").atomic_write_text(Path(path), json.dumps(d,indent=2,default=str), encoding='utf-8'); return str(Path(path).resolve())
 def save_pack(host,names,path):
-    d={'format':FORMAT_PACK,'version':VERSION,'synths':[synth_snapshot(host,n) for n in names]}; Path(path).write_text(json.dumps(d,indent=2,default=str),encoding='utf-8'); return str(Path(path).resolve())
+    d={'format':FORMAT_PACK,'version':VERSION,'synths':[synth_snapshot(host,n) for n in names]}; __import__("safe_io").atomic_write_text(Path(path), json.dumps(d,indent=2,default=str), encoding='utf-8'); return str(Path(path).resolve())
 def load(path):
     d=json.loads(Path(path).read_text(encoding='utf-8')); f=d.get('format');
     if f==FORMAT_ONE:return [d['synth']]

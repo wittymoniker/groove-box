@@ -12,7 +12,7 @@ def main():
     a=ap.parse_args()
     if a.cmd=='compile':
         ir=compile_file(a.file); text=json.dumps(ir,indent=2,ensure_ascii=False)+'\n'
-        if a.output: Path(a.output).write_text(text,encoding='utf-8')
+        if a.output: __import__("safe_io").atomic_write_text(Path(a.output), text, encoding='utf-8')
         else: print(text,end='')
     else:
         p=NumeralProfile() if a.profile=='default' else NumeralProfile.load(a.profile)

@@ -3,6 +3,7 @@ setlocal EnableExtensions
 set "PYTHONHOME="
 set "PYTHONPATH="
 set "PYTHONPYCACHEPREFIX="
+set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"
 cd /d "%~dp0"

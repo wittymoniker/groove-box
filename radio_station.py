@@ -58,7 +58,7 @@ def save_identity(name: str, logo: str = "") -> Dict[str, str]:
                 data["logo"] = str(dst)
             except Exception:
                 data["logo"] = src
-    identity_path().write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    __import__("safe_io").atomic_write_text(identity_path(), json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return data
 
 
@@ -93,12 +93,24 @@ class RadioStationService:
         self._threads: List[threading.Thread] = []
         self._stop = threading.Event()
         self.peers: Dict[str, Dict[str, object]] = {}
+        self._metrics_lock = threading.Lock()
+        self._listener_count = 0
+        self._now_playing = ""
+        self._stream_started_at = 0.0
 
     @property
     def identity(self): return load_identity()
 
     @property
     def url(self): return f"http://{local_ipv4()}:{self.port}/"
+
+    def status_snapshot(self):
+        """Actual local radio state for the on-air badge and listener ticker."""
+        with self._metrics_lock:
+            return {"on_air": bool(self.httpd and not self._stop.is_set()),
+                    "listeners": int(self._listener_count),
+                    "now_playing": str(self._now_playing),
+                    "uptime_seconds": max(0.0, time.monotonic()-self._stream_started_at) if self._stream_started_at else 0.0}
 
     def start(self):
         if self.httpd: return self.url
@@ -121,7 +133,7 @@ class RadioStationService:
             def _page(self):
                 ident = owner.identity; peers = owner.peer_list()
                 cards = "".join(f'<a class="peer" href="{html.escape(str(p.get("url","#")))}">{html.escape(str(p.get("name","Radio")))}</a>' for p in peers)
-                body = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(ident['name'])}</title><style>body{{background:#071019;color:#eaf8ff;font-family:system-ui;margin:0;padding:24px}}.card{{max-width:760px;margin:auto;background:#0d1b28;border:1px solid #315d73;border-radius:22px;padding:22px;box-shadow:0 12px 38px #0008}}img{{max-width:100%;max-height:180px;border-radius:16px}}h1{{color:#f1ce68}}audio{{width:100%}}.peer{{display:block;color:#9fe7f5;background:#102838;border-radius:12px;padding:10px;margin:7px 0;text-decoration:none}}</style></head><body><div class="card"><img src="/logo"><h1>{html.escape(ident['name'])}</h1><p>Mathematician's Groovebox · 192 kbps local GOAVA Radio</p><audio controls autoplay src="/stream.mp3"></audio><h3>Nearby Groovebox radios</h3>{cards or '<p>No peers seen yet.</p>'}</div></body></html>'''.encode()
+                body = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(ident['name'])}</title><style>body{{background:#071019;color:#eaf8ff;font-family:Arial;margin:0;padding:24px}}.card{{max-width:760px;margin:auto;background:#0d1b28;border:1px solid #315d73;border-radius:22px;padding:22px;box-shadow:0 12px 38px #0008}}img{{max-width:100%;max-height:180px;border-radius:16px}}h1{{color:#f1ce68}}audio{{width:100%}}.peer{{display:block;color:#9fe7f5;background:#102838;border-radius:12px;padding:10px;margin:7px 0;text-decoration:none}}</style></head><body><div class="card"><img src="/logo"><h1>{html.escape(ident['name'])}</h1><p>Mathematician's Groovebox · 192 kbps local GOAVA Radio</p><audio controls autoplay src="/stream.mp3"></audio><h3>Nearby Groovebox radios</h3>{cards or '<p>No peers seen yet.</p>'}</div></body></html>'''.encode()
                 self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
             def _stream(self):
                 self.send_response(200); self.send_header("Content-Type","audio/mpeg"); self.send_header("Cache-Control","no-cache"); self.send_header("Connection","close"); self.end_headers()
@@ -129,13 +141,17 @@ class RadioStationService:
                 if not ffmpeg: return
                 files = _candidate_audio(owner.roots)
                 idx = 0
+                with owner._metrics_lock:
+                    owner._listener_count += 1
                 try:
                     while not owner._stop.is_set():
                         if files:
                             src = files[idx % len(files)]; idx += 1
+                            with owner._metrics_lock: owner._now_playing = os.path.basename(src)
                             cmd = [ffmpeg,"-hide_banner","-loglevel","error","-re","-i",src,"-vn","-ac", "2","-ar","44100","-b:a","192k","-f","mp3","pipe:1"]
                         else:
                             hz = 432 + (idx % 5) * 27; idx += 1
+                            with owner._metrics_lock: owner._now_playing = "GOAVA tone · %d Hz" % hz
                             cmd = [ffmpeg,"-hide_banner","-loglevel","error","-re","-f","lavfi","-i",f"sine=frequency={hz}:sample_rate=44100:duration=1.25","-af","volume=0.10","-ac","2","-b:a","192k","-f","mp3","pipe:1"]
                         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                         while proc.stdout and not owner._stop.is_set():
@@ -147,7 +163,14 @@ class RadioStationService:
                         if files: time.sleep(0.08)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
+                finally:
+                    with owner._metrics_lock:
+                        owner._listener_count = max(0, owner._listener_count - 1)
         self.httpd = ThreadingHTTPServer(("0.0.0.0", self.port), Handler)
+        self._stop.clear()
+        with self._metrics_lock:
+            self._stream_started_at = time.monotonic()
+            self._now_playing = ""
         t = threading.Thread(target=self.httpd.serve_forever, daemon=True); t.start(); self._threads.append(t)
         for target in (self._announce_loop, self._listen_loop):
             t = threading.Thread(target=target, daemon=True); t.start(); self._threads.append(t)
@@ -171,6 +194,9 @@ class RadioStationService:
 
     def _listen_loop(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # R101: share the discovery port with net_hub's auto-radio listener (macOS/BSD need SO_REUSEPORT on both).
+        try: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except Exception: pass
         try: s.bind(("", DISCOVERY_PORT))
         except Exception: return
         s.settimeout(1.0)

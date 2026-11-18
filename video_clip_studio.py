@@ -397,14 +397,14 @@ def _ffmpeg() -> Optional[str]:
     try:
         return resolve_local_tool('ffmpeg', required=False)
     except Exception:
-        return shutil.which('ffmpeg')
+        return __import__("sos_tools").which('ffmpeg')
 
 
 def _ffprobe() -> Optional[str]:
     try:
         return resolve_local_tool('ffprobe', required=False)
     except Exception:
-        return shutil.which('ffprobe')
+        return __import__("sos_tools").which('ffprobe')
 
 
 def _capture_signal_report(path: str, kind: str = "s16le") -> dict:
@@ -2391,7 +2391,7 @@ class VideoClipStudio(QWidget):
         if force_restart: self._stop_mic_source()
         if backend == 'alsa':
             if self._alsa_mic_proc is not None and self._alsa_mic_proc.poll() is None: return True
-            arecord=shutil.which('arecord'); device=str(route[1] or '')
+            arecord=__import__("sos_tools").which('arecord'); device=str(route[1] or '')
             if not (arecord and device): return False
             channels=max(1,min(8,int(route[3] if len(route)>3 and route[3] else 2)))
             rate=max(8000,int(route[4] if len(route)>4 and route[4] else 48000))
@@ -4628,7 +4628,7 @@ class VideoClipStudio(QWidget):
                     groovebox_paths.index_file(str(lp),'layer',self._project_path())
                 except Exception: pass
             data={'version':2,'base_clip':self.base_clip,'curves':self._curves,'drawing_layers':draw_meta,'recording_layers':list(self.recording_layers),'color_sound':self.chk_color_sound.isChecked(),'sound_color':self.chk_sound_color.isChecked(),'draw_sound':self.chk_draw_sound.isChecked(),'color_detail':self.cmb_color_detail.currentText()}
-            js.write_text(json.dumps(data,indent=2),encoding='utf-8')
+            __import__("safe_io").atomic_write_text(js, json.dumps(data,indent=2), encoding='utf-8')
             import groovebox_paths; groovebox_paths.index_file(str(png),'layer',self._project_path()); groovebox_paths.index_file(str(js),'layer',self._project_path())
             if not silent:self.lbl_render.setText('Saved paint + graph layer in project layers/.')
             return str(png),str(js)

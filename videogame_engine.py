@@ -10259,8 +10259,7 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     except Exception:
         pass
     meta_path = os.path.join(out_dir, f"game_{identity.composition_fingerprint}.json")
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(identity.to_dict(), f, indent=2)
+    __import__("safe_io").atomic_write_json(meta_path, identity.to_dict(), indent=2, encoding="utf-8")
     # REVERSE_ENGINEERING: the package carries only self-describing artifacts.
     # optional extra_files (e.g. the groovebox export manifest → provenance.json)
     # make the composition's exact main-window inputs recoverable from the package.
@@ -10268,38 +10267,33 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
         if not extra_name or not extra_name.replace("_", "").isalnum() and "." not in extra_name:
             continue
         try:
-            with open(os.path.join(out_dir, str(extra_name)), "w", encoding="utf-8") as f:
-                json.dump(extra_obj, f, indent=2, sort_keys=True)
+            __import__("safe_io").atomic_write_json(os.path.join(out_dir, str(extra_name)), extra_obj, indent=2, sort_keys=True, encoding="utf-8")
         except Exception:
             pass
     # Instrument → asset manifest (models, textures, materials, SFX, software kind)
     asset_path = os.path.join(out_dir, f"assets_{identity.composition_fingerprint}.json")
-    with open(asset_path, "w", encoding="utf-8") as f:
-        json.dump(identity.asset_manifest or build_asset_manifest(
+    __import__("safe_io").atomic_write_json(asset_path, identity.asset_manifest or build_asset_manifest(
             _safe_int_seed(identity.seed),
             identity.model_sets_1d, identity.model_sets_2d, identity.model_sets_3d,
             identity.texture_family, identity.material_spec or {},
             identity.sfx_bank or [], identity.software_kind or "videogame",
-        ), f, indent=2, sort_keys=True)
+        ), indent=2, sort_keys=True, encoding="utf-8")
     # Lattice coverage proof (shows radio_toolkit and other kinds are reachable)
     proof_path = os.path.join(out_dir, "software_lattice_proof.json")
-    with open(proof_path, "w", encoding="utf-8") as f:
-        json.dump(prove_software_lattice(48), f, indent=2, sort_keys=True)
+    __import__("safe_io").atomic_write_json(proof_path, prove_software_lattice(48), indent=2, sort_keys=True, encoding="utf-8")
     # Multimodal contract — every package declares always sound + visual + UI
     contract_path = os.path.join(out_dir, "multimodal_contract.json")
-    with open(contract_path, "w", encoding="utf-8") as f:
-        json.dump({
+    __import__("safe_io").atomic_write_json(contract_path, {
             **MULTIMODAL_CONTRACT,
             "software_kind": identity.software_kind,
             "title": identity.title,
             "fingerprint": identity.composition_fingerprint,
             "triad": triad_of(identity.seed, identity.to_dict()),
             "how_to_play": "HOW_TO_PLAY.md",
-        }, f, indent=2, sort_keys=True)
+        }, indent=2, sort_keys=True, encoding="utf-8")
     # Full audio/video-to-game output capability contract for UI/object generation.
     media_contract_path = os.path.join(out_dir, "game_media_capabilities.json")
-    with open(media_contract_path, "w", encoding="utf-8") as f:
-        json.dump(build_game_media_capability_contract(identity.seed, composition_meta, identity), f, indent=2, sort_keys=True)
+    __import__("safe_io").atomic_write_json(media_contract_path, build_game_media_capability_contract(identity.seed, composition_meta, identity), indent=2, sort_keys=True, encoding="utf-8")
     _write_launchers(out_dir, identity.composition_fingerprint)
     _write_package_readme(out_dir, identity)
     # THREE-PATHWAY_CONTRACT: every package also ships the play guide and the
@@ -10312,8 +10306,7 @@ def export_game_files(identity: GameIdentity, out_dir: str, composition_meta: Op
     except Exception:
         pass
     try:
-        with open(os.path.join(out_dir, "triad.json"), "w", encoding="utf-8") as f:
-            json.dump(triad, f, indent=2, sort_keys=True)
+        __import__("safe_io").atomic_write_json(os.path.join(out_dir, "triad.json"), triad, indent=2, sort_keys=True, encoding="utf-8")
     except Exception:
         pass
     # The package carries its own provisioning: identical dependency-install
@@ -10887,8 +10880,7 @@ def write_formats_manifest(directory: str) -> str:
         },
     }
     path = os.path.join(directory, "formats.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, sort_keys=True)
+    __import__("safe_io").atomic_write_json(path, manifest, indent=2, sort_keys=True, encoding="utf-8")
     return path
 
 

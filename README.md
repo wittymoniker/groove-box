@@ -1,4 +1,4 @@
-# Strongly Superdimensional Synthesizer Simulation
+# SSSS — Superdimensional Seed-driven Self-composing Synthesizer
 
 *Mathematician's Groovebox — a deterministic generative music, visual, and game engine.*
 
@@ -23,6 +23,7 @@ only one arbitrary, rather complex choice among many) is in **[MATHEMATICS.md](M
 | Project ⇄ OBJ | A song exported as OBJ opens as a normal mesh and gives back the bit-exact audio and the project; any other OBJ imports as sound (12 / 12 checks) |
 | Video meshes | Meshes built from each frame's audio are drawn on every frame and are deterministic; a loaded OBJ is drawn large in the centre with an outline; GOAVA shapes show with the GOAVA sound engine off |
 | Project load | 0.3–0.8 s with no UI stall over 0.6 s afterwards (was ~2 s plus a 2.4 s stall), and the loaded project renders sample-for-sample the same |
+| UI responsiveness | Idle UI-thread stall 44.6 s → 3.1 s per minute (offscreen, 4 cores); the main window's minimum width 6,344 px → 504 px, so it fits an 800 px screen; 319 / 319 button presses delivered; all 5 main scroll areas scroll; Party Mode switches itself off above 20 % UI time |
 | Signed updates | Ed25519 equals the RFC 8032 test vector; a tampered package is refused |
 
 **Not claimed:** that every recorded sound has a short seed (audio → seed is a structural estimate), or that a measured
@@ -36,6 +37,88 @@ difference means better music.
 5. Games keep one savestate each per Groovebox. Delete one or all from the Game Editor.
 6. To record onto a USB stick or SD card, pick it under **Save to:** (Export, Batch or Live Player) *before* recording. Press ↻ after plugging in; an unmounted stick shows as "⚠ … not mounted (click to mount)", and **📂 Choose a folder…** reaches any other location. Press ⏏ Flush before unplugging.
 7. Quick Rack ▸ 🧊 OBJ exports the whole song as a 3D model (with the exact audio and project inside) and imports any OBJ as sound. "Show an OBJ in the video" puts a model in the centre of every frame.
+
+## Recent release additions (R104–R107)
+
+This source tree includes the following additions on top of the existing Groovebox application. The detailed engineering notes are `RELEASE-R104-EXPORT-RECOVERY-DEPENDENCIES-20261118.md`, `RELEASE-R105-GROOVEBOX-INTELLIGENCE-LAYER-20261118.md`, and `RELEASE-R106-MULTIDIM-INSTRUMENT-RENAMES-20261118.md`.
+
+### R107 — launch integrity and pre-provisioned language runtimes
+
+- All supported launch paths disable Python bytecode writes before the project import tree is loaded. The ISO build syntax-checks sources without creating `__pycache__` in the immutable application payload; release archives exclude `.pyc` and cache directories.
+- Normal GUI launches use a root-scoped Qt local-server handoff. A second launch activates the existing main window and exits before constructing a second Groovebox window. Helper/game dispatch remains separate.
+- The in-app **Apps & Scripts** list filters Groovebox's own desktop launchers, so it cannot offer the running workstation as an external app to launch again.
+- The sOS image prepares C/C++, Go, Julia 1.11.7, Python, Shell, and LuaJIT (`lupa`). JuliaCall/PythonCall is installed and warmed during image construction; the sOS launcher points it at the bundled Julia and enforces offline package resolution at runtime.
+- Rust is shipped as a compressed host toolchain archive with lazy extraction on the first Rust build. This avoids loading the full compiler/sysroot into the live root at boot; the prebuilt native Rust accelerator remains available immediately.
+- The ISO finalizer verifies Go, Julia, LuaJIT, JuliaCall, and the Groovebox Julia source smoke test inside the target rootfs.
+
+### R104 — interrupted export recovery
+
+- Export queue records retain stage identity, options, output paths, and dependency edges.
+- Video-mux stages can be persisted even when they do not own a standalone project snapshot.
+- Recovery restores the dependency graph before starting workers, so downstream mux jobs do not race ahead of audio/video prerequisites.
+- The recovery layer validates completed prerequisite outputs using content fingerprints; missing or changed outputs keep dependent work held for inspection instead of being silently treated as complete.
+
+### R105 — shared intelligence services
+
+The shared service module `groovebox_intelligence.py` provides reusable backend services for: unified parameter registration and deterministic source arbitration; destination-coverage reports; deterministic pattern variations; mathematical motif discovery; read-only Canonical conformance diagnostics; rational cross-media clock conversion; project integrity checks; content-addressed preview caching; export checkpoint validation; adaptive worker budgeting; performance-scene capture/recall; and project preflight.
+
+Project schema 4 persists the parameter-registry manifest, performance scenes, and intelligence settings, while migrating schema-3 projects without intentionally discarding unknown state. The services are shared backend APIs and persistence contracts; this release does **not** claim that every service has its own dedicated GUI panel or that every possible parameter destination is already connected.
+
+Determinism and safety constraints:
+
+- Pattern variations derive choices from stable hashes; they do not introduce ambient true-random probability. The variation operation preserves event count, pitch, onset, and duration.
+- Canonical conformance is diagnostic/read-only and does not rewrite Canonical Result/Profile or live composition state.
+- Performance scenes use the project-schema state contract rather than a second serializer.
+- Cross-media clock conversion uses rational arithmetic and integer ticks.
+- Adaptive worker budgeting respects conservative CPU/RAM limits and existing scheduler caps.
+
+### R106 — rename Multidim instrument GUI labels
+
+The Multidim window now uses the same editable display labels as the main instrument selector. To rename an instrument:
+
+1. Open **Multidim**.
+2. Select the instrument in the **Instrument** selector.
+3. Enter the desired name in **Custom GUI label…**.
+4. Select **Apply name**.
+5. To restore the default instrument name, clear the field and select **Apply name** again.
+
+Names are trimmed, whitespace is normalized, and labels are limited to 48 characters. Duplicate display names are rejected. A successful rename refreshes both the Multidim selector and the main instrument selector; renames loaded from a project are reflected in Multidim as well.
+
+**Important identity rule:** a display name is only a GUI label. The stable instrument key remains the selector item data and continues to identify synth state, sequences, automation, patches, and Canonical references. Renaming therefore does not rename or migrate the underlying instrument identity. Display names are included in project save/load state.
+
+### Final-sweep validation notes
+
+The targeted regression command for the R104–R107 additions is:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q \
+  test_r107_launch_hardening_20261118.py \
+  test_export_recovery_dependency_contract_20261118.py \
+  test_groovebox_intelligence_r105.py \
+  test_multidim_instrument_rename_20261118.py \
+  test_r107_launch_hardening_20261118.py
+```
+
+A no-cache Python syntax sweep and source/active-overlay parity can also be checked with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+from pathlib import Path
+for p in Path('.').rglob('*.py'):
+    if '__pycache__' not in p.parts:
+        compile(p.read_bytes(), str(p), 'exec')
+print('Python syntax sweep: PASS')
+PY
+sha256sum groovebox.py multidim_ui.py groovebox_intelligence.py project_schema.py export_scheduler.py r32_finish.py \
+  BUILD_ISO/app-overlay-v35.22zz/groovebox.py \
+  BUILD_ISO/app-overlay-v35.22zz/multidim_ui.py \
+  BUILD_ISO/app-overlay-v35.22zz/groovebox_intelligence.py \
+  BUILD_ISO/app-overlay-v35.22zz/project_schema.py \
+  BUILD_ISO/app-overlay-v35.22zz/export_scheduler.py \
+  BUILD_ISO/app-overlay-v35.22zz/r32_finish.py
+```
+
+A passing source-level test suite is not a substitute for launching the full PyQt application, testing real audio/video hardware, mastering an ISO, or booting that ISO on target hardware. Those runtime and hardware checks must be performed on a suitably provisioned test machine.
 
 ## 3D video production and processing
 
@@ -737,3 +820,29 @@ the selected interpreter/ABI.
 
 
 R191 completion-services ledger and current gates: see `R191-CONSOLIDATED-EXECUTION-LEDGER-20261115.md` and `R191-COMPLETION-PASS-20261115.md`.
+
+
+## Autopilot seed lineage and generated seeds (R75)
+
+The GOAVA Autopilot derives its local deterministic root from three independently
+editable project inputs: the dedicated Superseed, the ordinary Global Seed script,
+and the optional Starter Patch Seed. `groovebox_runtime.seed_lineage` performs the
+canonical multi-source hashing and writes branch-specific `MG-SEED-V1` outputs.
+Each branch output is persisted with its candidate pattern in the bounded local
+SQLite archive. The Autopilot panel exposes a synchronized Superseed textbox and
+a live generated-seed textbox; explicit controls copy an output to the Global Seed
+or Starter Patch Seed, or promote it to Superseed. The Superseed can also be used
+as the whole-project Starter Patch Seed fallback when the one-shot field is empty.
+No seed is applied to the active project without an explicit user action.
+
+## R108 update — canonical frequencies, console, and ISO media writer
+
+R108 adds an absolute Fractal Seed root frequency (default 432 Hz) that is normalized against the main base-frequency control and propagated into canonical sequence pitch ratios. GOAVA exposes three independent voice amplitudes in Performance → Canonical / Seed; those values reach event metadata and the actual GOAVA audio mix. RAND now passes its captured per-engine RNG through the automation-lane writer instead of reconstructing a project-seed RNG there. LOCK remains a deterministic relationship/phase engine, not a blanket randomizer for unrelated synth controls.
+
+The in-app Console button is reachable from the main global row, Ctrl+Shift+` opens it, and Settings/Compatibility also lists it. Positional command arguments are forwarded correctly. The console now exposes 15 additional tools: `canonicals`, `runtime`, `windows`, `status`, `project`, `seed`, `goava`, `fractal`, `audio`, `exports`, `threads`, `ui`, `caches`, `focus`, and `save`. Existing commands include `help`, `panels`, `mgr types`, `mem`, `swap`, and `trim`. Quoted multiword arguments are supported.
+
+The active ISO overlay is synchronized from the root source. Program Builder reports prepared language runtimes instead of showing redundant manual language-install buttons. The ISO build provisions Go, Julia 1.11.7/JuliaCall, LuaJIT, C/C++, Python/Shell, and a Rust toolchain payload. The finalizer now compiles source in memory, removes stale bytecode caches from deployed app/helper trees, and fails if any remain.
+
+For a removable drive holding five ISO images, use `BUILD_ISO/write_five_isos_7part.sh`. It selects the five newest complete ISOs from `BUILD_ISO/dist` and `dist` (or from `GROOVEBOX_ISO_DIRS`), then creates seven GPT partitions: one shared signed Limine boot partition, five separate ISO archive partitions, and one remaining data partition. The writer is destructive and requires explicit device-path and `ERASE-USB` confirmations.
+
+Latitude dialog sizing now clamps to the screen's actual available work area. This source fix does not substitute for a physical Latitude test of compositing, black windows, control hit targets, or scrolling.

@@ -181,7 +181,7 @@ class NetworkSettingsPanel(QWidget):
         self.lbl_status.setText('Network status is deferred. Press ↻ Scan when you need Wi-Fi discovery.')
 
     def _have_nmcli(self) -> bool:
-        return bool(shutil.which("nmcli"))
+        return bool(__import__("sos_tools").which("nmcli"))
 
     def refresh(self):
         if not self._have_nmcli():

@@ -42,7 +42,7 @@ def plugins():
             m = os.path.join(root, name, "plugin.json")
             if os.path.isfile(m):
                 try:
-                    d = json.load(open(m)); d["dir"] = os.path.join(root, name); d.setdefault("origin", origin); out.append(d)
+                    d = __import__("safe_io").load_json(m); d["dir"] = os.path.join(root, name); d.setdefault("origin", origin); out.append(d)
                 except Exception:
                     pass
     return out
@@ -87,9 +87,9 @@ def run(app, p, on_line=None, done=None, seed=None):
             QTimer.singleShot(0, lambda: _after(app, p, outd, new, done))
         except Exception as exc:
             say("✖ %s" % exc)
-    try:
-        import scode_coordinator as sc
-        sc.direct("programs", job)
+    try:                                   # R101: one strand per plugin, so a plugin never races its own state
+        import compute
+        compute.run("programs", job, carrier="plugin:" + str(p.get("id")))
     except Exception:
         threading.Thread(target=job, daemon=True).start()
 
@@ -99,14 +99,14 @@ def _after(app, p, outd, new, done):
     req = os.path.join(outd, "groovebox_requests.json")
     if os.path.isfile(req):
         try:
-            ops = json.load(open(req)); pg.apply_requests(app, ops if isinstance(ops, list) else [], who=p["name"], root=outd)
+            ops = __import__("safe_io").load_json(req); pg.apply_requests(app, ops if isinstance(ops, list) else [], who=p["name"], root=outd)
         except Exception:
             pass
     files = pg.guard_outputs(app, outd, new, p["name"])
     ctl = os.path.join(outd, "controls.json")
     if os.path.isfile(ctl):
         try:
-            c = json.load(open(ctl))
+            c = __import__("safe_io").load_json(ctl)
             if isinstance(c, dict):
                 _bindings(app)["controls"][p["id"]] = {str(k)[:32]: [max(0.0, min(1.0, float(x))) for x in v[:4096]] for k, v in list(c.items())[:32] if isinstance(v, list)}
         except Exception:
@@ -246,6 +246,10 @@ def pack(app, p):
 
 
 def install_zip(app, path, origin="file", level="public"):
+    try:
+        __import__("accounts").require("install", os.path.basename(str(path)))   # R101 account roles
+    except ImportError:
+        pass
     """Validate and unpack a .gbplugin. Returns the plugin dict. Never runs anything."""
     if os.path.getsize(path) > 64 << 20: raise ValueError("plugin archive larger than 64 MB")
     with zipfile.ZipFile(path) as z:
@@ -262,7 +266,7 @@ def install_zip(app, path, origin="file", level="public"):
         z.extractall(user_dir() + "/.tmp_install"); shutil.move(os.path.join(user_dir(), ".tmp_install", top), dst)
         shutil.rmtree(os.path.join(user_dir(), ".tmp_install"), ignore_errors=True)
     meta.update(origin=origin, trust=level, installed=time.time(), reviewed=False)
-    json.dump(meta, open(os.path.join(dst, "plugin.json"), "w"), indent=1)
+    __import__("safe_io").atomic_write_json(os.path.join(dst, "plugin.json"), meta, indent=1)
     return meta
 
 

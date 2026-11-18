@@ -1,0 +1,7 @@
+Mathematician's Groovebox / sOS — R107
+
+Adds no-bytecode launch hardening, single-instance GUI activation, filtering of the running Groovebox from its own Apps & Scripts launcher, and pre-provisioned sOS language runtimes (C/C++, Go, Julia/JuliaCall, LuaJIT, Python, Shell, and lazily extracted Rust toolchain).
+
+R104 export dependency recovery, R105 shared intelligence services, and R106 Multidim display-label rename behavior are retained.
+
+See README.md and RELEASE-R107-LAUNCH-LANGUAGE-RUNTIME-20261118.md.

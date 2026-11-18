@@ -340,7 +340,7 @@ class SeedCanonicalWindow(QWidget):
             return self.host._resolve_ffmpeg_binary()
         except Exception:
             import shutil
-            return shutil.which("ffmpeg")
+            return __import__("sos_tools").which("ffmpeg")
 
     def _v_analyse(self):
         p, _ = QFileDialog.getOpenFileName(self, "Video to analyse", "", "Video (*.mp4 *.mkv *.webm *.mov *.avi *.MCC *.mcc);;MCC media (*.MCC *.mcc);;All files (*)")

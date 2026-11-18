@@ -2,6 +2,9 @@
 """Compatibility entry point; all launch paths share the hardened runner."""
 import runpy
 import os
+
+# Set before runpy loads the shared runner or any project module.
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 from pathlib import Path
 
 if __name__ == "__main__":

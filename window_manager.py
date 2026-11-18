@@ -63,8 +63,7 @@ def _load_geoms():
     global _GEOM_CACHE
     if _GEOM_CACHE is None:
         try:
-            with open(_geom_path(), "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            data = __import__("safe_io").load_json(_geom_path(), encoding="utf-8")
             _GEOM_CACHE = data if isinstance(data, dict) else {}
         except Exception:
             _GEOM_CACHE = {}
@@ -75,8 +74,7 @@ def _save_geoms():
     data = _load_geoms()
     try:
         tmp = _geom_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=0, sort_keys=True)
+        __import__("safe_io").atomic_write_json(tmp, data, indent=0, sort_keys=True, encoding="utf-8")
         os.replace(tmp, _geom_path())
     except Exception:
         pass

@@ -22,7 +22,7 @@ def _run(args):
 def inventory():
     """Return a best-effort inventory; absent tools degrade gracefully."""
     rows=[]
-    lsblk=shutil.which('lsblk')
+    lsblk=__import__("sos_tools").which('lsblk')
     if lsblk:
         raw=_run([lsblk,'-J','-b','-o','NAME,PATH,TYPE,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,PARTFLAGS,PARTTYPE,RM,RO'])
         try: data=json.loads(raw)

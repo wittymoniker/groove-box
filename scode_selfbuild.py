@@ -29,7 +29,7 @@ def build(root: Path, out: Path, version: str):
     for p, rel in files(root):
         records.append({"path":rel.as_posix(),"sha256":sha256(p),"bytes":p.stat().st_size})
     payload={"format":"scode-release-manifest-v1","version":version,"files":records}
-    manifest.write_text(json.dumps(payload,sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")
+    __import__("safe_io").atomic_write_text(manifest, json.dumps(payload,sort_keys=True,separators=(",",":"))+"\n", encoding="utf-8")
     # reproducible ZIP timestamps >= 1980
     with zipfile.ZipFile(zpath,"w",zipfile.ZIP_DEFLATED,compresslevel=9) as z:
         for p, rel in files(root):
@@ -43,10 +43,9 @@ def build(root: Path, out: Path, version: str):
             ti.uid=ti.gid=0; ti.uname=ti.gname=""; ti.mtime=0
             with p.open("rb") as f: t.addfile(ti,f)
     sums=out/f"{base}.sha256"
-    sums.write_text(
-        f"{sha256(zpath)}  {zpath.name}\n"
+    __import__("safe_io").atomic_write_text(sums, f"{sha256(zpath)}  {zpath.name}\n"
         f"{sha256(tpath)}  {tpath.name}\n"
-        f"{sha256(manifest)}  {manifest.name}\n",encoding="utf-8")
+        f"{sha256(manifest)}  {manifest.name}\n", encoding="utf-8")
     return [zpath,tpath,manifest,sums]
 
 if __name__=="__main__":

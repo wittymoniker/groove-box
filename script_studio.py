@@ -411,6 +411,9 @@ class ScriptStudio(QWidget):
     def save(self):
         if not self.path:
             return self.save_as()
+        if __import__("safe_io").is_system_path(self.path):            # R101: view-only system files
+            self.status.setText(__import__("safe_io").protected_message(self.path, "edit"))
+            return None
         tmp = self.path + ".part"
         try:
             Path(tmp).write_text(self.editor.toPlainText(), encoding="utf-8")

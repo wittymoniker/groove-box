@@ -45,28 +45,13 @@ def lane(direction):
 
 
 def direct(direction, fn, *args, **kwargs):
-    """Submit to the shared sCode pool; heavy work leases firmware-managed CPU boost."""
+    """Run fn in a direction; returns a future. Higher directions are submitted with higher priority."""
     _COUNT[direction] = _COUNT.get(direction, 0) + 1
     ln = lane(direction)
     sp = getattr(ln, "submit_prioritized", None)
-    heavy = direction in ("canonical", "video", "hybrid", "export", "programs")
-    lease = "scode:%s:%d" % (direction, time.monotonic_ns())
-    governor = None
-    if heavy:
-        try:
-            import performance_governor as governor
-            governor.acquire(lease)
-        except Exception:
-            governor = None
-    try:
-        future = sp(PRIORITY.get(direction, 9), fn, *args, **kwargs) if callable(sp) else ln.submit(fn, *args, **kwargs)
-    except Exception:
-        if governor is not None:
-            governor.release(lease)
-        raise
-    if governor is not None:
-        future.add_done_callback(lambda _f, g=governor, key=lease: g.release(key))
-    return future
+    if callable(sp):
+        return sp(PRIORITY.get(direction, 9), fn, *args, **kwargs)
+    return ln.submit(fn, *args, **kwargs)
 
 
 def _cpu(pid):
@@ -84,21 +69,6 @@ def tree():
     out["directions"] = [{"direction": d, "priority": PRIORITY[d], "submitted": _COUNT.get(d, 0),
                           "workers": getattr(_LANES.get(d), "max_workers", getattr(_LANES.get(d), "_max_workers", None))}
                          for d, _k, _w in DIRECTIONS]
-    try:
-        import go_accel
-        out["accelerators"] = {"go": go_accel.status(), "policy": "parity-and-speed-gated; NumPy reference retained"}
-        try:
-            import adaptive_compute as ac
-            out["adaptive_compute"] = ac.report()
-        except Exception:
-            out["adaptive_compute"] = {"gpu_available": False, "policy": "optional GPU; bounded host caches"}
-    except Exception as exc:
-        out["accelerators"] = {"go": {"available": False, "error": str(exc)}}
-    try:
-        import performance_governor as pg
-        out["performance"] = pg.status()
-    except Exception:
-        out["performance"] = {"active": [], "policy": "firmware-managed boost; thermal protections retained"}
     try:
         import thread_budget as tb
         out["lanes"] = tb.lane_report(48)
@@ -135,18 +105,17 @@ def open_window(app):
         ln = QTreeWidgetItem(["lanes on the shared pool", str(t.get("pool", ""))]); m.addChild(ln)
         for r in t["lanes"]:
             ln.addChild(QTreeWidgetItem([str(r.get("name", r) if isinstance(r, dict) else r), str({k: v for k, v in r.items() if k != "name"}) if isinstance(r, dict) else ""]))
-        ac = QTreeWidgetItem(["hybrid accelerators", "Go / GPU / native / NumPy adaptive selection"]); m.addChild(ac)
-        go = t.get("accelerators", {}).get("go", {})
-        ac.addChild(QTreeWidgetItem(["Go c-shared", "available=%s · %s" % (go.get("available", False), go.get("error") or go.get("library") or "warming / fallback")]))
-        adapt = t.get("adaptive_compute", {})
-        ac.addChild(QTreeWidgetItem(["GPU compute", "available=%s · %s" % (adapt.get("gpu_available", False), adapt.get("gpu_error") or "optional; large blocks only")]))
-        ac.addChild(QTreeWidgetItem(["Incremental cache", "%s entries · %s bytes" % (adapt.get("result_entries", 0), adapt.get("result_cache_bytes", 0))]))
-        perf = t.get("performance", {})
-        pn = QTreeWidgetItem(["CPU performance leases", ", ".join(perf.get("active", [])) or "idle · firmware policy restored"]); m.addChild(pn)
-        pn.addChild(QTreeWidgetItem(["CPU temperature", str(perf.get("cpu_c", "unavailable")) + " °C"]))
         ch = QTreeWidgetItem(["child processes", "%d" % len(t["children"])]); m.addChild(ch)
         for c in t["children"]:
             ch.addChild(QTreeWidgetItem(["%s · pid %d" % (c["kind"], c["pid"]), "age %.0f s · CPU %s s · %s" % (c["age_s"], c["cpu_s"], c["argv"])]))
+        try:                               # R101: unified compute front door: strands (carrier/dims) and costs
+            import compute
+            cp = QTreeWidgetItem(["compute front door", "carrier strands · kernels · pure cache"]); m.addChild(cp)
+            for line in compute.report().splitlines()[2:14]:
+                if line.strip():
+                    cp.addChild(QTreeWidgetItem([line.strip()[:60], line.strip()[60:]]))
+        except Exception:
+            pass
         tw.expandAll(); lab.setText("Updated %s" % time.strftime("%H:%M:%S"))
     t = QTimer(w); t.setInterval(2000); t.timeout.connect(lambda: fill() if w.isVisible() else None); t.start(); fill()
     w.show(); app._scode_tree = w

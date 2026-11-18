@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUTF8="${PYTHONUTF8:-1}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -11,9 +12,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 }
 export GROOVEBOX_PROFILE=sos
 export GROOVEBOX_APPLIANCE=1
+# R107 language runtimes are immutable ISO payloads; user package/compile
+# caches live under the writable Groovebox data root.
+if [[ -x /opt/sos/julia/bin/julia ]]; then
+  export PYTHON_JULIACALL_EXE=/opt/sos/julia/bin/julia
+  export PYTHON_JULIACALL_PROJECT=/opt/sos/julia-project
+  export JULIA_DEPOT_PATH="${JULIA_DEPOT_PATH:-/var/lib/groovebox/julia-depot:/opt/sos/julia-depot}"
+  export JULIA_PKG_OFFLINE=true
+fi
 export GROOVEBOX_DATA_DIR="${GROOVEBOX_DATA_DIR:-/var/lib/groovebox}"
-if [[ -d /opt/sos/rust/bin ]]; then export PATH="/opt/sos/rust/bin:$PATH"; fi
-export CARGO_HOME="${CARGO_HOME:-/opt/sos/rust/cargo-home}"
+export CARGO_HOME="${CARGO_HOME:-/var/lib/groovebox/cargo-home}"
 cd "$ROOT"
 unset PYTHONHOME PYTHONPATH PYTHONPYCACHEPREFIX || true
 

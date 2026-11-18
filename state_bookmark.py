@@ -11,8 +11,7 @@ def _load(app):
     p = _path(app)
     if os.path.isfile(p):
         try:
-            with open(p, encoding="utf-8") as fh:      # UTF8_IO_R6: names may hold any text
-                return json.load(fh)
+            return __import__("safe_io").load_json(p, encoding="utf-8")
         except Exception:
             pass
     return []
@@ -20,8 +19,7 @@ def _load(app):
 def _save(app, items):
     """Atomic UTF-8 write (a crash mid-save used to leave a truncated bookmarks.json and an open handle)."""
     p = _path(app); tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(items, fh, indent=1, ensure_ascii=False)
+    __import__("safe_io").atomic_write_json(tmp, items, indent=1, ensure_ascii=False, encoding="utf-8")
     os.replace(tmp, p)
 
 def open_window(app, parent=None):

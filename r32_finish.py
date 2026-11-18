@@ -76,8 +76,7 @@ def record_save(path, kind="save"):
     dst = os.path.join(d, "%s__%s__%s" % (ts, kind, os.path.basename(path)))
     try:
         shutil.copy2(path, dst)
-        with open(dst + ".json", "w", encoding="utf-8") as f:
-            json.dump({"source": path, "kind": kind, "time": time.time(), "bytes": os.path.getsize(path)}, f)
+        __import__("safe_io").atomic_write_json(dst + ".json", {"source": path, "kind": kind, "time": time.time(), "bytes": os.path.getsize(path)}, encoding="utf-8")
     except Exception:
         return
     items = history()
@@ -95,8 +94,7 @@ def history():
         if p.endswith(".json"):
             continue
         try:
-            with open(p + ".json", encoding="utf-8") as f:
-                meta = json.load(f)
+            meta = __import__("safe_io").load_json(p + ".json", encoding="utf-8")
         except Exception:
             meta = {"time": os.path.getmtime(p), "kind": "save", "source": p}
         out.append((p, meta))
@@ -105,9 +103,13 @@ def history():
 
 # ---------------------------------------------------------------- export resume ------------
 def persist_job(job):
+    """Persist one export stage, including mux-only stages and dependency edges."""
     try:
         d = _store("export_queue")
-        shutil.copy2(job.project, os.path.join(d, "%d.MCC" % job.id))
+        project_path = str(getattr(job, "project", "") or "")
+        has_project = bool(getattr(job, "kind", "") != "video_mux" and project_path and os.path.isfile(project_path))
+        if has_project:
+            shutil.copy2(project_path, os.path.join(d, "%d.MCC" % job.id))
         buffer_hint = None
         try:
             hint = (job.options or {}).get("live_buffer_descriptor")
@@ -116,14 +118,73 @@ def persist_job(job):
                 if _lb.validate_descriptor(hint): buffer_hint = hint
         except Exception:
             buffer_hint = None
-        with open(os.path.join(d, "%d.json" % job.id), "w", encoding="utf-8") as f:
-            json.dump({"schema": 3, "kind": job.kind, "out_file": job.out_file,
-                       "options": job.options, "label": job.label,
-                       "buffer_contract": "groovebox-live-pcm/2",
-                       "buffer_descriptor": buffer_hint,
-                       "buffer_policy": "validated-cache-hint-or-rebuild-from-frozen-project"}, f, default=str)
-    except Exception:
-        pass
+        __import__("safe_io").atomic_write_json(os.path.join(d, "%d.json" % job.id), {
+            "schema": 5, "job_id": int(job.id), "kind": job.kind, "out_file": job.out_file,
+            "options": job.options, "label": job.label,
+            "depends_on": [int(x) for x in (getattr(job, "depends_on", None) or [])],
+            "dependency_checkpoints": list(getattr(job, "dependency_checkpoints", []) or []),
+            "has_project": has_project,
+            "buffer_contract": "groovebox-live-pcm/2", "buffer_descriptor": buffer_hint,
+            "buffer_policy": "validated-cache-hint-or-rebuild-from-frozen-project"
+        }, default=str, encoding="utf-8")
+    except Exception as exc:
+        print("[Exports] persistence warning: %s" % exc)
+
+
+def _export_file_fingerprint(path):
+    import hashlib
+    h = hashlib.blake2b(digest_size=16)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def mark_dependency_complete(scheduler, completed_job):
+    """Persist verified output checkpoints into every downstream queued stage."""
+    out = str((getattr(completed_job, "result", {}) or {}).get("file_path") or
+              getattr(completed_job, "out_file", "") or "")
+    if not out or not os.path.isfile(out) or os.path.getsize(out) <= 0:
+        return 0
+    try:
+        digest = _export_file_fingerprint(out)
+    except OSError:
+        return 0
+    d = _store("export_queue")
+    updated = 0
+    for dependent in list(getattr(scheduler, "jobs", []) or []):
+        deps = [int(x) for x in (getattr(dependent, "depends_on", None) or [])]
+        if int(getattr(completed_job, "id", -1)) not in deps:
+            continue
+        meta_path = os.path.join(d, "%d.json" % int(dependent.id))
+        try:
+            meta = __import__("safe_io").load_json(meta_path, encoding="utf-8")
+            checkpoints = list(meta.get("dependency_checkpoints") or [])
+            record = {"job_id": int(completed_job.id), "kind": str(getattr(completed_job, "kind", "")),
+                      "state": "done", "output_path": out, "output_fingerprint": digest}
+            checkpoints = [x for x in checkpoints if int(x.get("job_id", -1)) != int(completed_job.id)]
+            checkpoints.append(record)
+            meta["dependency_checkpoints"] = checkpoints
+            __import__("safe_io").atomic_write_json(meta_path, meta, default=str, encoding="utf-8")
+            updated += 1
+        except Exception:
+            continue
+    return updated
+
+
+def _verified_dependency_checkpoint(meta, dependency_id):
+    for record in (meta.get("dependency_checkpoints") or []):
+        try:
+            if int(record.get("job_id", -1)) != int(dependency_id) or record.get("state") != "done":
+                continue
+            path = str(record.get("output_path") or "")
+            if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                continue
+            if _export_file_fingerprint(path) == record.get("output_fingerprint"):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def forget_job(job):
@@ -136,44 +197,88 @@ def forget_job(job):
 
 
 def resume_exports(app):
-    """Re-queue exports that were waiting or running when Groovebox stopped. Returns how many."""
-    d = _store("export_queue"); n = 0
-    files = sorted(glob.glob(os.path.join(d, "*.json")))
+    """Restore interrupted exports and their dependency graph before starting workers."""
+    d = _store("export_queue")
+    files = sorted(glob.glob(os.path.join(d, "*.json")), key=lambda p: int(os.path.basename(p)[:-5]) if os.path.basename(p)[:-5].isdigit() else 0)
     if not files:
         return 0
     sch = app._export_scheduler()
+    records = []
     for jp in files:
-        mp = jp[:-5] + ".MCC"
         try:
-            meta = json.load(open(jp, encoding="utf-8"))
-            doc = json.load(open(mp, encoding="utf-8"))
-            opts = dict(meta.get("options") or {})
-            # Resume never trusts process-local PCM object identities. The frozen MCC
-            # snapshot is authoritative; shared/content-addressed buffers are rebuilt
-            # or reattached by the normal render-key path after restart.
-            opts["resume_buffer_contract"] = str(meta.get("buffer_contract") or "legacy-rebuild")
-            # A cache descriptor is only a hint. Validate schema, PCM header, render
-            # identity and payload checksum; otherwise rebuild from the frozen MCC.
-            descriptor = meta.get("buffer_descriptor")
-            cache_valid = False
-            try:
-                import live_buffer as _lb
-                cache_valid = bool(_lb.validate_descriptor(descriptor))
-            except Exception:
-                cache_valid = False
-            opts["resume_buffer_descriptor"] = descriptor if cache_valid else None
-            opts["force_buffer_rebuild_on_resume"] = not cache_valid
-            pre = dict(opts.get("preset") or {}); pre["resume"] = True; opts["preset"] = pre
-            sch.submit_job(meta["kind"], meta["out_file"], opts, label="↻ " + str(meta.get("label") or ""), project_doc=doc)
-            for x in (jp, mp):                   # R32.9: only after it is safely queued again (it re-persists itself)
-                try:
-                    os.remove(x)
-                except OSError:
-                    pass
-            n += 1
+            meta = __import__("safe_io").load_json(jp, encoding="utf-8")
+            if not isinstance(meta, dict) or not meta.get("kind") or not meta.get("out_file"):
+                continue
+            old_id = int(meta.get("job_id") or os.path.basename(jp)[:-5])
+            mp = jp[:-5] + ".MCC"
+            kind = str(meta.get("kind"))
+            doc = None
+            if kind != "video_mux":
+                if not os.path.isfile(mp):
+                    raise FileNotFoundError("frozen project snapshot missing")
+                doc = __import__("safe_io").load_json(mp, encoding="utf-8")
+            records.append((old_id, jp, mp, meta, doc))
         except Exception as exc:
-            print("[Exports] could not resume %s: %s" % (os.path.basename(jp), exc))
-    return n
+            print("[Exports] recovery metadata %s is incomplete: %s" % (os.path.basename(jp), exc))
+    if not records:
+        return 0
+
+    old_to_new = {}
+    restored = []
+    # Do not let the first restored stage start before its siblings and dependencies
+    # have been re-created with their new in-memory job IDs.
+    previous_defer = bool(getattr(sch, "_defer_pump", False))
+    sch._defer_pump = True
+    try:
+        pending = list(records)
+        while pending:
+            progressed = False
+            for rec in list(pending):
+                old_id, jp, mp, meta, doc = rec
+                old_deps = [int(x) for x in (meta.get("depends_on") or [])]
+                unresolved = [dep for dep in old_deps if dep not in old_to_new]
+                known_old = {r[0] for r in records}
+                if any(dep in known_old for dep in unresolved):
+                    continue
+                if int(meta.get("schema", 1) or 1) >= 5:
+                    # A pruned prerequisite is accepted only when its output checkpoint
+                    # still exists and its content hash matches the recorded completion.
+                    if any(not _verified_dependency_checkpoint(meta, dep) for dep in unresolved):
+                        continue
+                mapped_deps = [old_to_new[x] for x in old_deps if x in old_to_new]
+                opts = dict(meta.get("options") or {})
+                opts["resume_buffer_contract"] = str(meta.get("buffer_contract") or "legacy-rebuild")
+                descriptor = meta.get("buffer_descriptor")
+                cache_valid = False
+                try:
+                    import live_buffer as _lb
+                    cache_valid = bool(_lb.validate_descriptor(descriptor))
+                except Exception:
+                    cache_valid = False
+                opts["resume_buffer_descriptor"] = descriptor if cache_valid else None
+                opts["force_buffer_rebuild_on_resume"] = not cache_valid
+                pre = dict(opts.get("preset") or {})
+                pre["resume"] = True
+                opts["preset"] = pre
+                job = sch.submit_job(meta["kind"], meta["out_file"], opts,
+                                     label="↻ " + str(meta.get("label") or ""),
+                                     project_doc=doc, depends_on=mapped_deps, defer_pump=True)
+                old_to_new[old_id] = job.id
+                restored.append(job)
+                for x in (jp, mp):
+                    try: os.remove(x)
+                    except OSError: pass
+                pending.remove(rec)
+                progressed = True
+            if not progressed:
+                break
+    finally:
+        sch._defer_pump = previous_defer
+    if not previous_defer:
+        sch._pump()
+    if pending:
+        print("[Exports] %d recovery stage(s) retained because a dependency record is missing" % len(pending))
+    return len(restored)
 
 
 # ---------------------------------------------------------------- live autosave ------------

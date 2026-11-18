@@ -35,11 +35,16 @@ def refresh(app):
     lanes, pools = _current(app)
     app._pool_matrix = pp.pool_matrix(pools)
     app._lane_predictions = pp.predict(lanes)
+    try:
+        import global_intelligence as gi
+        app._global_intelligence_plan = gi.plan()
+    except Exception:
+        app._global_intelligence_plan = {"policy": "legacy-fallback"}
     base = getattr(app, "project_dir", None) or os.path.expanduser("~/.groovebox")
     os.makedirs(base, exist_ok=True)
     path = os.path.join(base, "pool-matrix.json")
-    with open(path, "w") as f:
-        json.dump({"pools": app._pool_matrix, "predictions": app._lane_predictions}, f, indent=1)
+    __import__("safe_io").atomic_write_json(path, {"pools": app._pool_matrix, "predictions": app._lane_predictions,
+                   "global_intelligence": app._global_intelligence_plan}, indent=1, encoding="utf-8")
     return app._pool_matrix
 
 

@@ -26,6 +26,33 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
 QUEUED, RUNNING, DONE, FAILED, CANCELLED = "queued", "running", "done", "failed", "cancelled"
 
 
+_PERMANENT = ("ffmpeg not found", "not enough free space", "could not freeze project", "no such file or directory: 'ffmpeg'",
+              "frozen for this export is gone", "permission denied", "read-only file system", "unsupported format")
+
+
+def _permanent_failure(reason):
+    """Failures that a retry cannot fix (retrying them only restarts workers in a loop)."""
+    r = str(reason or "").lower()
+    return any(k in r for k in _PERMANENT)
+
+
+def _kill_worker_list(workers):
+    for w in list(workers or []):
+        p = getattr(w, "proc", None)
+        if p is None:
+            continue
+        for sig in ("readyReadStandardOutput", "finished", "errorOccurred", "started"):
+            try:
+                getattr(p, sig).disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        try:
+            p.kill(); p.waitForFinished(2000)
+        except RuntimeError:
+            pass
+        w.proc = None
+
+
 def default_parallel():
     """One job per two spare cores, at least 1, at most 3; leave a core for UI + audio."""
     try:
@@ -49,8 +76,14 @@ def default_parallel():
         by_ram = min(by_ram, int(_rg.recommend()["export_parallel"]))
     except Exception:
         pass
-    # R31: video export is CPU-bound per frame, so use every core but one (RAM permitting).
-    return max(1, min(6, cores - 1, by_ram))
+    # R105: use the same conservative resource budget exposed to the diagnostics layer.
+    base = max(1, min(8, cores - 1, by_ram + 1))
+    try:
+        import groovebox_intelligence as _gi
+        return min(base, _gi.adaptive_worker_budget(cpu_count=cores,
+                   available_memory_bytes=int(free_gb * (2 ** 30)), reserve_cores=1, hard_cap=8))
+    except Exception:
+        return base
 
 
 class ExportJob:
@@ -84,12 +117,23 @@ class ExportScheduler(QObject):
         self.workers: list = []
         self.parallel = default_parallel()
         self.auto_retry = True
+        # R104: startup recovery restores a complete dependency graph before workers
+        # are allowed to consume it. This prevents a recovered video mux from racing
+        # its recovered audio-master / video-part prerequisites.
+        self._defer_pump = False
         # EXPORT_WATCHDOG_20261111: keep the queue moving and fail stuck jobs.
         from PyQt6.QtCore import QTimer
         self._watchdog = QTimer(self)
         self._watchdog.setInterval(5000)
         self._watchdog.timeout.connect(self._watchdog_tick)
         self._watchdog.start()
+        # A script or test that never calls QApplication.quit() reaches interpreter teardown with worker processes
+        # still running; their QProcess signals then fire into a half-destroyed interpreter (segfault). Kill them first.
+        import atexit
+        import weakref as _wr
+        _me = _wr.ref(self)
+        atexit.register(lambda: (_me() is not None) and _me()._kill_all_at_exit())
+
 
     # -- public ---------------------------------------------------------
     def submit_audio(self, out_file, options, label=None, project_doc=None):
@@ -177,36 +221,69 @@ class ExportScheduler(QObject):
                 except OSError:
                     pass
 
-    def submit_job(self, kind, out_file, options, label=None, project_doc=None, depends_on=None):
+    def submit_job(self, kind, out_file, options, label=None, project_doc=None, depends_on=None, defer_pump=False):
         """kind: "audio_file" | "video_file". The project document is frozen now; the worker does the rest."""
         doc = project_doc if project_doc is not None else self.app._project_snapshot()   # in-memory; heavy work is in the worker
         job = ExportJob(label or os.path.basename(out_file), kind, out_file, options, doc)
         job.depends_on = list(depends_on or [])
+        job.dependency_checkpoints = []
+        for _dep_id in job.depends_on:
+            _dep = next((x for x in self.jobs if int(getattr(x, "id", -1)) == int(_dep_id)), None)
+            if _dep is None:
+                continue
+            _path = str((getattr(_dep, "result", {}) or {}).get("file_path") or getattr(_dep, "out_file", "") or "")
+            _record = {"job_id": int(_dep.id), "kind": str(getattr(_dep, "kind", "")),
+                       "state": str(getattr(_dep, "state", "queued")), "output_path": _path}
+            if _record["state"] == DONE and _path and os.path.isfile(_path) and os.path.getsize(_path) > 0:
+                try:
+                    import r32_finish as _rf
+                    _record["output_fingerprint"] = _rf._export_file_fingerprint(_path)
+                except Exception:
+                    pass
+            job.dependency_checkpoints.append(_record)
         if str(kind) != "video_mux":
             try:
                 self.app._atomic_write_document(job.project, doc)
-                try:
-                    import r32_finish as _rf
-                    _rf.persist_job(job)      # R32.8: survives a reboot; resumed at next start
-                except Exception:
-                    pass
                 import hashlib as _hl
                 with open(job.project, "rb") as _f:
                     job.doc_hash = _hl.sha256(_f.read()).hexdigest()   # worker affinity: same state → same warm cache
             except Exception as exc:
                 job.state, job.message = FAILED, "could not freeze project: %s" % exc
         job._doc = None
-        # Refuse to queue onto a nearly full volume.
+        # Persist every stage, including video_mux (which intentionally has no
+        # frozen project file). Recovery metadata carries the dependency graph.
         try:
-            free = shutil.disk_usage(os.path.dirname(os.path.abspath(job.out_file)) or ".").free
-            if free < 256 * 1024 * 1024:
-                job.state, job.message = FAILED, "not enough free space on the destination (under 256 MB)"
+            import r32_finish as _rf
+            _rf.persist_job(job)
+        except Exception:
+            pass
+        # Refuse to queue onto a nearly full or read-only volume (R101: size estimated from the options).
+        try:
+            dest_dir = os.path.dirname(os.path.abspath(job.out_file)) or "."
+            free = shutil.disk_usage(dest_dir).free
+            need = 256 * 1024 * 1024
+            try:
+                import safe_io as _sio
+                need = max(need, _sio.estimate_export_bytes(kind, options))
+            except Exception:
+                pass
+            if job.state != FAILED and os.path.isdir(dest_dir) and not os.access(dest_dir, os.W_OK):
+                job.state, job.message = FAILED, "the destination is read-only (write-protected card or system folder): %s" % dest_dir
+            elif job.state != FAILED and free < need:
+                job.state, job.message = FAILED, ("not enough free space on the destination: %.0f MB free, about %.0f MB needed"
+                                                  % (free / 1048576.0, need / 1048576.0))
                 job.unlisted = True
+            if job.state == FAILED:
+                try:
+                    import notify_center as _nc
+                    _nc.notify(self.app, "Export not queued: " + job.message, "warn")
+                except Exception:
+                    pass
         except Exception:
             pass
         self.jobs.append(job)
         self.changed.emit(job.id)
-        if job.state != FAILED:
+        if job.state != FAILED and not (defer_pump or self._defer_pump):
             self._pump()
         return job
 
@@ -273,6 +350,9 @@ class ExportScheduler(QObject):
         for j in self.jobs:
             if j.id == job_id and j.state not in (RUNNING,):
                 j.unlisted = False
+                j._fail_retries = 0
+                j._not_before = 0.0
+                j._stall_retries = 0
                 j.state = QUEUED
                 j.finished = None
                 j.started = None
@@ -288,7 +368,7 @@ class ExportScheduler(QObject):
         return sum(1 for j in self.jobs if j.state in (QUEUED, RUNNING))
 
     def set_parallel(self, n):
-        self.parallel = max(1, min(6, int(n)))
+        self.parallel = max(1, min(8, int(n)))
         # Retire idle workers above the new limit.
         for w in list(self.workers):
             if len(self.workers) <= self.parallel:
@@ -305,6 +385,8 @@ class ExportScheduler(QObject):
 
     # -- warm worker pool (WARM_WORKER_R31) ---------------------------------------
     JOBS_PER_WORKER = 8         # recycle a worker after this many jobs (bounds memory growth)
+    MAX_AUTO_RETRIES = 2        # automatic retries of a failed job (then it stays failed until Retry now)
+    RETRY_BACKOFF_S = (5, 20)   # seconds before retry 1, 2
     IDLE_RETIRE_MS = 120000     # an idle warm worker exits after 2 minutes without work
 
     def _worker_of(self, job):
@@ -340,6 +422,14 @@ class ExportScheduler(QObject):
                     "--serve", str(self.JOBS_PER_WORKER)]
         proc.start(argv[0], argv[1:])
         try:
+            # PROCESS GEOMETRY: each worker gets its own contiguous block of cores (cores 0–1 stay with the UI/audio).
+            pid = int(proc.processId() or 0)
+            if pid and hasattr(os, "sched_setaffinity"):
+                import performance_governor as _pg
+                os.sched_setaffinity(pid, _pg.worker_cores(len(self.workers), self.parallel))
+        except Exception:
+            pass
+        try:
             pid = int(proc.processId() or 0)
             if pid and hasattr(os, "setpriority"):
                 os.setpriority(os.PRIO_PROCESS, pid, 15)   # renders never steal the UI / audio core
@@ -348,13 +438,17 @@ class ExportScheduler(QObject):
                     os.sched_setscheduler(pid, os.SCHED_BATCH, os.sched_param(0))   # CPU-bound: longer slices, yields to interactive
                 except Exception:
                     pass
-            if pid and sys.platform.startswith("linux") and shutil.which("ionice"):
+            if pid and sys.platform.startswith("linux") and __import__("sos_tools").which("ionice"):
                 import subprocess as _sp
                 _sp.Popen(["ionice", "-c", "3", "-p", str(pid)], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)   # idle I/O class
         except Exception:
             pass
         self.workers.append(w)
         return w
+
+    def _kill_all_at_exit(self):
+        _kill_worker_list(getattr(self, "workers", []))
+        del self.workers[:]
 
     def _kill_worker(self, w):
         """Retire a worker without pretending its RSS is gone before QProcess exits."""
@@ -426,7 +520,7 @@ class ExportScheduler(QObject):
                     j._last_progress_at = now
                     continue
                 # Audio should move within a few minutes; video parts can be slower.
-                limit = 180.0 if j.kind in ("video_file", "video_mux") else 90.0
+                limit = 600.0 if j.kind == "video_mux" else (180.0 if j.kind == "video_file" else 120.0)
                 if now - last > limit:
                     retries = int(getattr(j, "_stall_retries", 0) or 0)
                     if retries < 1:
@@ -451,9 +545,12 @@ class ExportScheduler(QObject):
     def _pump(self):
         while self.active_count() < self.parallel:
             nxt = None
+            _now_m = time.monotonic()
             for j in self.jobs:
                 if j.state != QUEUED:
                     continue
+                if float(getattr(j, "_not_before", 0.0) or 0.0) > _now_m:
+                    continue                    # retry back-off: the watchdog re-pumps every 5 s
                 deps = [d for d in self.jobs if d.id in (getattr(j, "depends_on", None) or [])]
                 if any(d.state in (FAILED, CANCELLED) for d in deps):
                     j.state, j.message, j.finished = FAILED, "a part job failed or was cancelled · finished parts kept for resume", time.time()
@@ -499,14 +596,19 @@ class ExportScheduler(QObject):
             self._start(nxt, w)
 
     def _start(self, job, w):
+        if job.kind != "video_mux" and (not job.tmp or not os.path.isfile(getattr(job, "project", "") or "")):
+            job.result["fail"] = "the project frozen for this export is gone · press the export button again"
+            job._fail_retries = self.MAX_AUTO_RETRIES      # permanent: no automatic retry
+            job.started = time.time()
+            self._finish(job, ok=False)
+            return
         jpath = os.path.join(job.tmp, "job.json")
         payload = {"project": job.project, "kind": job.kind, "sample_rate": int(job.options.get("render_sample_rate") or 0),
                    "out_npy": os.path.join(job.tmp, "unused.npy"), "out_meta": os.path.join(job.tmp, "result.json"),
                    "out_file": job.out_file, "options": job.options, "purpose": "Export " + job.label,
                    "max_rows": job.options.get("max_rows")}
         try:
-            with open(jpath, "w", encoding="utf-8") as f:
-                json.dump(payload, f)
+            __import__("safe_io").atomic_write_json(jpath, payload, encoding="utf-8")
         except Exception as exc:
             job.state, job.message = FAILED, str(exc); self.changed.emit(job.id); return
         w.job = job
@@ -518,6 +620,11 @@ class ExportScheduler(QObject):
             pass
         job.state, job.started = RUNNING, time.time()
         job._last_progress_at = time.monotonic()
+        try:
+            import performance_governor as _pg
+            _pg.acquire("export:%s" % job.id)         # natural boost while rendering (restored after the last job)
+        except Exception:
+            pass
         job.message = "rendering (warm worker)" if w.served > 1 else "starting worker"
         line = (jpath + "\n").encode("utf-8")
         proc = w.proc
@@ -549,7 +656,12 @@ class ExportScheduler(QObject):
     def _read(self, w):
         if w.proc is None:
             return
-        w.buf += bytes(w.proc.readAllStandardOutput()).decode("utf-8", "replace")
+        try:
+            chunk = bytes(w.proc.readAllStandardOutput())
+        except RuntimeError:              # the QProcess was deleted (window closing / app exit): nothing to read
+            w.proc = None
+            return
+        w.buf += chunk.decode("utf-8", "replace")
         *lines, w.buf = w.buf.split("\n")
         for line in lines:
             job = w.job
@@ -568,6 +680,8 @@ class ExportScheduler(QObject):
                 continue
             if job is None:
                 continue
+            if line.strip():
+                job._last_progress_at = time.monotonic()      # any worker output is liveness, not only PROGRESS
             if line.startswith("PROGRESS "):
                 p = line.split(" ", 2)
                 try:
@@ -642,6 +756,16 @@ class ExportScheduler(QObject):
             return
         job.finished = time.time()
         try:
+            import performance_governor as _pg
+            _pg.release("export:%s" % job.id)
+        except Exception:
+            pass
+        try:
+            import memory_tools as _mt
+            _mt.trim_soon()                            # hand the job's freed memory back to the OS
+        except Exception:
+            pass
+        try:
             import r32_finish as _rf
             _rf.forget_job(job)
         except Exception:
@@ -664,6 +788,22 @@ class ExportScheduler(QObject):
             if ok:
                 job.state = DONE
                 job.progress = 100
+                try:
+                    import r32_finish as _rf
+                    _rf.mark_dependency_complete(self, job)
+                except Exception:
+                    pass
+                # R101 provenance: keep the frozen project that produced this file (read now; cleanup deletes it)
+                try:
+                    if job.kind in ("audio_file", "video_file", "video_mux") and job.project and os.path.isfile(job.project):
+                        with open(job.project, "rb") as _pf:
+                            _raw = _pf.read()
+                        _out = str(job.result.get("file_path") or job.out_file or "")
+                        import threading as _th, provenance as _pv
+                        _th.Thread(target=_pv.record, args=(self.app, _out), kwargs={"kind": job.kind, "options": job.options,
+                                   "project_bytes": _raw}, daemon=True, name="groovebox-provenance").start()
+                except Exception:
+                    pass
                 job.message = "saved %s in %.1f s" % (os.path.basename(job.result.get("file_path") or job.out_file), job.elapsed())
             else:
                 # EXPORT_REQUEUE_20261111: a failed job stays listed and is re-queued
@@ -676,19 +816,34 @@ class ExportScheduler(QObject):
                     self.changed.emit(job.id)
                     self.job_finished.emit(job)
                     return
+                # RETRY_POLICY: the old loop re-queued forever AND deleted the job's frozen project right after
+                # re-queueing it (the _cleanup below), so every retry failed again: an endless worker restart loop.
+                # Now: at most MAX_AUTO_RETRIES with back-off, the frozen project is kept, permanent errors stop at once.
                 retries = int(getattr(job, "_fail_retries", 0) or 0) + 1
                 job._fail_retries = retries
+                if retries > self.MAX_AUTO_RETRIES or _permanent_failure(reason):
+                    job.state = FAILED
+                    job.message = ("failed (%s)%s · Retry now to try again"
+                                   % (reason[:80], "" if _permanent_failure(reason) else " after %d attempts" % retries))
+                    self._cleanup(job, keep_project=True)
+                    self.changed.emit(job.id)
+                    self.job_finished.emit(job)
+                    return
+                delay = self.RETRY_BACKOFF_S[min(retries - 1, len(self.RETRY_BACKOFF_S) - 1)]
                 job.state = QUEUED
                 job.finished = None
                 job.started = None
+                job._not_before = time.monotonic() + delay
                 job.progress = min(job.progress, 95)
-                job.message = "failed (%s) · re-queued #%d" % (reason[:80], retries)
+                job.message = "failed (%s) · retry %d/%d in %d s" % (reason[:80], retries, self.MAX_AUTO_RETRIES, delay)
                 job.result.pop("fail", None)
                 try:
                     import r32_finish as _rf
                     _rf.persist_job(job)
                 except Exception:
                     pass
+                self.changed.emit(job.id)
+                return                      # keep job.tmp (the frozen project); not finished, so not reported
             if ok:
                 try:
                     import seed_media_bridge as _smb
@@ -716,8 +871,27 @@ class ExportScheduler(QObject):
         self.job_finished.emit(job)
 
     @staticmethod
-    def _cleanup(job):
+    def _cleanup(job, keep_project=False):
         # R32.8: multi-GB part folders are removed on a background thread, not the GUI thread
+        if keep_project and job.tmp and os.path.isfile(getattr(job, "project", "") or ""):
+            # A failed job keeps only its frozen project (for Retry now); render parts are removed.
+            tmpd, keep = job.tmp, os.path.basename(job.project)
+            extra = list(getattr(job, "cleanup_dirs", None) or [])
+            job.cleanup_dirs = []
+
+            def _prune():
+                try:
+                    for name in os.listdir(tmpd):
+                        if name != keep and not name.startswith(keep):
+                            p = os.path.join(tmpd, name)
+                            shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+                except OSError:
+                    pass
+                for d in extra:
+                    shutil.rmtree(d, ignore_errors=True)
+            import threading
+            threading.Thread(target=_prune, name="export-prune", daemon=True).start()
+            return
         dirs = [job.tmp] if job.tmp else []
         dirs += list(getattr(job, "cleanup_dirs", None) or [])   # SHARED_MASTER_R31: the shared audio master
         job.tmp = ""
