@@ -45,7 +45,7 @@ def _record():
     # R23n: query UCM through hw:<card> first.  On SOF-HDA, using the plain
     # card id (often ``sofhdadsp``) can miss the UCM profile entirely.  The UCM
     # CapturePCM is the authoritative internal-DMIC route when available.
-    if shutil.which('arecord') and shutil.which('alsaucm'):
+    if __import__("sos_tools").which('arecord') and __import__("sos_tools").which('alsaucm'):
         try:
             cards=[]
             txt=Path('/proc/asound/cards').read_text(errors='ignore') if Path('/proc/asound/cards').is_file() else ''
@@ -79,7 +79,7 @@ def _record():
     # R23l: minimal sOS may expose the physical internal microphone through
     # ALSA before PortAudio/PipeWire publishes it. Preserve that route instead
     # of returning an empty selector.
-    if shutil.which('arecord'):
+    if __import__("sos_tools").which('arecord'):
         try:
             cp=subprocess.run(['arecord','-l'],capture_output=True,text=True,timeout=2.0,check=False)
             rx=re.compile(r'^card\s+(\d+):\s*([^\s\[]+).*?device\s+(\d+):\s*(.*)$',re.I)

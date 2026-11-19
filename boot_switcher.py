@@ -122,7 +122,7 @@ def write_next_launch_env(ui_scale: Optional[int] = None, mem_soft: Optional[int
         lines.append(f"export GROOVEBOX_SECURE_BOOT={'1' if secure_boot else '0'}")
     if skip_launcher:
         lines.append("export GROOVEBOX_ALLOW_STARTUP_SKIP=1")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    __import__("safe_io").atomic_write_text(path, "\n".join(lines) + "\n", encoding="utf-8")
     save_state({**load_state(), "next_launch_env": str(path)})
     return f"wrote {path}\n" + "\n".join(lines)
 

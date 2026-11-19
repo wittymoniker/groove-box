@@ -174,8 +174,7 @@ def save_cfg(c):
     except Exception:
         c["notes_limit_mb"] = 16
     tmp = _cfg_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(c, f, indent=1)
+    __import__("safe_io").atomic_write_json(tmp, c, indent=1, encoding="utf-8")
     os.replace(tmp, _cfg_path())
 
 
@@ -522,7 +521,7 @@ class Site:
             except OSError:
                 continue
         return """<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>%s</title><style>body{background:#05070b;color:#e6edf3;font-family:sans-serif;max-width:980px;margin:auto;padding:16px}
+<title>%s</title><style>body{background:#05070b;color:#e6edf3;font-family:Arial;max-width:980px;margin:auto;padding:16px}
 a{color:#7dd3fc}.f{border-bottom:1px solid #1d2a33;padding:8px 0}.f span{color:#8b98a5;font-size:12px}
 h1{color:#2ecc71}input,textarea{background:#101820;color:#fff;border:1px solid #31577a}textarea{display:block;width:95%%;min-height:90px}</style></head><body>
 <h1>%s</h1><p>%s</p><p><i>%s</i></p><h2>Library (%d)</h2>%s

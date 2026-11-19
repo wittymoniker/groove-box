@@ -68,7 +68,7 @@ def _ffmpeg() -> Optional[str]:
             return p
     except Exception:
         pass
-    return shutil.which("ffmpeg")
+    return __import__("sos_tools").which("ffmpeg")
 
 
 def _encoders(ff: str) -> str:
@@ -160,7 +160,7 @@ class LiveBroadcaster:
                          "-video_size", size, "-i", camera or "/dev/video0"]
             if audio:
                 args += ["-thread_queue_size", "256"]
-                if shutil.which("pactl") or os.environ.get("PULSE_SERVER") or os.environ.get("PIPEWIRE_RUNTIME_DIR"):
+                if __import__("sos_tools").which("pactl") or os.environ.get("PULSE_SERVER") or os.environ.get("PIPEWIRE_RUNTIME_DIR"):
                     args += ["-f", "pulse", "-i", mic or "default"]
                 else:
                     args += ["-f", "alsa", "-i", mic or "default"]

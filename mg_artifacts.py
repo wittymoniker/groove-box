@@ -40,7 +40,7 @@ def save(path:str,doc:Dict[str,Any])->str:
     if p.suffix.lower() not in {e.lower() for e in EXTENSIONS.values()} and not str(p).lower().endswith('.mg'):
         p=Path(str(p)+ext)
     p.parent.mkdir(parents=True,exist_ok=True)
-    p.write_text(json.dumps(doc,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+    __import__("safe_io").atomic_write_text(p, json.dumps(doc,indent=2,ensure_ascii=False,default=str), encoding='utf-8')
     return str(p.resolve())
 
 def load(path:str,expected_kind:Optional[str]=None,record_use:bool=True)->Dict[str,Any]:
@@ -51,14 +51,14 @@ def load(path:str,expected_kind:Optional[str]=None,record_use:bool=True)->Dict[s
     if doc.get('artifact_id')!=artifact_id(kind,doc.get('payload')): raise ValueError('.MG artifact identity check failed')
     if record_use:
         a=doc.setdefault('analytics',{}); now=time.time(); a['load_count']=int(a.get('load_count',0))+1; a['use_count']=int(a.get('use_count',0))+1; a['first_used']=a.get('first_used') or now; a['last_used']=now
-        try: p.write_text(json.dumps(doc,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+        try: __import__("safe_io").atomic_write_text(p, json.dumps(doc,indent=2,ensure_ascii=False,default=str), encoding='utf-8')
         except Exception: pass
     return doc
 
 def record_companion(path_a:str,path_b:str,weight:float=1.0):
     for src,other in ((path_a,path_b),(path_b,path_a)):
         try:
-            doc=load(src,record_use=False); a=doc.setdefault('analytics',{}); c=a.setdefault('companions',{}); key=os.path.basename(other); c[key]=float(c.get(key,0.0))+float(weight); Path(src).write_text(json.dumps(doc,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+            doc=load(src,record_use=False); a=doc.setdefault('analytics',{}); c=a.setdefault('companions',{}); key=os.path.basename(other); c[key]=float(c.get(key,0.0))+float(weight); __import__("safe_io").atomic_write_text(Path(src), json.dumps(doc,indent=2,ensure_ascii=False,default=str), encoding='utf-8')
         except Exception: pass
 
 def _flatten_numbers(obj,prefix='',out=None):
@@ -142,7 +142,7 @@ def compress_history(path:str, keep_companions:int=24, keep_outcomes:int=32)->Di
         a['outcomes']={k:outs[k] for k in keys}
         a['outcomes_compressed_count']=int(a.get('outcomes_compressed_count',0))+len(outs)-len(keys)
     a['history_compressed_at']=time.time(); a['history_summary_before']=before
-    p.write_text(json.dumps(doc,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+    __import__("safe_io").atomic_write_text(p, json.dumps(doc,indent=2,ensure_ascii=False,default=str), encoding='utf-8')
     return {'artifact_id':doc.get('artifact_id'),'before':before,'after':_analytics_summary(a)}
 
 def clear_history(path:str, preserve_totals:bool=True)->Dict[str,Any]:
@@ -153,7 +153,7 @@ def clear_history(path:str, preserve_totals:bool=True)->Dict[str,Any]:
                       'first_used':None,'last_used':None,'companions':{},'outcomes':{}}
     if preserve_totals: doc['analytics']['cleared_previous_totals']=totals
     doc['analytics']['history_cleared_at']=time.time()
-    p.write_text(json.dumps(doc,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+    __import__("safe_io").atomic_write_text(p, json.dumps(doc,indent=2,ensure_ascii=False,default=str), encoding='utf-8')
     return {'artifact_id':doc.get('artifact_id'),'cleared':True,'preserved_totals':totals}
 
 def compress_history_tree(roots:Iterable[str], keep_companions:int=24)->Dict[str,int]:
@@ -189,7 +189,7 @@ def export_history(path:str, out_path:str, fmt:str='json')->str:
         'summary':_analytics_summary(a),
     }
     if fmt=='json':
-        out.write_text(json.dumps(report,indent=2,ensure_ascii=False,default=str),encoding='utf-8')
+        __import__("safe_io").atomic_write_text(out, json.dumps(report,indent=2,ensure_ascii=False,default=str), encoding='utf-8')
     elif fmt=='csv':
         rows=[]
         for k,v in report.items():
@@ -205,8 +205,8 @@ def export_history(path:str, out_path:str, fmt:str='json')->str:
         esc=lambda x: html.escape(str(x))
         def table(d):
             return ''.join(f'<tr><th>{esc(k)}</th><td><pre>{esc(json.dumps(v,ensure_ascii=False,indent=2,default=str) if isinstance(v,(dict,list)) else v)}</pre></td></tr>' for k,v in d.items())
-        out.write_text('<!doctype html><meta charset="utf-8"><title>.MG History Export</title>'
-                       '<style>body{font-family:system-ui;background:#101318;color:#e8eef5;max-width:1100px;margin:auto;padding:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #374151;padding:8px;text-align:left;vertical-align:top}pre{white-space:pre-wrap;margin:0}</style>'
-                       f'<h1>.MG History Export</h1><h2>{esc(report.get("title"))}</h2><table>{table({k:v for k,v in report.items() if k!="analytics"})}</table><h2>Analytics</h2><table>{table(a)}</table>',encoding='utf-8')
+        __import__("safe_io").atomic_write_text(out, '<!doctype html><meta charset="utf-8"><title>.MG History Export</title>'
+                       '<style>body{font-family:Arial;background:#101318;color:#e8eef5;max-width:1100px;margin:auto;padding:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #374151;padding:8px;text-align:left;vertical-align:top}pre{white-space:pre-wrap;margin:0}</style>'
+                       f'<h1>.MG History Export</h1><h2>{esc(report.get("title"))}</h2><table>{table({k:v for k,v in report.items() if k!="analytics"})}</table><h2>Analytics</h2><table>{table(a)}</table>', encoding='utf-8')
     else: raise ValueError('History export format must be json, csv, or html')
     return str(out.resolve())

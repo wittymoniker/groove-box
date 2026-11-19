@@ -12,7 +12,7 @@ def hotspot_plan() -> dict:
     NetworkManager choose). Never starts anything.
     """
     plan = {"supported": False, "iface": "", "cancels": [], "reason": ""}
-    if platform.system().lower() != "linux" or not shutil.which("nmcli"):
+    if platform.system().lower() != "linux" or not __import__("sos_tools").which("nmcli"):
         plan["reason"] = "The device hotspot needs Linux with NetworkManager (nmcli)."
         return plan
     plan["supported"] = True

@@ -24,7 +24,7 @@ def _ffmpeg(host):
             return ff
     except Exception:
         pass
-    return shutil.which("ffmpeg")
+    return __import__("sos_tools").which("ffmpeg")
 
 
 def _camera(host):
@@ -51,7 +51,7 @@ def build_cmd(host, out_path, mode="cam+mic"):
                 raise RuntimeError("no camera found (/dev/video*)")
             args += ["-thread_queue_size", "512", "-f", "v4l2", "-framerate", "30", "-video_size", "1280x720", "-i", cam]
         if want_a:
-            if shutil.which("pactl") or os.environ.get("PULSE_SERVER"):
+            if __import__("sos_tools").which("pactl") or os.environ.get("PULSE_SERVER"):
                 args += ["-thread_queue_size", "1024", "-f", "pulse", "-i", "default"]
             else:
                 args += ["-thread_queue_size", "1024", "-f", "alsa", "-i", "default"]

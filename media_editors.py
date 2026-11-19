@@ -126,7 +126,7 @@ def open_text(app, path):
 
     def make():
         w = QWidget(app, Qt.WindowType.Window); w.setWindowTitle("📝 %s" % os.path.basename(path)); w.resize(720, 560)
-        lay = QVBoxLayout(w); ed = QPlainTextEdit(); ed.setStyleSheet("font-family:Consolas,monospace;font-size:10pt;")
+        lay = QVBoxLayout(w); ed = QPlainTextEdit(); ed.setStyleSheet("font-family:Consolas;font-size:10pt;")
         try:
             ed.setPlainText(open(path, encoding="utf-8", errors="replace").read())
         except Exception:
@@ -137,6 +137,8 @@ def open_text(app, path):
         row = QHBoxLayout()
 
         def save():
+            if __import__("safe_io").is_system_path(path):              # R101: view-only system files
+                st.setText(__import__("safe_io").protected_message(path, "edit")); return
             with open(path, "w", encoding="utf-8") as f:
                 f.write(ed.toPlainText())
             st.setText("saved · " + check_text(path, ed.toPlainText()))
@@ -155,3 +157,18 @@ def open_text(app, path):
         row.addStretch(1); lay.addLayout(row)
         return w
     return _reuse(("text", os.path.abspath(path)), make)
+
+
+# --- MGR clip bridge (R8) -------------------------------------------------
+def save_clip_mgr(path, name, pcm, sr, extra=None):
+    """Save an operator/media clip as MGR + preview WAV (always listenable)."""
+    try:
+        import mgr_format as mgr
+        return mgr.write_operator_clip(path, name, pcm, int(sr), extra=extra)
+    except Exception as exc:
+        try:
+            import quiet_log
+            quiet_log.refresh_fail("media_editors.save_clip_mgr", exc)
+        except Exception:
+            pass
+        return ""

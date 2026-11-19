@@ -254,7 +254,7 @@ class MasterHardwarePanel(QDialog):
             pass
         try:
             import shutil, subprocess
-            if shutil.which("pactl"):
+            if __import__("sos_tools").which("pactl"):
                 out = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=2).stdout
                 for line in out.splitlines():
                     parts = line.split("\t") if "\t" in line else line.split()

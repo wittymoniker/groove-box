@@ -103,36 +103,30 @@ def _register_linux(app_script=None):
     mime_pkgs.mkdir(parents=True, exist_ok=True)
     command = _quote_linux(_launch_command(app_script)) + " %f"
     desktop = apps / DESKTOP_ID
-    desktop.write_text(
-        "[Desktop Entry]\n"
+    __import__("safe_io").atomic_write_text(desktop, "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=Mathematician's Groovebox\n"
         f"Exec={command}\n"
         f"MimeType={MIME_TYPE};\n"
         "Terminal=false\n"
         "Categories=AudioVideo;Audio;\n"
-        "StartupNotify=true\n",
-        encoding="utf-8",
-    )
+        "StartupNotify=true\n", encoding="utf-8")
     xml = mime_pkgs / "mathematicians-groovebox-mcc.xml"
-    xml.write_text(
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
+    __import__("safe_io").atomic_write_text(xml, '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">\n'
         f'  <mime-type type="{MIME_TYPE}">\n'
         "    <comment>Mathematician's Groovebox Composition</comment>\n"
         '    <glob pattern="*.MCC"/>\n'
         '    <glob pattern="*.mcc"/>\n'
         "  </mime-type>\n"
-        "</mime-info>\n",
-        encoding="utf-8",
-    )
-    umd = shutil.which("update-mime-database")
+        "</mime-info>\n", encoding="utf-8")
+    umd = __import__("sos_tools").which("update-mime-database")
     if umd:
         try:      # PROBE_TIMEOUT_R7: a wedged desktop database must not freeze file-type registration
             subprocess.run([umd, str(home / ".local/share/mime")], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         except subprocess.TimeoutExpired:
             pass
-    xdg = shutil.which("xdg-mime")
+    xdg = __import__("sos_tools").which("xdg-mime")
     if xdg:
         try:
             subprocess.run([xdg, "default", DESKTOP_ID, MIME_TYPE], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)

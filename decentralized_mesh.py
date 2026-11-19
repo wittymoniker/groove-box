@@ -68,7 +68,7 @@ def _load_secret() -> bytes:
         except Exception: pass
     s = os.urandom(32)
     try:
-        p.write_bytes(s); os.chmod(p, 0o600)
+        __import__("safe_io").atomic_write_bytes(p, s); os.chmod(p, 0o600)
     except Exception: pass
     return s
 
@@ -249,5 +249,5 @@ def tag_export(path: str, store: Optional[MeshStore]=None, extra: Optional[Dict[
     with p.open("rb") as f:
         for b in iter(lambda:f.read(1024*1024),b""): h.update(b)
     meta={"filename":p.name,"bytes":p.stat().st_size,"sha256":h.hexdigest(),"radio_id":store.self_id,"tags":["groovebox","export",p.suffix.lower().lstrip('.')],"extra":extra or {},"ts":time.time()}
-    side=str(p)+".mgmesh.json"; Path(side).write_text(json.dumps(meta,indent=2,ensure_ascii=False),encoding="utf-8")
+    side=str(p)+".mgmesh.json"; __import__("safe_io").atomic_write_text(Path(side), json.dumps(meta,indent=2,ensure_ascii=False), encoding="utf-8")
     store.publish("media_export",meta,meta["tags"]); return side

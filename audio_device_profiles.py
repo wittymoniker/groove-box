@@ -56,8 +56,7 @@ def save(data):
     p = _path()
     tmp = p + ".tmp"
     with _LOCK:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=1, sort_keys=True)
+        __import__("safe_io").atomic_write_json(tmp, data, indent=1, sort_keys=True, encoding="utf-8")
         os.replace(tmp, p)
         _CACHE.update(data=dict(data), mtime=os.path.getmtime(p))
 

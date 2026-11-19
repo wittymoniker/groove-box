@@ -349,15 +349,14 @@ def render_cutup(
     # Sidecar makes the result reproducible/editable.
     sidecar = out + ".cutup.json"
     try:
-        with open(sidecar, "w", encoding="utf-8") as f:
-            json.dump({
+        __import__("safe_io").atomic_write_json(sidecar, {
                 "source": os.path.abspath(source_path),
                 "bpm": bpm,
                 "steps_per_bar": steps_per_bar,
                 "sample_rate": sample_rate,
                 "resample_mode": resample_mode,
                 "events": [asdict(e) for e in events],
-            }, f, indent=2)
+            }, indent=2, encoding="utf-8")
     except Exception:
         pass
     return out
@@ -430,14 +429,13 @@ def render_av_cutup(
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or "ffmpeg audiovisual cutup render failed")[-1800:])
     try:
-        with open(out + ".cutup.json", "w", encoding="utf-8") as f:
-            json.dump({
+        __import__("safe_io").atomic_write_json(out + ".cutup.json", {
                 "audio_source": os.path.abspath(audio_source),
                 "video_source": os.path.abspath(video_source),
                 "bpm": bpm, "steps_per_bar": steps_per_bar, "sample_rate": sample_rate,
                 "video_fps": video_fps, "resample_mode": resample_mode,
                 "events": [asdict(e) for e in events],
-            }, f, indent=2)
+            }, indent=2, encoding="utf-8")
     except Exception:
         pass
     return out

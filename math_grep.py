@@ -123,7 +123,7 @@ def main() -> int:
     args = parser.parse_args()
     report = MathGrep().scan(args.paths)
     encoded = json.dumps(report, indent=2, sort_keys=True)
-    if args.json_path: Path(args.json_path).write_text(encoded + "\n", encoding="utf-8")
+    if args.json_path: __import__("safe_io").atomic_write_text(Path(args.json_path), encoded + "\n", encoding="utf-8")
     print(json.dumps({k: report[k] for k in ("schema", "scope", "files_with_errors", "finding_count", "categories")}, indent=2))
     return 1 if report["files_with_errors"] else 0
 

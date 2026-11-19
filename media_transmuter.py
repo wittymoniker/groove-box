@@ -65,9 +65,9 @@ def kind_of(path):
 def _ff():
     try:
         from groovebox_media_tools import resolve_local_tool
-        return resolve_local_tool("ffmpeg") or shutil.which("ffmpeg")
+        return resolve_local_tool("ffmpeg") or __import__("sos_tools").which("ffmpeg")
     except Exception:
-        return shutil.which("ffmpeg")
+        return __import__("sos_tools").which("ffmpeg")
 
 
 def _read_audio(p):
@@ -301,8 +301,7 @@ def _game_identity(path):
     d = path if os.path.isdir(path) else os.path.dirname(path)
     for jp in sorted(glob.glob(os.path.join(d, "game_*.json"))) + [os.path.join(d, "game.json")]:
         try:
-            with open(jp, encoding="utf-8") as f:
-                j = json.load(f)
+            j = __import__("safe_io").load_json(jp, encoding="utf-8")
             ident = j.get("identity", j) if isinstance(j, dict) else {}
             if isinstance(ident, dict) and ident:
                 return ident

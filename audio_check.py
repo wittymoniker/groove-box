@@ -51,7 +51,7 @@ def system_report(host=None) -> str:
     for tool, args in (("aplay", ["-l"]), ("aplay", ["-L"]), ("arecord", ["-l"])):
         if shutil.which(tool):
             add(f"{tool} {' '.join(args)}", _q([tool] + args))
-    if shutil.which("amixer") and os.path.exists("/proc/asound/cards"):
+    if __import__("sos_tools").which("amixer") and os.path.exists("/proc/asound/cards"):
         import re
         for c in re.findall(r"^\s*(\d+)\s+\[", open("/proc/asound/cards").read(), re.M):
             add(f"amixer -c {c} scontents", _q(["amixer", "-c", c, "scontents"]))
@@ -155,7 +155,7 @@ def playback_tests(host=None, announce=lambda s: None):
         lambda: via_groovebox(1, 512, "low"))
     run("1d · Main-window note engine (the stream key notes and Trigger use)", via_main_window_engine)
     run("2 · PortAudio system default device", via_default)
-    aplay = shutil.which("aplay")
+    aplay = __import__("sos_tools").which("aplay")
     if aplay:
         import re, tempfile, wave
         tmp = os.path.join(tempfile.gettempdir(), "groovebox_audio_check.wav")
@@ -174,7 +174,7 @@ def playback_tests(host=None, announce=lambda s: None):
                 if r.returncode != 0:
                     raise RuntimeError((r.stderr or "").strip()[:200] or f"rc={r.returncode}")
             run(f"3 · direct ALSA {dev} · {_nm}{_kind}", go)
-    if shutil.which("paplay"):
+    if __import__("sos_tools").which("paplay"):
         run("4 · PipeWire/Pulse default sink (paplay)",
             lambda: subprocess.run(["paplay", tmp], timeout=10, check=True) if aplay else None)
     return results
@@ -186,5 +186,5 @@ def run_check(host=None, announce=lambda s: None) -> str:
     tests = playback_tests(host, announce)
     body = report + "\n\n===== playback tests (which did you HEAR?) =====\n" + "\n".join(f"{l}: {r}" for l, r in tests)
     path = logs_dir() / f"audio-check-{time.strftime('%Y%m%d-%H%M%S')}.txt"
-    path.write_text(body, encoding="utf-8")
+    __import__("safe_io").atomic_write_text(path, body, encoding="utf-8")
     return str(path)

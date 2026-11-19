@@ -58,8 +58,7 @@ def lookup(key):
     if not os.path.isfile(wav) or not os.path.isfile(meta):
         return None
     try:
-        with open(meta, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = __import__("safe_io").load_json(meta, encoding="utf-8")
         if not data.get("complete") or not os.path.getsize(wav):
             return None
         os.utime(wav, None)
@@ -78,8 +77,7 @@ def store(key, wav_path, master_rms):
         shutil.copyfile(wav_path, tmp)
         os.replace(tmp, dst)
         mtmp = meta + ".part"
-        with open(mtmp, "w", encoding="utf-8") as f:
-            json.dump({"complete": True, "master_rms": float(master_rms), "ts": time.time()}, f)
+        __import__("safe_io").atomic_write_json(mtmp, {"complete": True, "master_rms": float(master_rms), "ts": time.time()}, encoding="utf-8")
         os.replace(mtmp, meta)
     finally:
         try:

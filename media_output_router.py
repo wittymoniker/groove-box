@@ -93,12 +93,12 @@ def _run_text(cmd: Sequence[str], timeout: float = 2.0) -> str:
 
 def detect_displays() -> List[DisplayTarget]:
     out: List[DisplayTarget] = []
-    if shutil.which("xrandr"):
+    if __import__("sos_tools").which("xrandr"):
         txt = _run_text(["xrandr", "--query"])
         for line in txt.splitlines():
             m = re.match(r"^(\S+)\s+connected(?:\s+(primary))?(?:\s+(\d+x\d+\+[-\d]+\+[-\d]+))?", line)
             if m: out.append(DisplayTarget(m.group(1),True,bool(m.group(2)),m.group(3) or "",len(out),"xrandr"))
-    if not out and shutil.which("wlr-randr"):
+    if not out and __import__("sos_tools").which("wlr-randr"):
         txt=_run_text(["wlr-randr"]); current=None
         for line in txt.splitlines():
             if line and not line[0].isspace():
@@ -125,7 +125,7 @@ def detect_displays() -> List[DisplayTarget]:
 def detect_audio_targets() -> List[AudioTarget]:
     out: List[AudioTarget] = [AudioTarget("", "System default", kind="default", backend="default")]
     seen=set()
-    if shutil.which("pactl"):
+    if __import__("sos_tools").which("pactl"):
         txt=_run_text(["pactl","list","short","sinks"])
         for line in txt.splitlines():
             parts=line.split("\t") if "\t" in line else line.split()
@@ -141,7 +141,7 @@ def detect_audio_targets() -> List[AudioTarget]:
     # compatibility has published sinks. Expose *real playback* endpoints, not
     # only HDMI.  In particular the Latitude internal speaker can be available
     # through ALSA while pactl still reports only auto_null during session start.
-    if shutil.which("aplay"):
+    if __import__("sos_tools").which("aplay"):
         txt=_run_text(["aplay","-L"],timeout=4.0)
         alsa_names=[]
         for line in txt.splitlines():
@@ -255,7 +255,7 @@ def _alsa_card_for_device(device: str) -> Tuple[str, str]:
         raw=raw[5:]
     m=re.search(r"(?:^|,)CARD=([^,]+)", raw, re.I)
     wanted=(m.group(1) if m else "").strip()
-    txt=_run_text(["aplay","-l"], timeout=1.2) if shutil.which("aplay") else ""
+    txt=_run_text(["aplay","-l"], timeout=1.2) if __import__("sos_tools").which("aplay") else ""
     rows=[]
     rx=re.compile(r"^card\s+(\d+):\s*([^\s\[]+)", re.I)
     for line in txt.splitlines():
@@ -295,7 +295,7 @@ def _ucm_card_candidates(card_num: str, card_id: str) -> List[str]:
 
 def _ucm_speaker_pcm(card_num: str, card_id: str) -> str:
     """Return UCM's exact HiFi Speaker PlaybackPCM as an mpv ALSA target."""
-    if not shutil.which("alsaucm"):
+    if not __import__("sos_tools").which("alsaucm"):
         return ""
     for ident in _ucm_card_candidates(card_num, card_id):
         try:
@@ -315,7 +315,7 @@ def _ucm_speaker_pcm(card_num: str, card_id: str) -> str:
 
 def _activate_ucm_speaker(card_num: str, card_id: str) -> bool:
     """Activate HiFi + Speaker in one UCM process so device context is retained."""
-    if not shutil.which("alsaucm"):
+    if not __import__("sos_tools").which("alsaucm"):
         return False
     batch="set _verb HiFi\nset _enadev Speaker\n"
     for ident in _ucm_card_candidates(card_num, card_id):
@@ -341,7 +341,7 @@ def _prepare_physical_alsa_output(device: str) -> bool:
     may activate UCM once, while repeated playback only reapplies the persisted
     desired playback level/unmute state. Capture controls are never changed.
     """
-    if not device or not shutil.which("aplay"):
+    if not device or not __import__("sos_tools").which("aplay"):
         return False
     card_num, card_id = _alsa_card_for_device(device)
     if not card_num and not card_id:
@@ -389,7 +389,7 @@ def _prepare_physical_alsa_output(device: str) -> bool:
     except Exception:
         pass
 
-    if shutil.which("amixer"):
+    if __import__("sos_tools").which("amixer"):
         controls = _run_text(["amixer", "-c", str(card), "scontrols"], timeout=1.2)
         names = re.findall(r"Simple mixer control '([^']+)'", controls)
     else:
@@ -415,7 +415,7 @@ def _prepare_physical_alsa_output(device: str) -> bool:
             qrun(["amixer", "-c", str(card), "sset", name, "100%"], 1.0)
         # Also raise the matching PipeWire/Pulse sink so desktop stacks are not quiet.
         try:
-            if shutil.which("pactl"):
+            if __import__("sos_tools").which("pactl"):
                 sinks = _run_text(["pactl", "list", "short", "sinks"], timeout=1.2)
                 for line in sinks.splitlines():
                     cols = line.split("	")
@@ -425,18 +425,18 @@ def _prepare_physical_alsa_output(device: str) -> bool:
                     slow = sink.casefold()
                     if any(t in slow for t in ("hdmi", "displayport", "dp", "iec958")):
                         subprocess.run(
-                            [shutil.which("pactl") or "pactl", "set-sink-mute", sink, "0"],
+                            [__import__("sos_tools").which("pactl") or "pactl", "set-sink-mute", sink, "0"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=1.0, check=False,
                         )
                         subprocess.run(
-                            [shutil.which("pactl") or "pactl", "set-sink-volume", sink, f"{max(pct, 90)}%"],
+                            [__import__("sos_tools").which("pactl") or "pactl", "set-sink-volume", sink, f"{max(pct, 90)}%"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=1.0, check=False,
                         )
                         # Prefer this sink as default while HDMI is the selected route
                         subprocess.run(
-                            [shutil.which("pactl") or "pactl", "set-default-sink", sink],
+                            [__import__("sos_tools").which("pactl") or "pactl", "set-default-sink", sink],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             timeout=1.0, check=False,
                         )
@@ -482,7 +482,7 @@ def _prepare_physical_alsa_output(device: str) -> bool:
 
 
 def _real_pulse_sink_available() -> bool:
-    if not shutil.which("pactl"):
+    if not __import__("sos_tools").which("pactl"):
         return False
     txt=_run_text(["pactl","list","short","sinks"],timeout=0.7)
     for line in txt.splitlines():
@@ -493,7 +493,7 @@ def _real_pulse_sink_available() -> bool:
 
 def _real_alsa_playback_available() -> bool:
     """True when ALSA exposes at least one physical playback PCM."""
-    if not shutil.which("aplay"):
+    if not __import__("sos_tools").which("aplay"):
         return False
     txt=_run_text(["aplay","-l"],timeout=1.2)
     low=txt.lower()
@@ -687,7 +687,7 @@ def _ensure_all_pulse_outputs_sink_uncached() -> str:
     Bluetooth simultaneously when those outputs are published by PulseAudio or
     PipeWire. Returns an empty string when the server cannot create a combined sink.
     """
-    if not shutil.which("pactl"):
+    if not __import__("sos_tools").which("pactl"):
         return ""
     try:
         raw=_run_text(["pactl","list","short","sinks"],timeout=2.0)
@@ -721,12 +721,12 @@ def _ensure_all_pulse_outputs_sink_uncached() -> str:
             # the combine module so newly detected outputs join the default route.
             try:
                 module_id=(current_args.split("\t") if "\t" in current_args else current_args.split())[0] if current_args else ""
-                if module_id.isdigit(): subprocess.run([shutil.which("pactl") or "pactl","unload-module",module_id],capture_output=True,timeout=2,check=False)
+                if module_id.isdigit(): subprocess.run([__import__("sos_tools").which("pactl") or "pactl","unload-module",module_id],capture_output=True,timeout=2,check=False)
             except Exception: pass
         # A single sink is already the whole available output set.
         if len(names)==1:
             return names[0]
-        module=shutil.which("pactl")
+        module=__import__("sos_tools").which("pactl")
         def _load(slaves):
             return subprocess.run([module,"load-module","module-combine-sink",
                                    f"sink_name={combined}",
@@ -1047,7 +1047,7 @@ function next(){{play(i+1)}} function prev(){{play(i-1)}} boot();
 
 
 def cast_with_catt(url: str, device: Optional[str] = None) -> Tuple[bool, str]:
-    catt = shutil.which("catt")
+    catt = __import__("sos_tools").which("catt")
     if not catt:
         return False, "catt is not installed"
     cmd = [catt]

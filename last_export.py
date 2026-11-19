@@ -50,8 +50,7 @@ def record_mgr_preview(path, kind="audio"):
                 break
         out = P(path).parent / ".last_export_mgr.json"
         tmp = str(out) + ".part"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(meta, f)
+        __import__("safe_io").atomic_write_json(tmp, meta, encoding="utf-8")
         os.replace(tmp, out)
         return str(out)
     except Exception:

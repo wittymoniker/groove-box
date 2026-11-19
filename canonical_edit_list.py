@@ -28,4 +28,4 @@ class CanonicalEditList:
         raw=json.dumps(self.to_dict(),sort_keys=True,separators=(",",":")).encode(); return hashlib.sha256(raw).hexdigest()
     def save(self,path:str):
         d=self.to_dict(); d["fingerprint"]=self.fingerprint()
-        with open(path,"w",encoding="utf-8") as f: json.dump(d,f,indent=2)
+        __import__("safe_io").atomic_write_json(path, d, indent=2, encoding="utf-8")

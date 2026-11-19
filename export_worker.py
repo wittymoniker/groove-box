@@ -143,8 +143,7 @@ def run(job: dict, app=None) -> int:
         if _mux_out:
             _integrity = _verify_export_outputs([_mux_out], min_bytes=128)
             if job.get("out_meta"):
-                with open(job["out_meta"], "w", encoding="utf-8") as f:
-                    json.dump({"file_path": _mux_out, "integrity": _integrity}, f)
+                __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": _mux_out, "integrity": _integrity}, encoding="utf-8")
         return 0
     import numpy as np
     if app is None:
@@ -230,15 +229,13 @@ def run(job: dict, app=None) -> int:
                     except Exception:
                         pass
         _integrity = _verify_export_outputs([dst] + ([audio_path] if audio_path and os.path.isfile(audio_path) else []))
-        with open(dst + ".json", "w", encoding="utf-8") as f:
-            json.dump({"sample_rate": int(rate), "frames": int(arr.shape[0]),
+        __import__("safe_io").atomic_write_json(dst + ".json", {"sample_rate": int(rate), "frames": int(arr.shape[0]),
                        "dj_baked": True, "finite": True, "integrity": _integrity,
                        "audio_path": audio_path if os.path.isfile(audio_path) else "",
-                       "master_rms": float(master_rms)}, f)
-        with open(job["out_meta"], "w", encoding="utf-8") as f:
-            json.dump({"file_path": "", "part_paths": [], "peak": 0.0, "sample_rate": int(rate),
+                       "master_rms": float(master_rms)}, encoding="utf-8")
+        __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": "", "part_paths": [], "peak": 0.0, "sample_rate": int(rate),
                        "audio_path": audio_path if os.path.isfile(audio_path) else "",
-                       "master_rms": float(master_rms), "integrity": _integrity}, f)
+                       "master_rms": float(master_rms), "integrity": _integrity}, encoding="utf-8")
         _say("DONE", dst)
         return 0
     if job.get("kind") == "video_file":
@@ -252,17 +249,15 @@ def run(job: dict, app=None) -> int:
         app._snapshot_render_inputs()
         r = project_obj.export_project(app, str(job["out_file"]))
         _integrity = _verify_export_outputs([r["path"]])
-        with open(job["out_meta"], "w", encoding="utf-8") as f:
-            json.dump({"file_path": r["path"], "samples": r["samples"], "sample_rate": r["sr"],
-                       "vertices": r["vertices"], "bytes": r["bytes"], "integrity": _integrity}, f)
+        __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": r["path"], "samples": r["samples"], "sample_rate": r["sr"],
+                       "vertices": r["vertices"], "bytes": r["bytes"], "integrity": _integrity}, encoding="utf-8")
         _say("DONE", r["path"])
         return 0
     if job.get("kind") == "bake_compare":
         os.environ["GROOVEBOX_VIDEO_EXPORT_GUI_THREAD"] = "1"
         o = dict(job.get("options") or {})
         report, identical, ratio = app._bake_compare_compute(o.get("target") or {}, str(o.get("file_label") or ""))
-        with open(job["out_meta"], "w", encoding="utf-8") as f:
-            json.dump({"file_path": "", "report": report, "identical": bool(identical), "rms_ratio": float(ratio)}, f)
+        __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": "", "report": report, "identical": bool(identical), "rms_ratio": float(ratio)}, encoding="utf-8")
         _say("DONE", "identical" if identical else "rms %.6f" % ratio)
         return 0
     sr = int(job.get("sample_rate") or 0)
@@ -294,9 +289,8 @@ def run(job: dict, app=None) -> int:
         buf = np.ascontiguousarray(np.asarray(buf, dtype=np.float32))
     np.save(job["out_npy"], buf)
     _integrity = _verify_export_outputs([job["out_npy"]])
-    with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"sample_rate": int(rate), "frames": int(buf.shape[0]), "channels": 1 if buf.ndim == 1 else int(buf.shape[1]),
-                   "final": bool(job.get("final")), "integrity": _integrity}, f)
+    __import__("safe_io").atomic_write_json(job["out_meta"], {"sample_rate": int(rate), "frames": int(buf.shape[0]), "channels": 1 if buf.ndim == 1 else int(buf.shape[1]),
+                   "final": bool(job.get("final")), "integrity": _integrity}, encoding="utf-8")
     _say("DONE", job["out_npy"])
     return 0
 
@@ -370,10 +364,9 @@ def _write_audio_file(app, job, buf, rate, np):
     _final_path = str(res.get("file_path") or job["out_file"])
     _part_paths = list(res.get("part_paths") or [])
     _integrity = _verify_export_outputs([_final_path] + _part_paths)
-    with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": _final_path, "part_paths": _part_paths,
+    __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": _final_path, "part_paths": _part_paths,
                    "peak": float(res.get("peak", 0.0) or 0.0), "sample_rate": int(res.get("sample_rate") or 0),
-                   "integrity": _integrity}, f)
+                   "integrity": _integrity}, encoding="utf-8")
     _say("DONE", res.get("file_path") or job["out_file"])
     return 0
 
@@ -419,9 +412,8 @@ def _write_unbounded_audio(app, job, master, rate, o, np):
     wavfile.write(path, out_sr, data)
     peak = float(np.max(np.abs(x))) if x.size else 0.0
     _integrity = _verify_export_outputs([path])
-    with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": path, "part_paths": [], "peak": peak, "sample_rate": out_sr,
-                   "integrity": _integrity}, f)
+    __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": path, "part_paths": [], "peak": peak, "sample_rate": out_sr,
+                   "integrity": _integrity}, encoding="utf-8")
     _say("DONE", path)
     return 0
 
@@ -439,9 +431,8 @@ def _write_stem_file(app, job, np):
     pcm, _info = app._master_hardclip(np.asarray(buf, dtype=np.float32), sr)
     write_wav(str(job["out_file"]), int(sr), np.asarray(pcm, dtype=np.float32))
     _integrity = _verify_export_outputs([job["out_file"]])
-    with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": str(job["out_file"]), "part_paths": [], "peak": float(np.max(np.abs(pcm))) if np.size(pcm) else 0.0,
-                   "sample_rate": int(sr), "integrity": _integrity}, f)
+    __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": str(job["out_file"]), "part_paths": [], "peak": float(np.max(np.abs(pcm))) if np.size(pcm) else 0.0,
+                   "sample_rate": int(sr), "integrity": _integrity}, encoding="utf-8")
     _say("DONE", job["out_file"])
     return 0
 
@@ -481,17 +472,15 @@ def _write_video_file(app, job):
         if missing:
             _say("FAIL", "part(s) not written: %s" % ", ".join(str(m) for m in missing)); return 6
         _integrity = _verify_export_outputs(part_paths, min_bytes=128)
-        with open(job["out_meta"], "w", encoding="utf-8") as f:
-            json.dump({"file_path": "", "part_paths": part_paths, "peak": 0.0, "sample_rate": 0,
-                       "integrity": _integrity}, f)
+        __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": "", "part_paths": part_paths, "peak": 0.0, "sample_rate": 0,
+                       "integrity": _integrity}, encoding="utf-8")
         _say("DONE", "parts %s" % ",".join(str(i) for i in pre["only_parts"]))
         return 0
     if not (os.path.isfile(out) and os.path.getsize(out) > 0):
         _say("FAIL", "the video file was not written"); return 5
     _integrity = _verify_export_outputs([out], min_bytes=128)
-    with open(job["out_meta"], "w", encoding="utf-8") as f:
-        json.dump({"file_path": out, "part_paths": [], "peak": 0.0, "sample_rate": 0,
-                   "integrity": _integrity}, f)
+    __import__("safe_io").atomic_write_json(job["out_meta"], {"file_path": out, "part_paths": [], "peak": 0.0, "sample_rate": 0,
+                   "integrity": _integrity}, encoding="utf-8")
     _say("DONE", out)
     return 0
 
@@ -515,8 +504,7 @@ def serve(max_jobs=8) -> int:
             continue
         job = {}
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                job = json.load(f)
+            job = __import__("safe_io").load_json(path, encoding="utf-8")
             if str(job.get("kind") or "") != "video_mux" and app is None:
                 app = _make_app()
             rc = int(run(job, app) or 0)
@@ -551,8 +539,7 @@ def main(argv=None) -> int:
             n = 8
         return serve(max(1, n))
     try:
-        with open(argv[0], "r", encoding="utf-8") as f:
-            job = json.load(f)
+        job = __import__("safe_io").load_json(argv[0], encoding="utf-8")
         return run(job)
     except Exception as exc:  # report, never hang the caller
         _say("FAIL", f"{type(exc).__name__}: {exc}")

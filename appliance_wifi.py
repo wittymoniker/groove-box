@@ -49,7 +49,7 @@ def _wireless_ifaces() -> List[str]:
         for p in root.iterdir():
             if (p / "wireless").exists() or (p / "phy80211").exists():
                 out.add(p.name)
-    if shutil.which("iw"):
+    if __import__("sos_tools").which("iw"):
         rc, text = _run(["iw", "dev"])
         if rc == 0:
             for line in text.splitlines():
@@ -61,7 +61,7 @@ def _wireless_ifaces() -> List[str]:
 
 def _nm_states() -> Dict[str, str]:
     states: Dict[str, str] = {}
-    if not shutil.which("nmcli"):
+    if not __import__("sos_tools").which("nmcli"):
         return states
     rc, text = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
     if rc == 0:
@@ -77,7 +77,7 @@ def _nm_states() -> Dict[str, str]:
 
 
 def _supports_ap(iface: str) -> bool:
-    if not shutil.which("iw"):
+    if not __import__("sos_tools").which("iw"):
         # NetworkManager will perform the authoritative check when hotspot starts.
         return False
     phy = _phy_for(iface)
@@ -159,13 +159,13 @@ def _enable_linux_network_stack(rows: List[dict]) -> List[str]:
         return notes
     # These are idempotent and intentionally do not associate to a network or
     # create a hotspot.  Privileged actions are attempted only as root.
-    if os.geteuid() == 0 and shutil.which("systemctl"):
+    if os.geteuid() == 0 and __import__("sos_tools").which("systemctl"):
         rc, out = _run(["systemctl", "enable", "--now", "NetworkManager"], timeout=12)
         notes.append("NetworkManager enabled" if rc == 0 else "NetworkManager enable skipped: " + out.strip()[:160])
-    if shutil.which("rfkill"):
+    if __import__("sos_tools").which("rfkill"):
         rc, _ = _run(["rfkill", "unblock", "wifi"])
         if rc == 0: notes.append("Wi-Fi rfkill unblocked")
-    if shutil.which("nmcli"):
+    if __import__("sos_tools").which("nmcli"):
         _run(["nmcli", "radio", "wifi", "on"])
         for row in rows:
             iface = row.get("iface")
@@ -184,7 +184,7 @@ def configure_appliance(force: bool = False) -> dict:
     p = _state_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(info, indent=2, sort_keys=True), encoding="utf-8")
+        __import__("safe_io").atomic_write_text(p, json.dumps(info, indent=2, sort_keys=True), encoding="utf-8")
     except Exception as exc:
         info.setdefault("notes", []).append("Could not persist Wi-Fi inventory: " + str(exc))
     iface = info.get("preferred_direct_iface") or info.get("preferred_client_iface") or ""

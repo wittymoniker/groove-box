@@ -210,7 +210,7 @@ def _to_mcc(ffmpeg, src, dst, video_only, progress):
     import subprocess, json as _j, numpy as _np, mcc_media as _mm
     pr = subprocess.run([ffmpeg.replace("ffmpeg", "ffprobe") if "ffmpeg" in os.path.basename(ffmpeg) else "ffprobe",
                          "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate",
-                         "-of", "json", src], capture_output=True, text=True)
+                         "-of", "json", src], capture_output=True, text=True, timeout=60)   # PROBE_TIMEOUT_R7
     st = _j.loads(pr.stdout or "{}").get("streams", [{}])[0]
     w, h = int(st.get("width", 0)), int(st.get("height", 0)); num, den = (st.get("r_frame_rate", "30/1").split("/") + ["1"])[:2]
     fps = max(1, int(round(float(num) / float(den or 1))))
@@ -598,7 +598,7 @@ class ClipTimelineStudio(QWidget):
         if not path:return
         try:
             payload={'format':'groovebox-clip-timeline','version':1,'duration':self.duration.value(),'fps':self.fps.value(),'width':self.width.value(),'height':self.height.value(),'audio_rate':int(self.audio_rate.currentText()),'mix_video_audio':self.keep_audio.isChecked(),'anti_click_fades':self.fade_edges.isChecked(),'clips':self._records()}
-            Path(path).write_text(json.dumps(payload,indent=2),encoding='utf-8'); self.status.setText('Timeline saved: '+path)
+            __import__("safe_io").atomic_write_text(Path(path), json.dumps(payload,indent=2), encoding='utf-8'); self.status.setText('Timeline saved: '+path)
         except Exception as e: QMessageBox.warning(self,'Save timeline',str(e))
 
     def load_timeline(self):
@@ -805,3 +805,16 @@ try:
     _gb_nonmodal.install()
 except Exception:
     pass
+
+
+def export_clip_mgr(path, name, pcm, sr):
+    try:
+        import mgr_format as mgr
+        return mgr.write_operator_clip(path, name, pcm, int(sr))
+    except Exception as exc:
+        try:
+            import quiet_log
+            quiet_log.refresh_fail("clip_timeline.export_mgr", exc)
+        except Exception:
+            pass
+        return ""

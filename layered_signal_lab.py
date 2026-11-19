@@ -294,7 +294,7 @@ class LayeredSignalLab(QWidget):
         except Exception:
             p=os.path.join(tempfile.gettempdir(),'groovebox_layer_preview.wav'); write_wav(p,self._preview,self._preview_sr)
             import subprocess,shutil
-            player=shutil.which('mpv') or shutil.which('ffplay')
+            player=__import__("sos_tools").which('mpv') or __import__("sos_tools").which('ffplay')
             if player:subprocess.Popen([player,p])
     def _save(self):
         if self._preview is None:self._render_preview()

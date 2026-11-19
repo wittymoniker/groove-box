@@ -255,6 +255,75 @@ def iter_video_frames(path):
             yield prev
 
 
+def _raw_blocks(path):
+    """Yield (type, meta, compressed payload) without decompressing (the SHA-256 is checked by the caller)."""
+    with open(path, "rb") as f:
+        if f.read(8) != MAGIC:
+            raise ValueError(f"{path}: not an MCC media file")
+        _ver, n = struct.unpack(">BI", f.read(5))
+        head = f.read(n)
+        yield b"H", None, head
+        while True:
+            tag = f.read(1)
+            if tag == b"E":
+                yield b"E", None, f.read(32); return
+            if tag != b"B":
+                raise ValueError(f"{path}: truncated or corrupt MCC media")
+            btype = f.read(1)
+            (ml,) = struct.unpack(">I", f.read(4))
+            mraw = f.read(ml)
+            (cl,) = struct.unpack(">Q", f.read(8))
+            yield btype, mraw, f.read(cl)
+
+
+def iter_video_frames_fast(path, workers=None, start_frame=0, stop=None, verify=True):
+    """R99: like iter_video_frames, but blocks are decompressed in parallel (zlib releases the GIL) a few blocks
+    ahead, then reconstructed in order. Yields (index, frame). Frames before start_frame are reconstructed but not
+    yielded (delta video needs the chain from the last keyframe). The SHA-256 is still checked at the end."""
+    from concurrent.futures import ThreadPoolExecutor
+    import collections
+    hdr = read_header(path)
+    w, h = int(hdr["width"]), int(hdr["height"])
+    workers = int(workers or max(2, min(4, (os.cpu_count() or 2) - 1)))
+    hs = hashlib.sha256()
+    pend = collections.deque()
+    prev = None; idx = 0
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mcc-inflate") as ex:
+        def drain(block_all=False):
+            nonlocal prev, idx
+            while pend and (block_all or len(pend) > workers * 2 or pend[0][2].done()):
+                btype, mraw, fut = pend.popleft()
+                payload = fut.result()
+                if verify:
+                    hs.update(mraw); hs.update(payload)
+                if btype == b"K":
+                    prev = np.frombuffer(payload, dtype=np.uint8).reshape(h, w, 3).copy()
+                elif btype == b"D":
+                    prev = prev + np.frombuffer(payload, dtype=np.uint8).reshape(h, w, 3)
+                else:
+                    continue
+                if idx >= start_frame:
+                    yield idx, prev
+                idx += 1
+        for btype, mraw, data in _raw_blocks(path):
+            if stop is not None and stop.is_set():
+                return
+            if btype == b"H":
+                if verify: hs.update(data)
+                continue
+            if btype == b"E":
+                yield from drain(True)
+                if verify and data != hs.digest():
+                    raise ValueError(f"{path}: MCC media SHA-256 integrity check failed")
+                return
+            if btype not in (b"K", b"D"):
+                if verify:   # audio / other blocks still count toward the digest, in order
+                    pend.append((btype, mraw, ex.submit(zlib.decompress, data)))
+                continue
+            pend.append((btype, mraw, ex.submit(zlib.decompress, data)))
+            yield from drain(False)
+
+
 def video_to_mp4(path, mp4_path, ffmpeg="ffmpeg") -> str:
     """Transcode a media .MCC video (and its audio) to MP4 for players that need it."""
     import subprocess
@@ -325,7 +394,7 @@ def unpack_tree(path, dest_dir) -> list:
         if dest not in target.parents and target != dest:
             raise ValueError(f"refusing path outside the package: {meta['path']}")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
+        __import__("safe_io").atomic_write_bytes(target, payload)
         try:
             os.chmod(target, int(meta.get("mode", 0o644)))
         except OSError:

@@ -144,7 +144,7 @@ def _local_ipv4() -> List[str]:
         pass
     try:
         import subprocess as _sp
-        if os.name != "nt" and shutil.which("ip"):
+        if os.name != "nt" and __import__("sos_tools").which("ip"):
             for ln in _sp.run(["ip", "-o", "-4", "addr", "show", "up"], capture_output=True, text=True, timeout=2).stdout.splitlines():
                 parts = ln.split()
                 if "inet" in parts:
@@ -194,7 +194,7 @@ def _iface_broadcasts() -> List[str]:
     out = set()
     try:
         import subprocess as _sp
-        if os.name != "nt" and shutil.which("ip"):
+        if os.name != "nt" and __import__("sos_tools").which("ip"):
             txt = _sp.run(["ip", "-o", "-4", "addr", "show", "up"], capture_output=True, text=True, timeout=2).stdout
             for ln in txt.splitlines():
                 parts = ln.split()
@@ -228,7 +228,7 @@ def _node_id(root: Path) -> str:
             val = marker.read_text(encoding="utf-8").strip()
             if val: return val
         val = uuid.uuid4().hex
-        marker.write_text(val, encoding="utf-8")
+        __import__("safe_io").atomic_write_text(marker, val, encoding="utf-8")
         return val
     except Exception:
         # Stable enough for one process if directory is read-only.

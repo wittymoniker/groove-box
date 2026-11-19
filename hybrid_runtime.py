@@ -2,8 +2,7 @@
 
 Kernels are registered once with a NumPy REFERENCE and any number of alternative backends:
   rust     the native accel library (groovebox._GB_ACCEL_FUNCS)       julia   juliacall / julia_bridge (when installed)
-  luajit   lupa.luajit21 (scalar loops)                                go      Go c-shared kernels
-  native   a C kernel compiled by the Program Builder
+  luajit   lupa.luajit21 (scalar loops)                                native  a C kernel compiled by the Program Builder
 The first call of a kernel for a size class times every available backend on the real arguments and keeps the
 fastest one whose output matches the reference (max |error| ≤ tol). Backends that fail or disagree are never used for
 that kernel. Choices persist in ~/.cache/groovebox/hybrid_choices.json (re-measured when the backend set changes).
@@ -28,7 +27,7 @@ def _path():
 
 def _load():
     try:
-        d = json.load(open(_path()))
+        d = __import__("safe_io").load_json(_path())
         for k, v in d.get("choices", {}).items():
             n, c = k.rsplit("|", 1); _CHOICE[(n, int(c))] = v
     except Exception:
@@ -37,7 +36,7 @@ def _load():
 
 def _save():
     try:
-        json.dump({"choices": {"%s|%d" % k: v for k, v in _CHOICE.items()}, "backends": available()}, open(_path(), "w"), indent=1)
+        __import__("safe_io").atomic_write_json(_path(), {"choices": {"%s|%d" % k: v for k, v in _CHOICE.items()}, "backends": available()}, indent=1)
     except Exception:
         pass
 
@@ -56,16 +55,6 @@ def available():
     try:
         import julia_bridge as jb
         if jb.julia_available(): out.append("julia")
-    except Exception:
-        pass
-    try:
-        import adaptive_compute as ac
-        if ac.gpu_available(): out.append("gpu")
-    except Exception:
-        pass
-    try:
-        import go_accel
-        if go_accel.ready(): out.append("go")
     except Exception:
         pass
     try:
@@ -107,11 +96,6 @@ def _choose(name, args, kwargs):
 
 
 def run(name, *args, **kwargs):
-    import adaptive_compute as ac
-    cache_key = ac.result_key("hybrid:" + name, args, kwargs)
-    cached = ac.result_get(cache_key)
-    if cached is not None:
-        return cached
     k = _K[name]; key = (name, _size_class(args))
     be = _CHOICE.get(key)
     if be is None:
@@ -121,8 +105,6 @@ def run(name, *args, **kwargs):
         be, out = _choose(name, args, kwargs)
         with _LOCK:
             _CHOICE[key] = be; _save()
-        ac.hint("%s:%d" % key, be)
-        ac.result_put(cache_key, out)
         return out
     fn = k["ref"] if be == "numpy" else k["alts"].get(be, k["ref"])
     t0 = time.perf_counter()
@@ -134,7 +116,6 @@ def run(name, *args, **kwargs):
         out = k["ref"](*args, **kwargs)
         be = "numpy"
     st = STATS.setdefault((name, be), [0, 0.0]); st[0] += 1; st[1] += time.perf_counter() - t0
-    ac.result_put(cache_key, out)
     return out
 
 
@@ -158,6 +139,11 @@ def lane(name):
 
 def submit(name, *args, **kwargs):
     """Run a kernel in the sCode 'hybrid' direction; returns a future."""
+    try:                                   # R101: the unified compute front door (same lane, same priority)
+        import compute
+        return compute.run("hybrid", name, *args, **kwargs)
+    except Exception:
+        pass
     try:
         import scode_coordinator as sc
         return sc.direct("hybrid", run, name, *args, **kwargs)
@@ -176,22 +162,8 @@ def report():
 
 # ------------------------------------------------------------------ built-in kernels
 def _osc_ref(phase0, freq, n, sr, amp=1.0, meum=1.0):
-    # Reuse bounded scratch buffers off the realtime callback. Return an owned
-    # array so the scratch pool can safely recycle its storage immediately.
-    import adaptive_compute as ac
-    n = max(1, int(n))
-    phase = ac.acquire_buffer((n,), np.float64)
-    work = ac.acquire_buffer((n,), np.float32)
-    try:
-        np.multiply(np.arange(n, dtype=np.float64), float(freq) / float(sr), out=phase)
-        phase += float(phase0)
-        np.remainder(phase, 2 * np.pi, out=phase)
-        np.sin(phase, out=work)
-        work *= float(amp) * float(meum)
-        return work.copy()
-    finally:
-        ac.release_buffer(phase)
-        ac.release_buffer(work)
+    ph = (phase0 + np.arange(int(n)) * float(freq) / float(sr)) % (2 * np.pi)
+    return (np.sin(ph) * float(amp) * float(meum)).astype(np.float32)
 
 
 def _osc_lua():
@@ -214,37 +186,6 @@ def _osc_lua():
         f(float(phase0), float(freq), int(n), float(sr), float(amp), float(meum), t)
         return np.fromiter((t[i] for i in range(int(n))), dtype=np.float64, count=int(n)).astype(np.float32)
     return osc
-
-
-def _osc_gpu():
-    try:
-        import adaptive_compute as ac
-        return ac.gpu_osc_fill
-    except Exception:
-        return None
-
-
-def _osc_go():
-    try:
-        import go_accel
-        return go_accel.osc_fill
-    except Exception:
-        return None
-
-
-def warm_go_backend():
-    """Compile/load Go kernels on a worker lane, never in the realtime callback."""
-    def _warm():
-        try:
-            import go_accel
-            return bool(go_accel.available())
-        except Exception:
-            return False
-    try:
-        import scode_coordinator as sc
-        return sc.direct("hybrid", _warm)
-    except Exception:
-        return None
 
 
 def _osc_julia():
@@ -301,6 +242,6 @@ def _ca_lua():
     return ca
 
 
-register("osc_fill", _osc_ref, tol=1e-5, gpu=_osc_gpu(), go=_osc_go(), luajit=_osc_lua(), julia=_osc_julia())
+register("osc_fill", _osc_ref, tol=1e-5, luajit=_osc_lua(), julia=_osc_julia())
 register("wavefold", _fold_ref, tol=1e-6)
 register("ca_evolve", _ca_ref, tol=0.0, luajit=_ca_lua())

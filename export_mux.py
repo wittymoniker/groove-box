@@ -1,3 +1,9 @@
+from __future__ import annotations
+try:
+    import export_artifacts as _export_artifacts
+except Exception:
+    _export_artifacts = None
+
 """Lightweight, restartable final mux for parallel Groovebox video exports.
 
 This module deliberately has no Qt or Groovebox import.  It only concatenates
@@ -6,7 +12,7 @@ validates the staged output, and atomically publishes it.  Keeping this final
 memory peak out of the synthesis worker prevents a second project engine from
 competing with FFmpeg while a large MP4 is assembled.
 """
-from __future__ import annotations
+
 
 import json
 import os
@@ -62,7 +68,20 @@ def _run(cmd, timeout: float, log_path: str) -> tuple[int, str]:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=log, close_fds=True, **kwargs)
         try:
-            rc = proc.wait(timeout=max(1.0, float(timeout)))
+            # HEARTBEAT: FFmpeg can run for minutes on a long video. Waiting silently made the export scheduler's
+            # stall watchdog think the worker hung, kill it and restart the stitch (the "start, stop, restart"
+            # loop at the end of an export). A liveness line every 5 s keeps the job alive while FFmpeg works.
+            import time as _t
+            _deadline = _t.monotonic() + max(1.0, float(timeout))
+            _t0 = _t.monotonic()
+            rc = None
+            while rc is None:
+                try:
+                    rc = proc.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    if _t.monotonic() >= _deadline:
+                        raise
+                    print("PROGRESS 97 final mux · %d s" % int(_t.monotonic() - _t0), flush=True)
         except subprocess.TimeoutExpired:
             try:
                 if os.name == "posix":
@@ -119,12 +138,12 @@ def run(options: dict) -> dict:
         raise ValueError(f"unsupported final video container: {container}")
     ffmpeg = str(o.get("ffmpeg") or "")
     if not ffmpeg or not os.path.isfile(ffmpeg):
-        ffmpeg = shutil.which("ffmpeg") or ""
+        ffmpeg = __import__("sos_tools").which("ffmpeg") or ""
     if not ffmpeg:
         raise FileNotFoundError("FFmpeg is unavailable to the lightweight mux worker")
     ffprobe = str(o.get("ffprobe") or "")
     if not ffprobe:
-        ffprobe = shutil.which("ffprobe") or ""
+        ffprobe = __import__("sos_tools").which("ffprobe") or ""
 
     n_parts = max(1, min(128, int(preset.get("parts", 1) or 1)))
     directory = os.path.dirname(out) or os.getcwd()

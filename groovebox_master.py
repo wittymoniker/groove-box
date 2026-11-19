@@ -239,8 +239,7 @@ class GrooveboxMasterWindow(QMainWindow):
                 }
             }
             try:
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=4)
+                __import__("safe_io").atomic_write_json(filepath, data, indent=4, encoding='utf-8')
                 QMessageBox.information(self, "Success", f"Project successfully saved to:\n{filepath}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project:\n{e}")
@@ -249,8 +248,7 @@ class GrooveboxMasterWindow(QMainWindow):
         filepath, _ = QFileDialog.getOpenFileName(self, "Load Project", "", "JSON Files (*.json)")
         if filepath:
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                data = __import__("safe_io").load_json(filepath, encoding='utf-8')
                 
                 ch_data = data.get("channels", {})
                 if "PanelSynth" in ch_data:

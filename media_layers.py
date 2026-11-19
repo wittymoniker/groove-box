@@ -18,7 +18,7 @@ VIDEO = (".mp4", ".webm", ".mov", ".mkv")
 
 
 def _ffmpeg():
-    return shutil.which("ffmpeg")
+    return __import__("sos_tools").which("ffmpeg")
 
 
 def list_exports(folder: str):

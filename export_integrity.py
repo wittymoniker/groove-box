@@ -96,7 +96,7 @@ def verify_file(path, *, kind='auto', min_bytes=64, decode=True):
         with open(path, 'rb') as f:
             if f.read(4) != b'fLaC': raise ExportIntegrityError('FLAC signature is missing')
     if decode and ext in ('.mp4', '.m4v', '.mov', '.mkv', '.webm', '.flac', '.mp3', '.ogg'):
-        ffprobe = shutil.which('ffprobe')
+        ffprobe = __import__("sos_tools").which('ffprobe')
         if ffprobe:
             p = subprocess.run([ffprobe, '-v', 'error', '-show_entries', 'format=duration,size',
                                 '-of', 'json', path], stdout=subprocess.PIPE, stderr=subprocess.PIPE,

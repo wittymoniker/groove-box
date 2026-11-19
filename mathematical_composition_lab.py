@@ -283,7 +283,7 @@ def export_pattern(pattern, path):
                 rows.append(row)
             writer.writerows(rows)
     else:
-        path.write_text(json.dumps(pattern, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        __import__("safe_io").atomic_write_text(path, json.dumps(pattern, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
 
@@ -405,7 +405,7 @@ def open_math_composition_lab(parent=None):
                     for row in doc['rows_data']:
                         writer.writerow({k:(json.dumps(v,ensure_ascii=False) if isinstance(v,(dict,list)) else v) for k,v in row.items()})
             else:
-                Path(path).write_text(json.dumps(doc,indent=2,ensure_ascii=False),encoding='utf-8')
+                __import__("safe_io").atomic_write_text(Path(path), json.dumps(doc,indent=2,ensure_ascii=False), encoding='utf-8')
             QMessageBox.information(dlg,"Playlist exported",f"Exported {len(doc['rows_data'])} editable playlist rows to:\n{path}")
         except Exception as exc: QMessageBox.critical(dlg,"Playlist export failed",str(exc))
     def apply_playlist():

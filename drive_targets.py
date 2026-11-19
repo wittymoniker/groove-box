@@ -257,8 +257,8 @@ def eject(drive_root):
     for row in removable_drives():
         if row["path"] == str(drive_root):
             dev = row["device"]
-    for cmd in (["udisksctl", "unmount", "-b", dev] if dev and shutil.which("udisksctl") else None,
-                ["umount", str(drive_root)] if shutil.which("umount") else None):
+    for cmd in (["udisksctl", "unmount", "-b", dev] if dev and __import__("sos_tools").which("udisksctl") else None,
+                ["umount", str(drive_root)] if __import__("sos_tools").which("umount") else None):
         if not cmd:
             continue
         try:
@@ -510,7 +510,7 @@ def drive_problems(mountinfo="/proc/self/mountinfo", sys_block="/sys/block"):
 
 def mount_drive(device):
     """Mount a removable partition for the current user with udisksctl (no root, no partition change)."""
-    exe = shutil.which("udisksctl")
+    exe = __import__("sos_tools").which("udisksctl")
     if not exe:
         return False, "udisksctl is not installed — mount the drive with your file manager, or install udisks2."
     try:

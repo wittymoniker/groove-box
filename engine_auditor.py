@@ -378,9 +378,14 @@ def live_dashboard():
             continue
         try:
             st = os.stat(path)
-            if time.time() - st.st_mtime > 10:
+            age = time.time() - st.st_mtime
+            if age > 10:                      # AUDITOR_STALE_R6: say so once when the live status stops updating
+                if not stale:
+                    say("tail: live status is stale (%.0f s old) — is Groovebox playing?" % age)
                 stale = True
-            d = json.load(open(path))
+                time.sleep(1.0)
+                continue
+            d = __import__("safe_io").load_json(path, encoding="utf-8")
             say("live | seq=%s | playhead=%.1f/%.1fs | fp=%s | peak=%.1fdB | hold=%.1fdB | z=%s"
                 % (d.get("seq", "-"), d.get("playhead_ms", 0) / 1000.0, d.get("length_s", 0),
                    d.get("fingerprint", "-"), d.get("peak_db", _FLOAT_NEG), d.get("peak_hold_db", _FLOAT_NEG),

@@ -76,7 +76,7 @@ def _prime_all_audio_route():
         if combined:
             try:
                 subprocess.run(
-                    [shutil.which("pactl") or "pactl", "set-default-sink", combined],
+                    [__import__("sos_tools").which("pactl") or "pactl", "set-default-sink", combined],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5, check=False,
                 )
             except Exception:
@@ -199,7 +199,7 @@ def ensure_first_hardware_refresh(reason: str = "hardware-use", *, block: bool =
     return snapshot()
 
 
-def ensure_audio_ready(reason: str = "audio-use"):
+def ensure_audio_ready(reason: str = "audio-use", reroute: bool = True):
     """First-use gate plus an immediate audio-only cache refresh.
 
     Full hardware probing remains background-only, while audio enumeration is
@@ -220,6 +220,10 @@ def ensure_audio_ready(reason: str = "audio-use"):
     except Exception:
         pass
     # Non-blocking All-outputs / HDMI unmute so first mpv play is audible.
+    # LIVE_INPUTS_R7: opening a capture stream while playback is running must never re-route outputs
+    # (set-default-sink / combined-sink rebuild stranded the live output stream: synths went silent).
+    if not reroute:
+        return
     try:
         threading.Thread(target=_prime_all_audio_route_throttled, daemon=True, name="GrooveboxAudioReadyPrime").start()
     except Exception:

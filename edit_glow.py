@@ -40,13 +40,20 @@ def refresh(app):
     except Exception:
         return
     col = color(app, name, sid)
+    key = (per, name, sid, str(col))
+    if getattr(app, "_r101_glow_key", None) == key:        # R101: nothing changed → no repaint of every target
+        return
+    app._r101_glow_key = key
     lab = getattr(app, "lbl_edit_mode_hint", None)
     disp = app.instrument_label(name) if hasattr(app, "instrument_label") else name
     for w in _targets(app):
         try:
             if per:
-                e = QGraphicsDropShadowEffect(w); e.setBlurRadius(22); e.setOffset(0, 0); e.setColor(QColor(col)); w.setGraphicsEffect(e)
-            else:
+                e = w.graphicsEffect()
+                if not isinstance(e, QGraphicsDropShadowEffect):      # R101: reuse the effect, only recolour it
+                    e = QGraphicsDropShadowEffect(w); e.setBlurRadius(22); e.setOffset(0, 0); w.setGraphicsEffect(e)
+                e.setColor(QColor(col))
+            elif w.graphicsEffect() is not None:
                 w.setGraphicsEffect(None)
             for c in w.findChildren(QSlider) + w.findChildren(QAbstractSpinBox):
                 base = c.property("_r89_tip")

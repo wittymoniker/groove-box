@@ -33,7 +33,9 @@ def install(app):
     """Wrap _classify_live_game so overrides apply everywhere a game is made."""
     if getattr(app, "_r32_game_hooked", False):
         return
-    orig = app._classify_live_game
+    orig = getattr(app, "_classify_live_game", None)
+    if orig is None:                 # HOOK_GUARD_R6: host without this method (preview / bare window)
+        return
 
     def _classify(_orig=orig):
         identity, meta = _orig()
@@ -113,8 +115,7 @@ def _presets_path():
 def _user_presets():
     import json
     try:
-        with open(_presets_path(), encoding="utf-8") as f:
-            d = json.load(f)
+        d = __import__("safe_io").load_json(_presets_path(), encoding="utf-8")
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
@@ -124,8 +125,7 @@ def _save_user_presets(d):
     import json, os
     try:
         os.makedirs(os.path.dirname(_presets_path()), exist_ok=True)
-        with open(_presets_path(), "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=1)
+        __import__("safe_io").atomic_write_json(_presets_path(), d, indent=1, encoding="utf-8")
     except Exception:
         pass
 
@@ -155,6 +155,13 @@ def morph_identities(sources):
     names = [str(i.get("title", "?")).strip("◆ ").split(" [")[0] for i, _w in src]
     over["title"] = "◆ Morph of " + " × ".join(n[:18] for n in names[:3]) + " ◆"
     seed = sum(float(i.get("seed", 0) or 0) * w for i, w in src) / tot
+    try:   # MATH_INVARIANTS_R7: the morph seed is a convex combination of the source seeds
+        import math_invariants as _mi
+        _ss = [float(i.get("seed", 0) or 0) for i, _w in src]
+        if _ss:
+            _mi.guard("morph_convex", min(_ss) - 1e-9 <= seed <= max(_ss) + 1e-9, "seed %r not in [%r, %r]" % (seed, min(_ss), max(_ss)))
+    except Exception:
+        pass
     # macros follow the mix: chaos ← difficulty spread, density ← sigils, pace / drift / reward ← seed digits
     u = [(int(seed * 1000) >> s) % 97 / 96.0 for s in (0, 7, 13)]
     macros = {"CHAOS": min(1.0, 0.2 + 0.8 * (len({i.get("difficulty") for i, _w in src}) - 1) / max(1, len(src) - 1)) if len(src) > 1 else 0.5,

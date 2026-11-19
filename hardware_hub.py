@@ -66,7 +66,11 @@ def run_probe_retry(args, timeout=2.0, *, retries=1):
         if cp.returncode >= 0:
             return cp
         last = cp
-        _time.sleep(0.25)
+        try:
+            import compat_settings as _cs_w
+            _time.sleep(_cs_w.wait_s(0.25))
+        except Exception:
+            _time.sleep(0.25)
     try:
         name = _signal.Signals(-last.returncode).name
     except Exception:
@@ -160,8 +164,8 @@ def scan() -> Dict[str, Any]:
     PipeWire utility cannot make the Hardware page falsely report zero.
     """
     names=_input_names(); cls=_classify_inputs(names)
-    usb=_cmd(['lsusb']) if shutil.which('lsusb') else ''
-    bt=_cmd(['bluetoothctl','devices','Connected']) if shutil.which('bluetoothctl') else ''
+    usb=_cmd(['lsusb']) if __import__("sos_tools").which('lsusb') else ''
+    bt=_cmd(['bluetoothctl','devices','Connected']) if __import__("sos_tools").which('bluetoothctl') else ''
 
     # Display discovery must not depend on X11.  sOS normally runs Wayland.
     display_summary=[]
@@ -175,19 +179,19 @@ def scan() -> Dict[str, Any]:
                 if label not in display_summary: display_summary.append(label)
     except Exception:
         pass
-    if not display_summary and shutil.which('wlr-randr') and os.environ.get('WAYLAND_DISPLAY'):
+    if not display_summary and __import__("sos_tools").which('wlr-randr') and os.environ.get('WAYLAND_DISPLAY'):
         wr=_cmd(['wlr-randr'])
         display_summary=[ln.strip() for ln in wr.splitlines() if ln and not ln[:1].isspace()][:16]
-    if not display_summary and shutil.which('xrandr') and os.environ.get('DISPLAY'):
+    if not display_summary and __import__("sos_tools").which('xrandr') and os.environ.get('DISPLAY'):
         xr=_cmd(['xrandr','--query'])
         display_summary=[ln for ln in xr.splitlines() if ' connected' in ln][:16]
 
     audio_status=''
     wpctl_status=''
-    if shutil.which('wpctl'):
+    if __import__("sos_tools").which('wpctl'):
         wpctl_status=_cmd(['wpctl','status'], timeout=1.5)
         audio_status=wpctl_status
-    elif shutil.which('pactl'):
+    elif __import__("sos_tools").which('pactl'):
         audio_status=_cmd(['pactl','info'], timeout=1.5)
     elif os.path.exists('/proc/asound/cards'):
         audio_status=_read_text('/proc/asound/cards')
@@ -238,18 +242,18 @@ def scan() -> Dict[str, Any]:
             cleaned=cleaned.split(' [',1)[0].strip()
             if cleaned:
                 (audio_outputs if section=='sinks' else audio_inputs).append(cleaned)
-    if not audio_outputs and shutil.which('pactl'):
+    if not audio_outputs and __import__("sos_tools").which('pactl'):
         for line in _cmd(['pactl','list','short','sinks'], timeout=1.5).splitlines():
             cols=line.split('\t')
             if len(cols)>1: audio_outputs.append(cols[1].strip())
-    if not audio_inputs and shutil.which('pactl'):
+    if not audio_inputs and __import__("sos_tools").which('pactl'):
         for line in _cmd(['pactl','list','short','sources'], timeout=1.5).splitlines():
             cols=line.split('\t')
             if len(cols)>1 and '.monitor' not in cols[1]: audio_inputs.append(cols[1].strip())
-    if not audio_outputs and shutil.which('aplay'):
+    if not audio_outputs and __import__("sos_tools").which('aplay'):
         for line in _cmd(['aplay','-l'], timeout=1.5).splitlines():
             if line.lower().startswith('card '): audio_outputs.append(line.strip())
-    if not audio_inputs and shutil.which('arecord'):
+    if not audio_inputs and __import__("sos_tools").which('arecord'):
         for line in _cmd(['arecord','-l'], timeout=1.5).splitlines():
             if line.lower().startswith('card '): audio_inputs.append(line.strip())
     if not audio_outputs and os.path.exists('/proc/asound/cards'):
@@ -335,7 +339,7 @@ def _kind_from_name(name: str):
 
 def _windows_inventory():
     inv = _blank_inventory()
-    ps = shutil.which('powershell') or shutil.which('pwsh')
+    ps = __import__("sos_tools").which('powershell') or __import__("sos_tools").which('pwsh')
     if not ps:
         return inv
     script = ("$ErrorActionPreference='SilentlyContinue';"
@@ -376,7 +380,7 @@ def _windows_inventory():
 def _mac_inventory():
     import json as _json
     inv = _blank_inventory()
-    if not shutil.which('system_profiler'):
+    if not __import__("sos_tools").which('system_profiler'):
         return inv
     out = _cmd(['system_profiler', '-json', '-detailLevel', 'mini', 'SPUSBDataType', 'SPCameraDataType',
                 'SPAudioDataType', 'SPDisplaysDataType', 'SPBluetoothDataType'], timeout=6.0)
@@ -449,7 +453,7 @@ def os_inventory(ttl: float = 20.0):
 def _scan_audio_only():
     outputs=[]; inputs=[]; status=''
     wp=''
-    if shutil.which('wpctl'):
+    if __import__("sos_tools").which('wpctl'):
         wp=_cmd(['wpctl','status'],timeout=1.2); status=wp
         section=''
         for raw in wp.splitlines():
@@ -462,11 +466,11 @@ def _scan_audio_only():
             cleaned=cleaned.split(' [',1)[0].strip()
             if cleaned and not any(x in cleaned.casefold() for x in ('dummy output','auto_null','.monitor')):
                 (outputs if section=='sinks' else inputs).append(cleaned)
-    if not outputs and shutil.which('pactl'):
+    if not outputs and __import__("sos_tools").which('pactl'):
         for line in _cmd(['pactl','list','short','sinks'],timeout=1.2).splitlines():
             c=line.split('\t');
             if len(c)>1 and not any(x in c[1].casefold() for x in ('dummy','auto_null')): outputs.append(c[1].strip())
-    if not inputs and shutil.which('pactl'):
+    if not inputs and __import__("sos_tools").which('pactl'):
         for line in _cmd(['pactl','list','short','sources'],timeout=1.2).splitlines():
             c=line.split('\t');
             if len(c)>1 and '.monitor' not in c[1]: inputs.append(c[1].strip())
@@ -479,10 +483,10 @@ def _scan_audio_only():
             if int(d.get('max_output_channels',0) or 0)>0: outputs.append(name)
             if int(d.get('max_input_channels',0) or 0)>0 and 'monitor' not in low: inputs.append(name)
     except Exception: pass
-    if not outputs and shutil.which('aplay'):
+    if not outputs and __import__("sos_tools").which('aplay'):
         for line in _cmd(['aplay','-l'],timeout=1.2).splitlines():
             if line.lower().startswith('card '): outputs.append(line.strip())
-    if not inputs and shutil.which('arecord'):
+    if not inputs and __import__("sos_tools").which('arecord'):
         for line in _cmd(['arecord','-l'],timeout=1.2).splitlines():
             if line.lower().startswith('card '): inputs.append(line.strip())
     if not outputs or not inputs:
@@ -515,9 +519,9 @@ def _scan_display_only():
             if os.path.isfile(modes): mode=(_read_text(modes).splitlines() or [''])[0]
             vals.append((base + (' '+mode if mode else '')).strip())
         except Exception: pass
-    if not vals and shutil.which('wlr-randr') and os.environ.get('WAYLAND_DISPLAY'):
+    if not vals and __import__("sos_tools").which('wlr-randr') and os.environ.get('WAYLAND_DISPLAY'):
         vals=[ln.strip() for ln in _cmd(['wlr-randr'],timeout=1.2).splitlines() if ln and not ln[:1].isspace()][:16]
-    if not vals and shutil.which('xrandr') and os.environ.get('DISPLAY'):
+    if not vals and __import__("sos_tools").which('xrandr') and os.environ.get('DISPLAY'):
         vals=[ln for ln in _cmd(['xrandr','--query'],timeout=1.2).splitlines() if ' connected' in ln][:16]
     if not vals: vals=list(os_inventory().get('display', []))
     return {'display_summary':_uniq(vals)[:16],'tools':_tools()}
@@ -527,8 +531,8 @@ def _scan_input_only():
     try:
         import mido; midi=list(mido.get_input_names())
     except Exception: pass
-    usb=_cmd(['lsusb'],timeout=1.2) if shutil.which('lsusb') else ''
-    bt=_cmd(['bluetoothctl','devices','Connected'],timeout=1.2) if shutil.which('bluetoothctl') else ''
+    usb=_cmd(['lsusb'],timeout=1.2) if __import__("sos_tools").which('lsusb') else ''
+    bt=_cmd(['bluetoothctl','devices','Connected'],timeout=1.2) if __import__("sos_tools").which('bluetoothctl') else ''
     usb_l=usb.splitlines()[:64] if usb else []; bt_l=bt.splitlines()[:32] if bt else []
     inv=os_inventory() if not names else {}
     if inv:

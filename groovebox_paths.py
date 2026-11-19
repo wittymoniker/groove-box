@@ -628,7 +628,7 @@ def hide_system_dirs(root=None) -> int:
         hf = root / ".hidden"
         cur = set(hf.read_text(encoding="utf-8").split()) if hf.exists() else set()
         if not set(hidden) <= cur:
-            hf.write_text("\n".join(sorted(cur | set(hidden))) + "\n", encoding="utf-8")
+            __import__("safe_io").atomic_write_text(hf, "\n".join(sorted(cur | set(hidden))) + "\n", encoding="utf-8")
     except Exception:
         pass
     for name in hidden:
@@ -703,7 +703,7 @@ def remember_dir(kind, path) -> None:
         except Exception:
             pass
         data[str(kind)] = d
-        p.write_text(_json.dumps(data, indent=1), encoding="utf-8")
+        __import__("safe_io").atomic_write_text(p, _json.dumps(data, indent=1), encoding="utf-8")
     except Exception:
         pass
 

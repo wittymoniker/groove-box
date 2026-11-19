@@ -492,7 +492,7 @@ class CameraFeed:
             ff = self.host._resolve_ffmpeg_binary()
         except Exception:
             pass
-        ff = ff or shutil.which("ffmpeg")
+        ff = ff or __import__("sos_tools").which("ffmpeg")
         if not ff:
             self.error = "camera needs ffmpeg"; return False
         cam = ""
@@ -615,7 +615,7 @@ def _ffmpeg_for(host):
             return ff
     except Exception:
         pass
-    return shutil.which("ffmpeg")
+    return __import__("sos_tools").which("ffmpeg")
 
 
 def decode_audio_file(host, path, sr):
@@ -661,7 +661,7 @@ def file_has_video(host, path):
     ext = str(path).lower().rsplit(".", 1)[-1]
     if ext in ("mp3", "wav", "flac", "ogg", "opus", "m4a", "aac", "aif", "aiff", "wma"):
         return False
-    probe = shutil.which("ffprobe")
+    probe = __import__("sos_tools").which("ffprobe")
     ff = _ffmpeg_for(host)
     if ff:
         import os
@@ -1517,7 +1517,7 @@ class LiveRecorder:
                 return ff
         except Exception:
             pass
-        return shutil.which("ffmpeg")
+        return __import__("sos_tools").which("ffmpeg")
 
     def _open_video(self):
         import os, subprocess
@@ -2094,8 +2094,7 @@ def _user_presets_path():
 def _user_presets():
     import json
     try:
-        with open(_user_presets_path(), "r", encoding="utf-8") as f:
-            d = json.load(f)
+        d = __import__("safe_io").load_json(_user_presets_path(), encoding="utf-8")
         return {str(k): {str(a): int(b) for a, b in v.items()} for k, v in d.items() if isinstance(v, dict)}
     except Exception:
         return {}
@@ -2106,8 +2105,7 @@ def _save_user_presets(d):
     path = _user_presets_path()
     try:
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=1)
+        __import__("safe_io").atomic_write_json(tmp, d, indent=1, encoding="utf-8")
         os.replace(tmp, path)
     except Exception:
         pass
@@ -2642,8 +2640,15 @@ def _apply_live_play_thread_budget(mode_key, recording=None):
     record_requested = bool(cfg.get("record")) or bool(recording)
     # Recording adds an audio writer, a frame renderer and an encoder. Preserve
     # two logical processors for GUI/audio/OS when a take is active.
-    max_pool = max(1, min(6, ncpu - (2 if record_requested else 1)))
-    cfg["pool_workers"] = max(1, min(int(cfg.get("pool_workers", 4)), max_pool))
+    try:
+        import thread_budget as _tbx
+        _extra = int(_tbx.live_player_extra())
+    except Exception:
+        _extra = 1
+    # R98: +1–2 workers for the canonical / video-synth / streamer elements of the Live Player.
+    max_pool = max(1, min(8, ncpu - (2 if record_requested else 1)))
+    cfg["pool_workers"] = max(1, min(int(cfg.get("pool_workers", 4)) + _extra, max_pool))
+    cfg["live_extra_workers"] = _extra
     cfg["record_requested"] = record_requested
     cfg["record_worker_reserve"] = 1 if record_requested else 0
     cfg["ncpu"] = ncpu
@@ -2793,7 +2798,7 @@ class LivePlayerWindow(QDialog):
             import thread_budget
             # Interactive so bulk sCode / export workers cannot starve the take.
             self._record_render_lane = thread_budget.make_lane(
-                "live-player-record-frames", max_workers=1, max_pending=4, kind="interactive")
+                "live-player-record-frames", max_workers=2, max_pending=6, kind="interactive")   # R98: +1 streamer worker
         except Exception:
             self._record_render_lane = None
         # Compatibility fallback is created lazily only when the shared lane
@@ -3954,9 +3959,11 @@ class LivePlayerWindow(QDialog):
         cfg = getattr(self, "_full_cpu_cfg", {}) or {}
         size = tuple(cfg.get("rig_size") or self._rig_size())
         workers = int(cfg.get("rig_workers", 1 if not cfg.get("scode_pool_visual") else 2))
+        if workers > 0:
+            workers += 1          # R98: the video synth gets one extra worker
         try:   # R32.8 DYNAMIC_RAM: each rig worker holds its own engine — cap by the memory tier
             import resource_governor as _rg
-            _cap_w = int(_rg.recommend()["rig_workers"])
+            _cap_w = int(_rg.recommend()["rig_workers"]) + 1
         except Exception:
             _cap_w = 8
         if workers <= 0:
@@ -4364,7 +4371,7 @@ class LivePlayerWindow(QDialog):
             # independent user choice and must remain available in every mode.
             if cfg.get("rig_size") and hasattr(self, "chk_rig") and not self.chk_rig.isChecked():
                 self.chk_rig.blockSignals(True); self.chk_rig.setChecked(True); self.chk_rig.blockSignals(False)   # 4K stream needs the rig
-            if hasattr(self, "chk_rec") and cfg.get("record"):
+            if hasattr(self, "chk_rec") and cfg.get("record") and getattr(self, "_autopilot_record_choice", True):
                 self.chk_rec.blockSignals(True); self.chk_rec.setChecked(True); self.chk_rec.blockSignals(False)
                 if hasattr(self, "chk_rec_video"):
                     self.chk_rec_video.setChecked(True)
@@ -4934,6 +4941,10 @@ class LivePlayerWindow(QDialog):
             if _ne and _ne != getattr(self, "_cb_errors_shown", 0):
                 self._cb_errors_shown = _ne
                 self.status.setText("⚠ audio callback: %s" % getattr(eng, "cb_last_error", "?"))
+                try:
+                    __import__("notify_center").notify(self.host, "Live Player audio: %s" % getattr(eng, "cb_last_error", "?"), "audio", key="lp-cb", every_s=10)
+                except Exception:
+                    pass
         except Exception:
             pass
         if eng is not None and eng.mic is not None:

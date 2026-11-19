@@ -148,7 +148,7 @@ def edit_audio(path, op, **kw):
 
 
 def ffmpeg_convert(path, ext):
-    ff = shutil.which("ffmpeg")
+    ff = __import__("sos_tools").which("ffmpeg")
     if not ff:
         return "ffmpeg not found"
     out = os.path.splitext(path)[0] + "." + ext.lstrip(".")
@@ -177,7 +177,7 @@ def repair_nested(root_dir):
 # ---------------------------------------------------------------------------
 # window
 # ---------------------------------------------------------------------------
-TABS = ("Projects", "MCC editor", "Samples", "Exports", "Seeds", "Presets", "Recordings", "Versions", "Caches")
+TABS = ("Projects", "MCC editor", "Samples", "Exports", "Seeds", "Presets", "Recordings", "Versions", "Caches", "Drives")
 
 
 def open_window(app, tab=None):
@@ -310,8 +310,7 @@ def open_window(app, tab=None):
             path, _ = QFileDialog.getOpenFileName(w, "MCC document", base, "MCC (*.MCC *.mcc)")
         if not path:
             return
-        with open(path, encoding="utf-8") as f:
-            state["data"] = json.load(f)
+        state["data"] = __import__("safe_io").load_json(path, encoding="utf-8")
         state["path"] = path
         tree.clear(); _build(tree.invisibleRootItem(), state["data"]); return "loaded " + path
 
@@ -349,8 +348,7 @@ def open_window(app, tab=None):
     def m_diff():
         if state["data"] is None:
             return
-        with open(state["path"], encoding="utf-8") as f:
-            disk = json.load(f)
+        disk = __import__("safe_io").load_json(state["path"], encoding="utf-8")
         ch = [k for k in set(disk) | set(state["data"]) if disk.get(k) != state["data"].get(k)]
         return "changed top-level keys: " + (", ".join(sorted(ch)) or "none")
     _buttons(l, (("Load open project", guard(m_load)), ("Load file…", guard(lambda: m_load(QFileDialog.getOpenFileName(w, "MCC", base, "MCC (*.MCC *.mcc)")[0] or None))),
@@ -448,7 +446,7 @@ def open_window(app, tab=None):
     # 5 Seeds -----------------------------------------------------------------
     t = QWidget(); l = QVBoxLayout(t); tabs.addTab(t, "🌱 Seeds")
     seed_dir = os.path.join(_gp().state_dir(), "seeds"); os.makedirs(seed_dir, exist_ok=True)
-    sp = QSplitter(); seeds = QListWidget(); sed = QTextEdit(); sed.setStyleSheet("font-family:Consolas,monospace;font-size:9pt;")
+    sp = QSplitter(); seeds = QListWidget(); sed = QTextEdit(); sed.setStyleSheet("font-family:Consolas;font-size:9pt;")
     sp.addWidget(seeds); sp.addWidget(sed); sp.setSizes([260, 680]); l.addWidget(sp, 1)
     sdiag = QLabel(""); l.addWidget(sdiag)
 
@@ -489,7 +487,7 @@ def open_window(app, tab=None):
     # 6 Presets -----------------------------------------------------------------
     t = QWidget(); l = QVBoxLayout(t); tabs.addTab(t, "🎛 Presets")
     pdir = os.path.join(_gp().state_dir(), "presets"); os.makedirs(pdir, exist_ok=True)
-    sp = QSplitter(); plist = QListWidget(); ped = QTextEdit(); ped.setStyleSheet("font-family:Consolas,monospace;font-size:9pt;")
+    sp = QSplitter(); plist = QListWidget(); ped = QTextEdit(); ped.setStyleSheet("font-family:Consolas;font-size:9pt;")
     sp.addWidget(plist); sp.addWidget(ped); sp.setSizes([260, 680]); l.addWidget(sp, 1)
     SOURCES = {"fx": "r32_fx_state", "time_fx": "r32_time_fx", "synth_engine": "r32_synth_engine",
                "post": "blueprint_post_settings", "blueprint": "project_blueprint", "geo_mixer": "geometric_synth_mixer_state"}
@@ -503,8 +501,7 @@ def open_window(app, tab=None):
         k = kind.currentText(); val = getattr(app, SOURCES[k], None)
         name, ok = QInputDialog.getText(w, "Capture preset", "Name:", text="%s %s" % (k, time.strftime("%H%M%S")))
         if ok and name.strip():
-            with open(os.path.join(pdir, _gp()._safe_project_name(name) + ".json"), "w", encoding="utf-8") as f:
-                json.dump({"kind": k, "value": val}, f, indent=1, default=str)
+            __import__("safe_io").atomic_write_json(os.path.join(pdir, _gp()._safe_project_name(name) + ".json"), {"kind": k, "value": val}, indent=1, default=str, encoding="utf-8")
             refresh_presets()
 
     def pr_apply():
@@ -583,6 +580,12 @@ def open_window(app, tab=None):
         tabs.addTab(site_directory.make_cache_page(app), "🧹 Caches")
     except Exception as exc:
         tabs.addTab(QLabel("caches unavailable: %s" % exc), "🧹 Caches")
+    # 10 Drives: format USB / SD media (never the host install or the boot medium) ----------------------------
+    try:
+        import drive_formatter as _dfm
+        tabs.addTab(_dfm.make_page(app), "💽 Drives")
+    except Exception as _dexc:
+        tabs.addTab(QLabel("drive formatter unavailable: %s" % _dexc), "💽 Drives")
 
     if tab in TABS:
         tabs.setCurrentIndex(TABS.index(tab))
