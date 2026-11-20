@@ -307,14 +307,14 @@ class LayeredSignalLab(QWidget):
         if self._preview is None:return
         base=groovebox_paths.layers_dir(getattr(self.host,'_current_project_path',None)); p=os.path.join(base,f'groovebox_layered_{"local" if local else "global"}.wav'); write_wav(p,self._preview,self._preview_sr); groovebox_paths.index_file(p,'layer_render',getattr(self.host,'_current_project_path',None)); self.last_generated=p
         try:
-            if local:
-                name='selected'; combo=getattr(self.host,'instrument_selector_dropdown',None)
-                if combo is not None:name=combo.currentText()
-                store=getattr(self.host,'instrument_media_samples',None)
-                if not isinstance(store,dict):store={};setattr(self.host,'instrument_media_samples',store)
-                store[name]={'path':p,'sample_rate':self._preview_sr,'waveform':self._preview.copy(),'user_owned':True,'source_kind':'layered','layered_state':self.export_state()}
-            else:
-                setattr(self.host,'_global_carrier_path',p); setattr(self.host,'global_media_sample',{'path':p,'derived':True,'source':'layered','layered_state':self.export_state()})
+            # GROOVEBOX_R118_CARRIER_BRIDGE (reconstructed R123): global send now reaches the engine's carrier.
+            import carrier_bridge
+            ctx=('instrument_carrier:'+carrier_bridge.selected_instrument(self.host)) if local else 'global_carrier'
+            carrier_bridge.send(self.host,self._preview.copy(),ctx,kind='audio',rate=float(self._preview_sr),source='layered',
+                                name='layered_'+('local' if local else 'global'),layered_state=self.export_state())
+            if not local:
+                gms=getattr(self.host,'global_media_sample',None)
+                if isinstance(gms,dict): gms['layered_state']=self.export_state()
             self._state_changed(); self.report.setPlainText(('Local' if local else 'Global')+' layered sample sent: '+p)
         except Exception as e:QMessageBox.warning(self,'Send failed',str(e))
     def _refresh_record_inputs(self):

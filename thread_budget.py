@@ -198,6 +198,11 @@ def set_streamable(on: bool):
     _STREAMABLE = bool(on)
 
 
+def streamable_enabled():
+    """Return whether adaptive migratory scheduling is enabled."""
+    return bool(_STREAMABLE)
+
+
 def migratory_threads():
     """Return a safe advisory width; Streamable never overrides hardware caps."""
     if not _STREAMABLE:
@@ -1009,11 +1014,33 @@ def make_lane(name, max_workers=1, max_pending=256, kind=None):
 
 
 def apply():
-    """Set math-library thread counts before NumPy is imported."""
+    """Set math-library thread counts before NumPy is imported.
+
+    GROOVEBOX_R123_RUNTIME_FLUX_DEFAULTS_20261119: every compute runtime Groovebox can load gets
+    the same budget, so nothing silently runs single-threaded (Julia's default is 1 thread) and
+    nothing oversubscribes the CPU that the audio callback needs:
+      math width N (compute_threads)  -> BLAS/OpenMP/NumExpr/Numba/BLIS/Polars, Rayon (Rust),
+                                         Julia/JuliaCall (N default threads + 1 interactive)
+      shared lane width (lane_workers) -> GOMAXPROCS for Go sidecars (helpers, not the hot path)
+    OMP_WAIT_POLICY=PASSIVE keeps idle math threads from spinning on audio's core, and
+    MALLOC_ARENA_MAX bounds glibc arenas so long sessions do not fragment RAM. Every value is a
+    setdefault: an explicit user/environment choice always wins.
+    """
     n = str(compute_threads())
-    for name in _VARS:
+    for name in _VARS + ("NUMBA_NUM_THREADS", "BLIS_NUM_THREADS", "POLARS_MAX_THREADS",
+                         "RAYON_NUM_THREADS"):
         os.environ.setdefault(name, n)
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+    os.environ.setdefault("JULIA_NUM_THREADS", f"{n},1")
+    os.environ.setdefault("PYTHON_JULIACALL_THREADS", n)
+    if int(n) > 1:
+        # juliacall requires Julia signal handling when Julia runs more than one thread.
+        os.environ.setdefault("PYTHON_JULIACALL_HANDLE_SIGNALS", "yes")
+    try:
+        os.environ.setdefault("GOMAXPROCS", str(lane_workers()))
+    except Exception:
+        os.environ.setdefault("GOMAXPROCS", n)
+    os.environ.setdefault("MALLOC_ARENA_MAX", str(max(2, min(8, int(n)))))
     return int(n)
 
 
@@ -1024,8 +1051,9 @@ def shutdown_shared_executor(wait=False, cancel_futures=True):
         ex, _SHARED = _SHARED, None
         ix, _INTERACTIVE = _INTERACTIVE, None
         gx, _ENGINE = _ENGINE, None
+    io, _IO_POOL[0] = _IO_POOL[0], None
     seen = set()
-    for e in (ex, ix, gx):
+    for e in (ex, ix, gx, io):
         if e is not None and id(e) not in seen:
             seen.add(id(e))
             e.shutdown(wait=bool(wait), cancel_futures=bool(cancel_futures))
@@ -1044,3 +1072,103 @@ def live_player_extra():
     """R98: extra workers given to the Live Player canonical / video-synth / streamer elements (1–2 by core count)."""
     c = usable_cores()
     return 2 if c >= 6 else (1 if c >= 3 else 0)
+
+
+# ---------------------------------------------------------------------------
+# GROOVEBOX_R123_BOUNDED_ONESHOT_20261119
+# Fire-and-forget work used to start one raw daemon Thread per call (network jam sends,
+# clock-offset probes, push-to-talk, waveform decodes). Under a slow network or a timer
+# that fires faster than the send completes, that grew without bound. spawn() routes the
+# work through bounded pools instead:
+#   kind="io"   — blocking I/O (sockets, files, subprocess waits): small dedicated pool, so it
+#                  never occupies compute workers;
+#   kind="bulk" — CPU work (decodes, analysis): the shared bulk executor via a named lane.
+# coalesce=True keeps only the newest pending call per name ("latest state wins"), which is
+# the right semantics for periodic state broadcasts. Saturation falls back to dropping the
+# call for coalesced work, and to a named daemon thread otherwise (counted in report()).
+# ---------------------------------------------------------------------------
+_ONESHOT_LOCK = threading.Lock()
+_ONESHOT_LANES = {}
+_ONESHOT_COALESCE = {}
+_ONESHOT_STATS = {"submitted": 0, "coalesced": 0, "fallback_threads": 0, "failed": 0}
+_IO_POOL = [None]
+
+
+def io_workers():
+    return max(2, min(8, usable_cores()))
+
+
+def _io_executor():
+    with _ONESHOT_LOCK:
+        if _IO_POOL[0] is None:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            _IO_POOL[0] = _TPE(max_workers=io_workers(), thread_name_prefix="groovebox-io")
+        return _IO_POOL[0]
+
+
+def _oneshot_call(name, fn, args, kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        with _ONESHOT_LOCK:
+            _ONESHOT_STATS["failed"] += 1
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _oneshot_submit(name, kind, fn, args, kwargs):
+    if kind == "io":
+        return _io_executor().submit(_oneshot_call, name, fn, args, kwargs)
+    with _ONESHOT_LOCK:
+        lane = _ONESHOT_LANES.get(name)
+        if lane is None:
+            lane = _ONESHOT_LANES[name] = make_lane("oneshot-" + str(name), max_workers=2, max_pending=64, kind=kind)
+    return lane.submit(_oneshot_call, name, fn, args, kwargs)
+
+
+def spawn(name, fn, *args, kind="io", coalesce=False, **kwargs):
+    """Run fn(*args, **kwargs) in the background on a bounded pool. Returns a Future or None."""
+    with _ONESHOT_LOCK:
+        _ONESHOT_STATS["submitted"] += 1
+        if coalesce:
+            st = _ONESHOT_COALESCE.setdefault(name, {"running": False, "pending": None})
+            if st["running"]:
+                st["pending"] = (fn, args, kwargs)
+                _ONESHOT_STATS["coalesced"] += 1
+                return None
+            st["running"] = True
+    if coalesce:
+        def _drain(fn=fn, args=args, kwargs=kwargs):
+            job = (fn, args, kwargs)
+            while job is not None:
+                _oneshot_call(name, *job)
+                with _ONESHOT_LOCK:
+                    st = _ONESHOT_COALESCE[name]
+                    job, st["pending"] = st["pending"], None
+                    if job is None:
+                        st["running"] = False
+        try:
+            return _oneshot_submit(name, kind, _drain, (), {})
+        except Exception:
+            with _ONESHOT_LOCK:
+                _ONESHOT_COALESCE[name]["running"] = False
+                _ONESHOT_STATS["failed"] += 1
+            return None
+    try:
+        return _oneshot_submit(name, kind, fn, args, kwargs)
+    except Exception:
+        with _ONESHOT_LOCK:
+            _ONESHOT_STATS["fallback_threads"] += 1
+        threading.Thread(target=_oneshot_call, args=(name, fn, args, kwargs),
+                         name="groovebox-oneshot-" + str(name), daemon=True).start()
+        return None
+
+
+def oneshot_report():
+    with _ONESHOT_LOCK:
+        out = dict(_ONESHOT_STATS)
+        out["io_workers"] = io_workers()
+        out["lanes"] = sorted(_ONESHOT_LANES)
+        out["coalescing"] = sorted(k for k, v in _ONESHOT_COALESCE.items() if v["running"])
+    return out

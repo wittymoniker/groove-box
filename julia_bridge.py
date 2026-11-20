@@ -23,7 +23,68 @@ if not os.environ.get("PYTHON_JULIACALL_EXE"):
     _system_julia = shutil.which("julia")
     if _system_julia:
         os.environ["PYTHON_JULIACALL_EXE"] = _system_julia
+# GROOVEBOX_R123_JULIACALL_PAIR_20261119: JuliaCall ≥ 0.9.2x refuses to start ("Both PYTHON_JULIACALL_PROJECT and
+# PYTHON_JULIACALL_EXE must be set together") when only one is set, so a desktop with julia on PATH never loaded Julia.
+def _jl_project_ready(path):
+    """A JuliaCall project is usable only when PythonCall is already resolved in it."""
+    try:
+        for name in ("Manifest.toml", "JuliaManifest.toml", "Manifest-v1.11.toml"):
+            f = os.path.join(path, name)
+            if os.path.isfile(f) and "PythonCall" in open(f, encoding="utf-8", errors="replace").read():
+                return True
+    except Exception:
+        pass
+    return False
 
+
+if os.environ.get("PYTHON_JULIACALL_EXE") and not os.environ.get("PYTHON_JULIACALL_PROJECT"):
+    _jl_proj = None
+    _jl_cands = ["/opt/sos/julia-project"]
+    try:
+        import toolchain_env as _tce
+        _jl_cands.append(str(_tce.data_dir() / "julia-project"))
+    except Exception:
+        _jl_cands.append(os.path.join(os.path.expanduser("~"), ".local", "share", "groovebox", "julia-project"))
+    for _c in _jl_cands:
+        if _jl_project_ready(_c):
+            _jl_proj = _c
+            break
+    if _jl_proj is not None:
+        os.environ["PYTHON_JULIACALL_PROJECT"] = _jl_proj
+    else:
+        # No prepared project holds PythonCall: pairing EXE with an empty project would fail at
+        # "PythonCall not found". Hand the chosen julia to JuliaPkg instead; it resolves PythonCall.
+        os.environ.setdefault("PYTHON_JULIAPKG_EXE", os.environ.pop("PYTHON_JULIACALL_EXE"))
+elif os.environ.get("PYTHON_JULIACALL_PROJECT") and not os.environ.get("PYTHON_JULIACALL_EXE"):
+    os.environ.pop("PYTHON_JULIACALL_PROJECT", None)     # no Julia to pair it with: let JuliaCall manage its own
+
+# R111: avoid JuliaCall's subprocess-based libjulia discovery in isolated sOS chroots.
+if not os.environ.get("PYTHON_JULIACALL_LIB"):
+    _julia_exe = (os.environ.get("PYTHON_JULIACALL_EXE") or os.environ.get("PYTHON_JULIAPKG_EXE")
+                  or shutil.which("julia"))
+    if _julia_exe:
+        _julia_bindir = os.path.dirname(os.path.realpath(_julia_exe))
+        _julia_root = os.path.dirname(_julia_bindir)
+        for _julia_lib in (os.path.join(_julia_root, "lib", "libjulia.so.1.11"),
+                           os.path.join(_julia_root, "lib", "julia", "libjulia.so.1.11")):
+            if os.path.isfile(_julia_lib):
+                os.environ["PYTHON_JULIACALL_LIB"] = _julia_lib
+                # GROOVEBOX_R123_NATIVE_ABI_UNIFICATION_20261119: Julia's private dirs go AFTER the
+                # system runtime so child processes never bind Julia's older libstdc++.
+                _loader_dirs = (_julia_root + "/lib", _julia_root + "/lib/julia")
+                _existing = tuple(x for x in os.environ.get("LD_LIBRARY_PATH", "").split(":") if x)
+                os.environ["LD_LIBRARY_PATH"] = ":".join(dict.fromkeys(_existing + _loader_dirs))
+                break
+
+# GROOVEBOX_R123_JULIA_RUNTIME_ENV_20261119: the image resolves PythonCall against the system venv
+# Python with the CondaPkg Null backend; at runtime PythonCall/CondaPkg must never try to fetch
+# micromamba/pixi or a private Python (offline appliance, and the source of the libuv aborts seen
+# during image construction). setdefault keeps any explicit user choice.
+os.environ.setdefault("JULIA_CONDAPKG_BACKEND", "Null")
+os.environ.setdefault("JULIA_PYTHONCALL_EXE", os.path.realpath(__import__("sys").executable))
+os.environ.setdefault("UV_USE_IO_URING", "0")
+if os.path.isdir("/opt/sos/julia-depot"):          # sOS appliance: packages are baked in
+    os.environ.setdefault("JULIA_PKG_OFFLINE", "true")
 _JULIA_WANTED = os.environ.get("GROOVEBOX_JULIA", "1").strip().lower() not in {
     "0", "false", "no", "off"
 }
@@ -57,6 +118,10 @@ def _init_julia() -> bool:
         if _jl_ready:
             return True
         try:
+            try:  # R123: pin the newest C++ runtime before libjulia maps its private copy
+                import native_abi_guard as _abi  # noqa: F401
+            except Exception:
+                pass
             from juliacall import Main as jl  # type: ignore
             root = os.path.dirname(os.path.abspath(__file__))
             source = os.path.join(root, "julia", "GrooveboxHybrid.jl")
@@ -129,16 +194,12 @@ def jl_ot_prod(a: float, b: float) -> Optional[float]:
 
 
 def jl_eqr_isn(x: float) -> Optional[float]:
-    r = _call("eqr_isn", float(x))
-    if r is None:
-        r = _call("book_isy", float(x))
+    r = _call("eqr_isn", float(x))      # R123: no book_isy fallback — that is a different function (wrong values)
     return None if r is None else float(r)
 
 
 def jl_eqr_ics(x: float) -> Optional[float]:
     r = _call("eqr_ics", float(x))
-    if r is None:
-        r = _call("book_isx", float(x))
     return None if r is None else float(r)
 
 

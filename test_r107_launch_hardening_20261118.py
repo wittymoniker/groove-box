@@ -67,20 +67,26 @@ def test_iso_prepares_the_program_builder_language_runtimes():
     setup = (ROOT / "BUILD_ISO" / "runtime_setup_v35_22q.sh").read_text(encoding="utf-8")
     assert "build-essential golang-go" in setup
     assert "versions.json" in setup and "sha256sum -c" in setup
-    assert 'pip install --no-cache-dir juliacall' in setup
+    assert "juliacall>=0.9.37,<0.10" in setup   # R114 pin (binary-dir discovery fix)
+    assert 'PYTHON_JULIACALL_LIB="$JULIA_LIBJULIA"' in setup
     assert 'Pkg.add("PythonCall")' in setup
     sos = (ROOT / "LAUNCH_GROOVEBOX_SOS.sh").read_text(encoding="utf-8")
     assert "PYTHON_JULIACALL_EXE=/opt/sos/julia/bin/julia" in sos
+    assert 'export PYTHON_JULIACALL_LIB="$JULIA_LIBJULIA"' in sos
     assert "JULIA_PKG_OFFLINE=true" in sos
     stamp = (ROOT / "BUILD_ISO" / "stamp_final_initramfs_v35_22zz.sh").read_text(encoding="utf-8")
     assert "rust-host.tar.gz" in stamp and "groovebox-rust-toolchain.sh" in stamp
-    assert "compileall" not in stamp and "py_compile" not in stamp and "smoke_test.jl" in stamp
+    # R107/R108: syntax gates compile in memory; no compileall/py_compile bytecode writes into the image (R123 gate).
+    assert "GROOVEBOX_R123_HOST_SYNTAX_GATE_NO_BYTECODE_20261119" in stamp and "py_compile" not in stamp and "smoke_test.jl" in stamp
     assert "R108: purge stale bytecode caches" in stamp
     assert "FAIL: bytecode cache remains in deployed app/helper tree" in stamp
     assert "JULIA_DEPOT_PATH=/tmp/groovebox-julia-depot:/opt/sos/julia-depot" in stamp
+    assert 'PYTHON_JULIACALL_LIB="$JULIA_LIB_TARGET"' in stamp
+    assert "R111_JULIACALL_EXPLICIT_LIB" in stamp
 
 
 def test_julia_bridge_prefers_preinstalled_system_julia():
     source = (ROOT / "julia_bridge.py").read_text(encoding="utf-8")
     assert "shutil.which(\"julia\")" in source
     assert 'os.environ["PYTHON_JULIACALL_EXE"] = _system_julia' in source
+    assert 'os.environ["PYTHON_JULIACALL_LIB"] = _julia_lib' in source

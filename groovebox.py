@@ -77,6 +77,12 @@ if _runtime_error:
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
+# R121: preload a compatible system C++ ABI before Qt/NumPy native libraries.
+try:
+    import native_abi_guard as _native_abi_guard
+except Exception:
+    _native_abi_guard = None
+
 import random
 import secrets
 import struct
@@ -171,14 +177,14 @@ from author_number_codec import (
 # GROOVEBOX_V35_22ZU_WAYLAND_WINDOW_SESSION_MANAGER_20260924
 # GROOVEBOX_V35_22ZV_EXTERNAL_WINDOW_STRIP_SESSION_SAFE_CLOSE_20260924
 from PyQt6.QtWidgets import (
-    QProgressDialog,
+    QProgressDialog, QStyledItemDelegate,
     QApplication, QMainWindow, QWidget, QFrame, QVBoxLayout,
     QHBoxLayout, QLabel, QSlider, QPushButton, QComboBox, QScrollArea,
     QTabWidget, QLineEdit, QListWidget, QListWidgetItem, QFormLayout, QSpinBox, QDoubleSpinBox,
     QGridLayout, QLayout, QFileDialog, QSplitter, QGroupBox, QTextEdit, QPlainTextEdit, QMenu,
     QMessageBox, QTableWidget, QTableWidgetItem, QCheckBox, QDial, QMenuBar,
     QDialog, QInputDialog, QColorDialog, QHeaderView, QProgressBar, QSizePolicy, QToolButton,
-    QDialogButtonBox, QDockWidget, QTabBar, QProgressDialog, QAbstractSpinBox, QAbstractItemView,
+    QDialogButtonBox, QDockWidget, QTabBar, QProgressDialog, QAbstractSpinBox, QAbstractItemView, QAbstractScrollArea, QAbstractSlider,
 
 )  # QToolButton is required by the global EXPORT menu control; QProgressDialog by the async audio export.
 try:
@@ -199,54 +205,160 @@ def _stream_tuning(purpose):
 class _NoWheelSliderFilter(QObject):
     """Scroll the containing page instead of silently editing values by wheel.
 
-    Qt value widgets normally consume wheel events even when the user is only
-    trying to scroll a long control panel. Route wheel deltas to the nearest
-    scroll area and leave the parameter unchanged. On an unscrollable surface,
-    consume the event rather than changing a value unexpectedly.
+    GROOVEBOX_R123_SCROLL_UNLESS_CLICKED_20261119: the mouse wheel always scrolls the
+    page (vertically; Shift = horizontally) — over sliders, spin boxes, combo boxes,
+    custom canvases, 3-D views and nested lists alike — UNLESS the widget under the
+    cursor (or the panel containing it) was clicked first. A click "arms" that widget:
+    while armed, the wheel edits/zooms/scrolls it as Qt normally would. Clicking
+    anywhere else re-arms the new target; Ctrl+wheel always goes to the widget.
+    On a surface with no scrollable page, value widgets still ignore the wheel unless
+    armed, so values never change by accident.
     """
     _VALUE_WIDGETS = (QSlider, QDial, QSpinBox, QDoubleSpinBox, QComboBox)
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._armed = None
+
+    @staticmethod
+    def _consumes_wheel(w):
+        """Qt widgets that take the wheel, or a Python subclass that defines its own wheelEvent."""
+        try:
+            if isinstance(w, (QAbstractScrollArea, QAbstractSlider, QAbstractSpinBox, QComboBox, QTabBar)):
+                return True
+            for cls in type(w).__mro__:
+                if (cls.__module__ or "").startswith("PyQt6"):
+                    break
+                if "wheelEvent" in cls.__dict__:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _nearest_consumer(self, w):
+        """The control the click landed on, if it uses the wheel. Climbs only through a control's own
+        internals (a scroll view's viewport, a spin/combo box's line edit) — never into the panels around
+        it, so clicking a button inside the Mod Path Bay never arms the ring view that hosts it."""
+        node, hops = w, 0
+        while node is not None and hops < 3:
+            if type(node).__name__ == "QScrollArea" or node.objectName() == "gbAutoScroll":
+                return None                       # a plain layout scroller is not a "clicked control"
+            if (isinstance(node, self._VALUE_WIDGETS) or getattr(node, "_gb_wheel_edits", False)
+                    or self._consumes_wheel(node)):
+                return node
+            internal = node.objectName() == "qt_scrollarea_viewport" or (
+                isinstance(node, QLineEdit) and isinstance(node.parentWidget(), (QAbstractSpinBox, QComboBox)))
+            if not internal or node.isWindow():
+                return None
+            node = node.parentWidget(); hops += 1
+        return None
+
+    def _is_armed(self, w):
+        armed = self._armed
+        if armed is None:
+            return False
+        try:
+            armed.objectName()
+        except Exception:
+            self._armed = None
+            return False
+        node = w
+        while node is not None:
+            if node is armed:
+                return True
+            node = node.parentWidget()
+        return False
+
+    @staticmethod
+    def _page_area(w):
+        """Outermost scroll area in w's window (the page)."""
+        page = None
+        node = w.parentWidget() if w is not None else None
+        while node is not None:
+            if isinstance(node, QAbstractScrollArea):
+                page = node
+            if node.isWindow():
+                break
+            node = node.parentWidget()
+        return page
+
+    def _route(self, area, event):
+        delta = event.angleDelta()
+        amount = delta.y() or delta.x()
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier or (not delta.y() and delta.x()):
+            hbar = area.horizontalScrollBar()
+            if hbar.maximum() > hbar.minimum() and amount:
+                hbar.setValue(hbar.value() - amount)
+                return
+            node = area.parentWidget()
+            while node is not None:
+                if isinstance(node, QAbstractScrollArea):
+                    bar = node.horizontalScrollBar()
+                    if bar.maximum() > bar.minimum() and amount:
+                        bar.setValue(bar.value() - amount)
+                        return
+                node = node.parentWidget()
+            # No horizontal overflow in any ancestor: fall back to vertical scrolling.
+        bar = area.verticalScrollBar()
+        if delta.y():
+            bar.setValue(bar.value() - delta.y())
+        else:
+            bar.setValue(bar.value() - amount)
+
     def eventFilter(self, watched, event):
         try:
-            if event.type() != QEvent.Type.Wheel:
+            et = event.type()
+            if et == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
+                # GROOVEBOX_R123_ARM_NEAREST_CONSUMER_20261119: an unhandled press bubbles up through every
+                # parent, and arming each one ended with a whole panel (e.g. the Mod Path Bay) armed, so the
+                # wheel stopped scrolling the window there. Arm once per click — only the deepest widget under
+                # the cursor counts — and arm only the nearest control that really uses the wheel (or nothing).
+                try:
+                    under = QApplication.widgetAt(event.globalPosition().toPoint())
+                except Exception:
+                    under = watched
+                if under is not None and under is not watched:
+                    return False
+                self._armed = self._nearest_consumer(watched)
                 return False
-            # GROOVEBOX_R23R_WHEEL_SCROLLS_PAGE_20261101: custom value surfaces
-            # (vector XY pad, math knobs, focus-zone editor) opt in via
-            # _gb_wheel_edits. The wheel always scrolls the page; Ctrl+wheel edits.
-            if not (isinstance(watched, self._VALUE_WIDGETS) or getattr(watched, "_gb_wheel_edits", False)):
+            if et != QEvent.Type.Wheel or not isinstance(watched, QWidget):
                 return False
             mods = event.modifiers()
             if mods & Qt.KeyboardModifier.ControlModifier:
                 return False
-            shift_horizontal = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-            area = watched.parentWidget()
-            while area is not None and not isinstance(area, QScrollArea):
-                area = area.parentWidget()
-            if isinstance(area, QScrollArea):
-                delta = event.angleDelta()
-                if shift_horizontal and delta.y():
-                    horizontal = area.horizontalScrollBar()
-                    if horizontal.maximum() > horizontal.minimum():
-                        horizontal.setValue(horizontal.value() - delta.y())
-                    else:
-                        # Shift+wheel fallback to the nearest vertical scroll range.
-                        vertical = area.verticalScrollBar()
-                        vertical.setValue(vertical.value() - delta.y())
-                elif delta.y():
-                    bar = area.verticalScrollBar()
-                    bar.setValue(bar.value() - delta.y())
-                elif delta.x():
-                    bar = area.horizontalScrollBar()
-                    bar.setValue(bar.value() - delta.x())
-            event.accept()
-            return True
+            if self._is_armed(watched):
+                return False
+            page = self._page_area(watched)
+            # Does anything between the cursor and the page want the wheel?
+            consumer = False
+            node = watched
+            while node is not None and node is not page:
+                if page is not None and node is page.viewport():
+                    break
+                if (isinstance(node, self._VALUE_WIDGETS) or getattr(node, "_gb_wheel_edits", False)
+                        or self._consumes_wheel(node)):
+                    consumer = True
+                    break
+                node = node.parentWidget()
+            if not consumer:
+                return False
+            if isinstance(page, QAbstractScrollArea):
+                self._route(page, event)
+                event.accept()
+                return True
+            if isinstance(node, self._VALUE_WIDGETS) or getattr(node, "_gb_wheel_edits", False):
+                event.accept()
+                return True
+            return False
         except Exception:
             # Safe fallback: don't alter the value if scroll routing itself fails.
             try:
-                event.accept()
-                return True
+                if event.type() == QEvent.Type.Wheel:
+                    event.accept()
+                    return True
             except Exception:
-                return False
+                pass
+            return False
 
 
 def _fast_copy(obj):
@@ -7322,7 +7434,7 @@ def generate_random_global_play_algo(rng=None):
 # Engine families gate _heuristic_write_step_into_sequence;
 # Playlist families gate _paint_operator_pattern_to_playlist.
 _HEURISTIC_FIELD_FAMILIES = {
-    "engine_rhythm": frozenset({"steps", "gates", "offsets", "pattern_length",
+    "engine_rhythm": frozenset({"steps", "gates", "offsets", "note_duration", "pattern_length",
                                 "sequence_envelope_attack", "sequence_envelope_release"}),
     "engine_melody": frozenset({"pitches", "chord_note_count", "chord_intervals",
                                 "chord_slot_features", "chord_user_owned"}),
@@ -7492,6 +7604,57 @@ DAW_STYLE = """
     QProgressBar::chunk { background:#2fd6b4; }
 """
 
+_WORKSPACE_PANE_COLORS = {"blue_gray": "#53677a", "slate": "#59636f", "graphite": "#4b5058", "midnight": "#26394d"}
+
+def _apply_workspace_pane_color(app, color_name=None):
+    """Apply one saved color to all three primary workspace surfaces only."""
+    try:
+        if color_name is None:
+            import compat_settings as _cs
+            color_name = _cs.load().get("workspace_pane_color", "blue_gray")
+        color = _WORKSPACE_PANE_COLORS.get(str(color_name), _WORKSPACE_PANE_COLORS["blue_gray"])
+        # The third surface is the multidimensional composition/editor pane
+        # embedded in the upper workspace. Keep its tint scoped to that panel;
+        # do not recolor the startup selector, dialogs, or unrelated windows.
+        # GROOVEBOX_R123_ALL_PANES_TINT_20261119: the deck strip (Macro Knobs … Monitor) is a main-window
+        # pane too — it sits first in the render splitter (or in a side dock) and used to stay transparent,
+        # showing the navy window backdrop instead of the pane colour. Every splitter pane now gets the
+        # same colour, including panes added later; the deck re-applies it whenever it moves.
+        pane_specs = [
+            ("top_workspace_pane", "grooveboxTopContent"),
+            ("main_md_panel", "grooveboxMathContent"),
+            ("bottom_workspace_pane", "grooveboxBottomContent"),
+            ("_r32_deck_holder", "grooveboxDeckContent"),
+        ]
+        panes = []
+        for attr, object_name in pane_specs:
+            pane = getattr(app, attr, None)
+            if pane is not None:
+                panes.append((pane, object_name))
+        sp = getattr(app, "render_splitter", None)
+        if sp is not None:
+            known = {id(p) for p, _ in panes}
+            for i in range(sp.count()):
+                w = sp.widget(i)
+                inner = w.widget() if isinstance(w, QScrollArea) else w
+                if inner is not None and id(inner) not in known:
+                    panes.append((inner, inner.objectName() or f"grooveboxSplitterPane{i}"))
+                    known.add(id(inner))
+        for pane, object_name in panes:
+            sheet = f"QWidget#{object_name} {{ background-color: {color}; }}"
+            if pane.objectName() == object_name and pane.styleSheet() == sheet:
+                continue          # unchanged: skip the (expensive) full repolish of the pane's children
+            pane.setObjectName(object_name)
+            pane.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            pane.setStyleSheet(sheet)
+            pane.setProperty("workspacePaneColor", str(color_name))
+        app._workspace_pane_color_name = str(color_name)
+        return color
+    except Exception as exc:
+        print(f"[Workspace theme] pane color not applied: {exc}")
+        return None
+
+
 # --- 48 IDEAL INSTRUMENT & EFFECT TOPOLOGIES ---
 DEFAULT_INSTRUMENT_LIST = [
     # Family 1: Topological Wave-Folding & Non-Linear Curvature (Oscillators 1-8)
@@ -7576,6 +7739,64 @@ def generate_synth_names(count, base_list=None):
     return out[:count]
 
 
+def _geometric_convolve_lattice(gf, sample_rate, fractal=0.0, goava=0.0, lo_hz=20.0, hi_hz=20000.0):
+    """GROOVEBOX_R123_GEOMETRIC_LATTICE_CONVOLVE_20261119 — Global Convolve partials.
+
+    Returns (freqs, weights). The base lattice gf·M^k covers every in-band power of Meum (equal ratio, i.e.
+    equidistant on the log-frequency axis) with weight 1; FRACTAL adds the φ-offset lattice gf·φ·M^k
+    (weight ½·fractal) and GOAVA the half-step lattice gf·M^(k+½) (weight ⅓·goava). The band is
+    [lo_hz, min(hi_hz, 0.45·sr)] so no partial aliases. Pure function of its arguments."""
+    import math as _m
+    try:
+        gf = float(gf)
+    except Exception:
+        gf = 432.0
+    if not _m.isfinite(gf) or gf <= 0.0:
+        gf = 432.0
+    sr = float(max(1.0, float(sample_rate)))
+    hi = min(float(hi_hz), 0.45 * sr)
+    lo = float(lo_hz)
+    if hi <= lo:
+        return [min(gf, hi)], [1.0]
+    lnm = _m.log(MEUM)
+    freqs, weights = [], []
+
+    def _layer(anchor, w):
+        if w <= 0.0:
+            return
+        k0 = int(_m.ceil(_m.log(lo / anchor) / lnm - 1e-12))
+        k1 = int(_m.floor(_m.log(hi / anchor) / lnm + 1e-12))
+        for k in range(k0, k1 + 1):
+            f = anchor * (MEUM ** k)
+            if lo <= f <= hi:
+                freqs.append(float(f)); weights.append(float(w))
+
+    _layer(gf, 1.0)
+    _layer(gf * 1.6180339887498949, 0.5 * float(fractal))
+    _layer(gf * _m.sqrt(MEUM), (1.0 / 3.0) * float(goava))
+    if not freqs:
+        freqs, weights = [float(min(max(gf, lo), hi))], [1.0]
+    return freqs, weights
+
+
+def _geometric_convolve_partials(gf, sample_rate, klen, fractal=0.0, goava=0.0):
+    """(freqs, weights, base_phases) for a klen-sample Global Convolve kernel (R123).
+
+    A Hann-tapered kernel of half-length H resolves about sr/H Hz, so lattice partials packed closer than
+    that merge and would pile up (the low end used to come out ~14 dB hot). Each weight is scaled by
+    min(1, spacing / (2·sr/H)), spacing = f·(M−1), which keeps the merged region at the level of a
+    resolved peak. Base phases follow the golden angle (j·Φ⁻¹ mod 1) so neighbouring partials do not
+    cancel; measured at 48 kHz/2048 taps the response is flat within ~3 dB per half-octave from
+    ~160 Hz to 20 kHz (below ~110 Hz the kernel length itself limits resolution)."""
+    freqs, weights = _geometric_convolve_lattice(gf, sample_rate, fractal=fractal, goava=goava)
+    sr = float(max(1.0, float(sample_rate)))
+    half = max(8, int(klen) // 2)
+    res = 2.0 * sr / half
+    w = [float(wi) * min(1.0, (fi * (MEUM - 1.0)) / res) for fi, wi in zip(freqs, weights)]
+    ph = [((j * 0.6180339887498949) % 1.0) for j in range(len(freqs))]
+    return freqs, w, ph
+
+
 def harmonic_spacing_ratios(count):
     """Stable per-index voice ratios; ensemble size must never retune existing voices.
 
@@ -7592,11 +7813,26 @@ def harmonic_spacing_ratios(count):
     span_octaves = 6.0
     center = 23.5
     denom = 47.0
+    # GROOVEBOX_R123_FOLDED_VOICE_LATTICE_20261119: indices 0–47 are unchanged (the six-octave lattice,
+    # one equal 6/47-octave step per voice). Beyond 48 voices the old formula kept climbing — voice 100 sat
+    # ~9.8 octaves above the base, i.e. far past Nyquist — so larger ensembles now refine the SAME window:
+    # cycle c = i // 48 offsets the lattice by the base-2 van der Corput fraction of c (½, ¼, ¾, …), filling
+    # the midpoints of the existing steps. Still stable per index and still equal-ratio (geometric) spacing.
+    # (The previous "MEUM warp" t·N_M + (1 − N_M)·t was algebraically the identity, so dropping it changes
+    # no value.)
+    def _vdc(c):
+        x, b = 0.0, 0.5
+        while c:
+            if c & 1:
+                x += b
+            c >>= 1; b *= 0.5
+        return x
+    per = int(denom) + 1
     ratios = []
     for i in range(count):
-        t = (i - center) / denom
-        warped = t * MEUM_NORM + (1.0 - MEUM_NORM) * t
-        ratios.append(float(2.0 ** (span_octaves * warped)))
+        cyc, r = divmod(i, per)
+        t = (r + _vdc(cyc) - center) / denom
+        ratios.append(float(2.0 ** (span_octaves * t)))
     return ratios
 
 # Canonical playlist record schema. Every engine, UI sync, and CSV/member path
@@ -15787,6 +16023,187 @@ You can use it three ways, and mix them freely:
 You never need the math to make music with it.
 
 
+R123 (UNVERIFIED CANDIDATE) — WHAT IS NEW
+------------------------------------------
+  R124 (UNVERIFIED) — Science & Live menu:
+  • Measurement: peak, true peak (4x), RMS, LUFS (BS.1770 gated), phase correlation, centroid, and
+    the same numbers before/after every master-chain stage.
+  • Master chain: one ordered chain eq → dynamics → spatial → limiter → dither; Live (low latency) or
+    Final (look-ahead limiter + TPDF dither) quality. Signal bench: THD, latency, response, DC on
+    known test signals (sine, impulse, log sweep, noise).
+  • Every export writes <file>.stamp.json (code + kernel hashes, seed, parameters, audio hash);
+    Render stamp diff tells you whether two renders are identical and what changed.
+  • Constraint composer (scale / just ratios / density / entropy / range / max leap; deterministic per
+    seed, undoable) · Parameter lineage · Scene pads 1–8 in the LIVE DECK (click recall with morph,
+    Shift+click or right-click store).
+  • Audio-reactive AV scene export (JSON frames) · Game export check (headless run, missing assets).
+  • Connect: MIDI, OSC, audio devices, PipeWire / JACK, files, network, runtimes — each missing item
+    shows its one-line fix. MIDI learn (Ctrl+Alt+L): hold a control, move a knob.
+  • Ctrl+K command palette: every menu action, button, live / heavy key and window, shortcut shown.
+  • Device profiles (auto / desktop / laptop / tablet / small) · Safe mode after a crash (heavy
+    engines off, optional checkpoint restore).
+  Phase 8 (R123):
+  • Layout: the panel synth is a large square on the left half of its row; the instrument strip,
+    the four launcher cards and the other editor modes stretch over the right half. The Markov
+    Resampler sits to the right of the canonical control band and the PERFORM / sequencer /
+    automator trays.
+  • Mouse wheel scrolls the page everywhere (sliders, spin boxes, lists, 3-D views) unless you
+    clicked that control first; a clicked control takes the wheel. Ctrl+wheel always edits.
+  • Mod Path Bay right-drag: routing stage = rotate reroute poles (left/right) + perspective
+    magnitude (up/down); perspective stage = turn the view. Reroute pad: right-drag a pole = spin,
+    right-drag empty space = view; right-click = remove pole. Perspective pad: right-drag up/down =
+    magnitude, left/right = rotate all poles.
+  • Touchscreens: touch-and-hold ½ s then drag = right-drag; "⇄ Alt drag" makes a plain drag a
+    right-drag; one-finger flick scrolls the page.
+  • Tablet mode keyboard (Settings ▸ 📱 Tablet mode keyboard: Auto / On / Off): fixed at the bottom,
+    never disappears. Standard keys, latching Shift/Ctrl/Alt, ☰ Menu (= right-click), ABC and
+    F1–F12 pages, eight custom keys (✎ Keys assigns any standard key sequence). Drag the top bar
+    or use the wheel over it to resize; 🔒 Size locks the size so the wheel passes through.
+  • Live keys (Ctrl+/ shows the sheet): Alt+Space / F8 / Media Play play-pause · Alt+. / Pause /
+    Media Stop PANIC · Alt+Return play sequence · Alt+I / Alt+Shift+I instrument / pattern ·
+    Alt+Left/Right previous / next sequence · Alt+A auto · Alt+L loop · Alt+T tap · Alt+R take ·
+    Alt+Q/W/E cue add / play / pop · Alt+H hold · Alt+Shift+H hold global · Alt+G / Alt+Shift+G
+    random local / global · Alt+P random patch · Alt+F freeze bend · Alt+M Markov · Alt+Up/Down
+    BPM ±1 (Shift ±10) · Alt+1–3 recall state A–C (Shift = store).
+  • Heavy commands (debounced): Ctrl+Shift+E mixdown · Ctrl+Shift+V video · Ctrl+Shift+B all
+    formats · Ctrl+Shift+Q render queue · Ctrl+Shift+R Randomize ALL · Ctrl+Shift+A all automation
+    · Ctrl+Shift+J build hybrid C/Go kernels · Ctrl+Shift+M Smooth mode (CPU relief) ·
+    Ctrl+Shift+H system health.
+  • LIVE DECK (under GLOBAL SEED): a pad for every live key, heavy-command buttons (debounced),
+    CPU / RAM meters, BPM + transport state, which language each sCode kernel runs in now, and the
+    routes landing on the selected instrument.
+  • PANEL SYNTH: a square that fits the screen (left), launchers and modes (right). Its overview is a
+    2×2 grid of the four editors — click one to open it inside the square.
+  • MOD PATH: stays on the ring view's side rails beside the Multidim sphere (Reroute left,
+    Perspective right); no duplicate copy in the panel.
+  • Other devices: macOS Ctrl+click and the stylus eraser count as right-click on the Mod Path
+    surfaces; touchpad pinch resizes the tablet keyboard; small screens start with smaller keys;
+    F8 / media keys mirror play and panic where the window manager owns Alt+Space.
+  • Autopilot HANDLES: per-group counts and locks, "Seed every unlocked handle now" (undoable);
+    the composer drives every unlocked handle and route after composing.
+  • Clear Memory now also resets sidechain, patch motion, Markov spec, mod matrix and automation
+    stores (they leaked between Autopilot projects). Base frequency range is 20–20000 Hz (values
+    outside crashed the Fractal Seed engine).
+  • Hybrid languages on the sCode pool: C, Go, LuaJIT, Rust, C++ and Julia kernels are each
+    parity-checked against NumPy before use; Julia's ccall uses a cached pointer (fixes the ISO
+    smoke-test error) and JuliaCall only pairs EXE + PROJECT with a project that holds PythonCall.
+  Phase 7D (R123):
+    Global Convolve now spreads over the full Meum geometric lattice: equal
+    ratio steps from about 160 Hz to 20 kHz (flat within about 3 dB; the older
+    kernel only passed 320–640 Hz). Multidim voices take equidistant ensemble
+    slots, and voice harmonics beyond 48 fold back into the 6-octave window, so
+    no two voices share a ratio. Same seed → same spectrum.
+    ⛓ MARKOV RESAMPLER (main window, beside the Canonical Morph Bridge) opens
+    an editor with model states, transition weights (locality p, advance,
+    self weight, power or Meum decay, Euclidean and fractal bonuses), a
+    polynomial curve, seed control, live preview, a before/after comparison,
+    a transition heatmap, a decision trace and an explanation of every choice.
+    With "follow canonicals" on, SEEDED/RAND set the seed, LOCK raises
+    locality, EUCLIDEAN/FRACTAL add bonuses and GOAVA picks Meum decay.
+    Apply is undoable (Undo last apply). Autopilot Markov keeps working and is
+    about 10× faster.
+    Layout: the Canonical Morph Bridge is split in two halves (morph | canonical
+    levels) and sits in the middle of the row [Geometric Mixer | Bridge |
+    Markov]. Long sliders were shortened. Every pane, including the deck, takes
+    the chosen pane colour (default lighter gray-blue).
+    Fix: a sequence you edit while canonicals are active (randomize, clear,
+    Markov, undo) is no longer wiped by the next canonical rebuild.
+
+  The whole tool is one scientific fractal: Seed → canonical composition →
+  instruments → sequences → playlist → post-processing → exports → external
+  apps. Every step is deterministic for the same project and inputs.
+
+  Any signal → any context (Carrier Bridge, R118 reconstructed):
+    Signals: audio · control curve · video · number · text (seed) · events · file.
+    Contexts: global carrier, instrument carrier, carrier layer, Global Seed,
+    tempo, a sequencer lane, video carrier, exports, Live Player.
+    Missing steps are converted automatically by the shortest route, e.g.
+    seed text → audio (Spectral Canonical), curve → seed program (reverse
+    engineer's Fourier fit), curve → number (book graph number, isn⁻¹ angles).
+    It always tries; it is GUARANTEED for a Seed-only composition (no hand-owned
+    steps or imported carriers) with all canonicals on and default settings.
+    Draw Signal Lab / Layered Signal Lab "Send as Global Carrier" now really
+    changes the carrier that Play and exports use.
+    Plugins ask through the same protected door: {"op": "send_signal",
+    "path": file-in-plugin-folder, "context": "..."} (validated, one undo step).
+
+  Meum irrational spectrum (meum_spectrum): X'k = Xk·e^(−iθk),
+    θk = 2πα{Mφ²k}. Exact inverse, magnitudes kept, α = 0 = ordinary FFT.
+    Use OT ON: twiddles from the book series (isx = cos, isy = sin) and the
+    book radix-2 route; OFF: NumPy/libm. Same result either way (≈1e-15).
+
+  Task Bar: every window button is checked against the installed program; a
+    missing one is greyed out with the reason, a failed launch says why.
+  Mouse tracer (Settings ▸ Compatibility ▸ Mouse tracer, default ON).
+  Scroll window panels (Compatibility): windows / windows + main / off.
+  Console: doctor, abi, threads, toolchains, env; ↑/↓ history, Tab completes.
+  Julia/Mesa/Z3: the system C++ runtime is loaded first (fixes CXXABI_1.3.15).
+  Go sidecars build only with a valid Go root; telemetry is off and private.
+  File Manager ▸ 🗜 Compress… / 📂 Extract…: .zip, .tar.gz, .7z and .MCC
+    (Groovebox package, sha256-verified). Extraction goes to a new folder beside
+    the archive and can never write outside it; a project .MCC is opened with
+    Open Project instead. .7z uses the bundled 7-Zip (or py7zr on desktops).
+  Panel ◀ ▶ Geometric balance now always applies (it was being overridden).
+  System ▸ Update Groovebox Source from a .zip or .tar.gz no longer needs a
+    signing key: enter your PIN (if one is set), the tree must pass basic tests,
+    and you are warned if it is less than 75% similar to the current source
+    (below 40% you must type INSTALL). A broken signature is always refused.
+  File Manager: double-click a .zip / .tar.gz / .7z / .MCC to preview it and
+    Extract here.
+  Selected-instrument dropdown: every row is painted in that instrument's
+    assigned colour (set with ■ Playlist colour); the selector frame follows it.
+  Monitor Center ▸ Self-test rows: signal bridge, guarantee and Meum FFT checks.
+  Console: signals (kinds, converters, contexts, guarantee) and signals test.
+  First ISO (LIMINE-SCODE-v33c) is now complete: FAT/VFAT + nls_ascii/cp437/utf8
+    (Install to SSD), Dell SOF audio, Realtek microSD, GUI recovery.
+  Secure Boot (build answer y): signed copies are built first. Default chain:
+    Microsoft-signed shim -> Groovebox-signed Limine -> pinned kernel/initramfs.
+    First boot: MokManager -> Enroll key from disk -> EFI/sOS/groovebox-mok.cer.
+    Dell alternative: BIOS ▸ Secure Boot ▸ Expert Key Management ▸ Custom Mode ▸
+    db ▸ Append from File ▸ GROOVEBOX-MOK.CER. GROOVEBOX_SECURE_BOOT_MODE=direct
+    signs Limine only (enroll the key in firmware).
+  Runtime defaults: every compute runtime shares one thread budget (BLAS/OpenMP,
+    Numba, Rust/Rayon, Julia N+1 interactive, Go sidecars on the lane width);
+    idle threads never spin on the audio core. sOS appliance only: turbo/boost
+    on, firmware platform profile "performance" on AC (balanced on battery or
+    above 90 C), huge pages on request, steady 64/256 MB disk writeback, NVMe
+    scheduler none / SD+SATA mq-deadline. Firmware clock, voltage and power
+    limits are never raised. GROOVEBOX_FLUX=0 turns these extras off.
+
+SYNTHESIZER ARCHITECTURE — HOW A NOTE BECOMES SOUND
+---------------------------------------------------
+R32 SYNTHESIZER ARCHITECTURE (short reference)
+  CANONICAL GENERATION LAYER: the seed and the active canonicals (SEEDED, RAND,
+    LOCK, EUCLIDEAN, GOAVA) decide notes, rhythm and parameters, once, for all media.
+  FOUR PER-INSTRUMENT GEOMETRIC SYNTH ENGINES: geometric carrier, geometric
+    rhythm plan, bouncing ball and cellular automaton sources feed each instrument.
+    Each instrument is one complete operator voice (oscillators, envelope, filter).
+  SEQUENCE PROGRAMS, MORPH AND AUTOMATION: SEQUENCE-LEVEL SYNTH STATE (Edit Synth
+    Per Seq) is morphed in by each playlist row's vote; automation lanes follow.
+  MODULATION AND ROUTING ORDER: canonical value -> per-sequence state -> automation
+    -> mod oscillators -> FX/EQ -> mixer -> master.
+  NOTE / VOICE RENDER AND MIX: each note renders its voice, voices are summed per
+    instrument, instruments are mixed and mastered.
+  AUDIO, VISUAL AND GAME ARE THREE VIEWS of the same canonical state.
+  EXECUTION AND PERFORMANCE BOUNDARIES: sCode work lanes are bounded; the sCode
+    buffer pool honours GROOVEBOX_SCODE_RAM_BUDGET (bytes, default 256 MB).
+  Shift + wheel scrolls any panel horizontally.
+  Defaults: EQR: **0.4014**; Playlist Rows defaults to 32; sequence length 12.
+
+FULL GRAPH SCRIPT CONTEXT
+-------------------------
+  Graph and domain scripts receive the whole point context: graph_x/y/z,
+  graph_radius, graph_angle, graph_energy, graph_curvature, graph_phase,
+  graph_u/v/w, graph_index/count, sequence_index, step_index, domain_value and
+  domain_weight, plus graph (a read-only view) and graph_vector.
+
+LIVE KEYBOARD — APPLICATION-WIDE
+--------------------------------
+  Tab / Shift+Tab instrument switching and Ctrl+Caps work in every Groovebox
+  window; the key chart plays notes while a Groovebox window has focus (not in
+  text fields). Realtime limit: heavy scenes (1080p/3D) may add display latency;
+  audio keeps priority.
+
 QUICK START (2 MINUTES)
 -----------------------
   1. Type any number in the SEED box (try 1.1975807343, 3.14159, 134964356).
@@ -17080,130 +17497,7 @@ independently established theorem of mathematics or physics.
 PUBLIC CONSTANTS
 
 The canonical Meum value is:
-    M = 
-# -----------------------------------------------------------------------------
-# Author-series trigonometry kernels (radians)
-# Direct summation/recurrence implementations: no math/NumPy circular or inverse
-# trig calls.  These are the canonical Groovebox kernels for scalar/array use.
-# -----------------------------------------------------------------------------
-SERIES_PI = 3.14159265358979323846264338327950288419716939937510
-SERIES_TAU = 2.0 * SERIES_PI
-
-def _series_arr(x):
-    return np.asarray(x, dtype=np.float64)
-
-def _series_out(v):
-    a=np.asarray(v)
-    return a.item() if a.ndim==0 else a
-
-def _series_reduce(x):
-    a=_series_arr(x)
-    with np.errstate(invalid='ignore'):
-        return np.remainder(a + SERIES_PI, SERIES_TAU) - SERIES_PI
-
-def series_sin(x):
-    a=_series_reduce(x)
-    a=np.where(a>SERIES_PI/2, SERIES_PI-a, np.where(a<-SERIES_PI/2, -SERIES_PI-a, a))
-    term=a.copy(); total=a.copy()
-    for n in range(1, 19):
-        term *= -(a*a)/((2.0*n)*(2.0*n+1.0)); total += term
-    return _series_out(total)
-
-def series_cos(x):
-    a=_series_reduce(x); sign=np.ones_like(a)
-    hi=a>SERIES_PI/2; lo=a<-SERIES_PI/2
-    sign=np.where(hi|lo,-1.0,1.0)
-    a=np.where(hi,SERIES_PI-a,np.where(lo,-SERIES_PI-a,a))
-    term=np.ones_like(a); total=term.copy()
-    for n in range(1,19):
-        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
-    return _series_out(sign*total)
-
-def series_asin(x):
-    z=_series_arr(x); a=np.abs(z); bad=a>1.0; reduce=a>0.5
-    with np.errstate(invalid='ignore'):
-        w=np.where(reduce,np.sqrt((1.0-a)/2.0),a)
-    term=w.copy(); total=w.copy()
-    for n in range(1,33):
-        term *= (w*w*(2.0*n-1.0)**2)/((2.0*n)*(2.0*n+1.0)); total += term
-    total=np.where(reduce,SERIES_PI/2.0-2.0*total,total)
-    total=np.copysign(total,z); total=np.where(bad,np.nan,total)
-    return _series_out(total)
-
-def series_acos(x):
-    z=_series_arr(x); bad=np.abs(z)>1.0
-    with np.errstate(invalid='ignore'):
-        q=2.0*np.asarray(series_asin(np.sqrt((1.0-np.abs(z))/2.0)))
-    out=np.where(z>=0.0,q,SERIES_PI-q); out=np.where(bad,np.nan,out)
-    return _series_out(out)
-
-def series_atan(x):
-    z=_series_arr(x); a=np.abs(z); inv=a>1.0
-    with np.errstate(divide='ignore',invalid='ignore'):
-        a=np.where(inv,1.0/a,a)
-        a=a/(1.0+np.sqrt(1.0+a*a))
-    term=a.copy(); total=a.copy()
-    for n in range(1,33):
-        term *= -(a*a); total += term/(2.0*n+1.0)
-    total*=2.0; total=np.where(inv,SERIES_PI/2.0-total,total)
-    return _series_out(np.copysign(total,z))
-
-def series_atan2(y,x):
-    y,x=np.broadcast_arrays(_series_arr(y),_series_arr(x))
-    with np.errstate(divide='ignore',invalid='ignore'):
-        out=np.asarray(series_atan(y/x))
-    out=np.where(x<0.0,out+np.copysign(SERIES_PI,y),out)
-    out=np.where(x==0.0,np.copysign(SERIES_PI/2.0,y),out)
-    out=np.where(y==0.0,np.where(np.signbit(x),np.copysign(SERIES_PI,y),y),out)
-    return _series_out(out)
-
-def series_tan(x):
-    with np.errstate(divide='ignore',invalid='ignore'):
-        return _series_out(np.asarray(series_sin(x))/np.asarray(series_cos(x)))
-
-def series_sinh(x):
-    z=_series_arr(x); a=np.abs(z); scale=np.zeros(a.shape,dtype=np.int32)
-    a=np.where(np.isfinite(a),np.minimum(a,710.0),0.0)
-    for _ in range(11):
-        m=a>0.5; a=np.where(m,a*0.5,a); scale += m
-    term=a.copy(); total=a.copy()
-    for n in range(1,19):
-        term *= (a*a)/((2.0*n)*(2.0*n+1.0)); total += term
-    with np.errstate(over='ignore',invalid='ignore'):
-        for k in range(11): total=np.where(scale>k,2.0*total*np.sqrt(1.0+total*total),total)
-    total=np.where(np.abs(z)>710.0,np.inf,total); total=np.where(np.isnan(z),np.nan,total)
-    return _series_out(np.copysign(total,z))
-
-def series_cosh(x):
-    q=np.asarray(series_sinh(_series_arr(x)/2.0)); return _series_out(1.0+2.0*q*q)
-
-def series_tanh(x):
-    z=_series_arr(x); q=np.clip(z,-20.0,20.0)
-    with np.errstate(divide='ignore',invalid='ignore'):
-        out=np.asarray(series_sinh(q))/np.asarray(series_cosh(q))
-    return _series_out(np.where(np.abs(z)>20.0,np.copysign(1.0,z),out))
-
-def series_sinc(x):
-    z=_series_arr(x)
-    with np.errstate(divide='ignore',invalid='ignore'):
-        out=np.where(z==0.0,1.0,np.asarray(series_sin(SERIES_PI*z))/(SERIES_PI*z))
-    return _series_out(out)
-
-def series_book_isn(x):
-    # sum (-1)^n*x^(2n+1)/(2^(2n)*(2n+1)!)
-    return _series_out(2.0*np.asarray(series_sin(_series_arr(x)/2.0)))
-
-def series_book_isn_inverse(x):
-    return _series_out(2.0*np.asarray(series_asin(np.clip(_series_arr(x)/2.0,-1.0,1.0))))
-
-def series_cyclic_isn(x):
-    # author's even-power series: x^2/2! - x^4/4! + x^6/6! - ...
-    a=_series_reduce(x); term=a*a/2.0; total=term.copy()
-    for n in range(2,25):
-        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
-    return _series_out(total)
-
-MEUM = 1.1975807343385265188
+    M = MEUM = 1.1975807343385265188
 
 Public reference inverse:
     M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691
@@ -22094,25 +22388,27 @@ class _GrooveboxWindowStrip(QWidget):
         self.new_btn.setText("＋ New window")
         self.new_btn.setToolTip("Open another Performance, Player or Live Player as its own tab — e.g. several players side by side to scan media.")
         self.new_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # GROOVEBOX_R123_TASKBAR_LAUNCH_REGISTRY_20261119: the menu is rebuilt from the launch
+        # registry each time it opens; entries whose module is not installed are disabled
+        # with the reason as tooltip instead of silently doing nothing when clicked.
         _new_menu = QMenu(self.new_btn)
-        _new_types = (
-            ("🎛 Performance", "performance"), ("▶ Media Player", "player"),
-            ("🎧 Live Player", "live_player"), ("🎹 Multidim Synth", "multidim"),
-            ("🧱 3D / Scenograph", "studio_3d"), ("🎬 Video Synth", "video_synth"),
-            ("🎮 Game Scene Studio", "game_studio"), ("🎼 Composition Lab", "composition_lab"),
-            ("🧬 Seed Atlas", "seed_atlas"), ("🧪 Seed / Script Studio", "script_studio"),
-            ("🔌 Plugin Library", "plugins"), ("🌙 Lua Workspace", "lua"),
-            ("🛠 Program Builder", "programs"), ("📂 File Studio", "files"),
-            ("🗺 Experiences", "experiences"), ("📈 Project / Science Tools", "science"),
-        )
-        for _label, _kind in _new_types:
-            _new_menu.addAction(_label, lambda k=_kind: self._open_extra(k))
+        _new_menu.setToolTipsVisible(True)
+        _new_menu.aboutToShow.connect(lambda m=_new_menu: self._fill_new_menu(m))
         self.new_btn.setMenu(_new_menu)
         self.apps_btn = QToolButton(self)
         self.apps_btn.setText("▦ Apps")
         self.apps_btn.setToolTip("Applications launcher · 73 shipped Lua / hybrid plugins plus installed apps and studio tools")
         self.apps_btn.clicked.connect(lambda: self._open_extra("plugins"))
         row.addWidget(self.apps_btn, 0)
+        # R123: last launch result, visible on the bar itself (cleared after 10 s).
+        self.status_lbl = QLabel("", self)
+        self.status_lbl.setStyleSheet("color:#ffb4a8; padding:0 6px;")
+        self.status_lbl.setMaximumWidth(520)
+        self.status_lbl.hide()
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(self.status_lbl.hide)
+        row.addWidget(self.status_lbl, 0)
         # WINDOW_BAR_R31: export progress dropdown, quick actions, UI-stall report.
         try:
             from window_bar_tools import ExportsButton, ActionsButton, StallLabel, ExportProgressBar
@@ -22144,9 +22440,20 @@ class _GrooveboxWindowStrip(QWidget):
         row.addWidget(self.compat_btn, 0)
         row.addWidget(self.quit_btn, 0)
         self._timer = QTimer(self)
-        self._timer.setInterval(8000)   # BAR_SMOOTH_20261107: slower poll, events drive the bar
+        self._timer.setInterval(3000)   # R123: events drive the bar; poll is only a safety net
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
+        # R123: refresh promptly when windows open/close/retitle or focus moves.
+        self._soon = QTimer(self)
+        self._soon.setSingleShot(True)
+        self._soon.setInterval(60)
+        self._soon.timeout.connect(self.refresh)
+        try:
+            _qa = QApplication.instance()
+            if _qa is not None:
+                _qa.focusWindowChanged.connect(lambda *_: self.refresh_soon())
+        except Exception:
+            pass
         self._pin_timer = QTimer(self)
         self._pin_timer.setSingleShot(True)
         self._pin_timer.setInterval(400)
@@ -22191,11 +22498,63 @@ class _GrooveboxWindowStrip(QWidget):
         except Exception as exc:
             print(f"[Windows] tab menu failed: {exc}")
 
+    def refresh_soon(self):
+        try:
+            self._soon.start()
+        except Exception:
+            pass
+
+    def show_status(self, text, error=False):
+        try:
+            self.status_lbl.setStyleSheet("color:%s; padding:0 6px;" % ("#ffb4a8" if error else "#a8f0c0"))
+            fm = self.status_lbl.fontMetrics()
+            self.status_lbl.setText(fm.elidedText(str(text), Qt.TextElideMode.ElideRight, 500))
+            self.status_lbl.setToolTip(str(text))
+            self.status_lbl.show()
+            self._status_timer.start(10000)
+        except Exception:
+            pass
+
+    def _fill_new_menu(self, menu):
+        menu.clear()
+        mgr = self._manager()
+        main = mgr._main_ref() if mgr is not None else None
+        try:
+            import taskbar_launch as _tl
+        except Exception as exc:
+            menu.addAction(f"(launch registry missing: {exc})").setEnabled(False)
+            return
+        for e in _tl.ENTRIES:
+            ok, why = _tl.check(e.kind, main)
+            act = menu.addAction(e.label, lambda k=e.kind: self._open_extra(k))
+            act.setToolTip(e.tip if ok else f"Unavailable: {why}")
+            act.setEnabled(bool(ok))
+
     def _open_extra(self, kind):
         mgr = self._manager()
         main = mgr._main_ref() if mgr is not None else None
-        if main is not None and hasattr(main, "open_extra_window"):
-            main.open_extra_window(kind)
+        if main is None or not hasattr(main, "open_extra_window"):
+            self.show_status("Main window is not ready yet — try again in a moment.", error=True)
+            return None
+        try:
+            import taskbar_launch as _tl
+            e = _tl.entry(kind)
+            label = e.label if e else kind
+        except Exception:
+            label = kind
+        self.show_status(f"Opening {label}…")
+        try:
+            w = main.open_extra_window(kind)
+        except Exception as exc:   # open_extra_window reports its own failures; this is a last guard
+            w = None
+            main._last_launch_error = f"{type(exc).__name__}: {exc}"
+        if w is None:
+            why = getattr(main, "_last_launch_error", None) or "the window did not open"
+            self.show_status(f"Could not open {label}: {why}", error=True)
+        else:
+            self.show_status(f"Opened {label}")
+        self.refresh_soon()
+        return w
 
     def _manager(self):
         return self._manager_ref()
@@ -22439,7 +22798,9 @@ class _GrooveboxWindowStrip(QWidget):
             mgr.return_to_startup()
             return
         app = QApplication.instance()
-        filt = getattr(self, "_main_window_relaunch_filter", None)
+        main = mgr._main_ref() if mgr is not None else None   # R123: act on the main window, not the strip
+        host = main if main is not None else self
+        filt = getattr(host, "_main_window_relaunch_filter", None)
         if filt is not None:
             try:
                 strip = getattr(filt, "_window_strip", None)
@@ -22456,15 +22817,23 @@ class _GrooveboxWindowStrip(QWidget):
             self.hide()
         except Exception:
             pass
+        if main is not None:
+            try:
+                main.hide()
+            except Exception:
+                pass
         try:
-            launch_startup_mode_selector(self, app, skip=False, force_chooser=True)
+            launch_startup_mode_selector(host, app, skip=False, force_chooser=True)
         except Exception as exc:
             print(f"[Quit] startup relaunch failed: {exc}")
-            startup_fallback_enter(self)
+            startup_fallback_enter(host)
 
     def closeEvent(self, event):
-        try:
-            self._save_session_layout()
+        try:   # R123: the layout saver lives on the main window, not on this strip
+            _mgr = self._manager()
+            _main = _mgr._main_ref() if _mgr is not None else None
+            if _main is not None and hasattr(_main, "_save_session_layout"):
+                _main._save_session_layout()
         except Exception:
             pass
         if self._startup_blocked():
@@ -24085,6 +24454,81 @@ class _InstrumentKeyCombo(QComboBox):
             pass
         super().showPopup()
 
+    # GROOVEBOX_R123_INSTRUMENT_DROPDOWN_COLORS_20261119: every row of the selected-instrument dropdown carries
+    # that instrument's assigned colour (the same colour the playlist tint and the "Playlist colour" button use).
+    # The application stylesheet sets QAbstractItemView::item to a transparent background, which makes Qt ignore
+    # per-item BackgroundRole data, so the rows are painted by a dedicated delegate instead.
+    def set_color_source(self, fn):
+        self._color_fn = fn if callable(fn) else None
+        try:
+            if not isinstance(self.itemDelegate(), _InstrumentColorDelegate):
+                self.setItemDelegate(_InstrumentColorDelegate(self))
+        except Exception:
+            pass
+        self.view().viewport().update()
+
+    def color_for_row(self, row):
+        fn = getattr(self, "_color_fn", None)
+        if fn is None or row < 0:
+            return None
+        try:
+            return str(fn(self.key_at(row)) or "") or None
+        except Exception:
+            return None
+
+
+def _instrument_text_color(color):
+    """Readable text over an instrument colour (WCAG relative luminance threshold)."""
+    from PyQt6.QtGui import QColor
+    c = QColor(color)
+    def lin(v):
+        v = v / 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    lum = 0.2126 * lin(c.red()) + 0.7152 * lin(c.green()) + 0.0722 * lin(c.blue())
+    return QColor("#05070b") if lum > 0.179 else QColor("#ffffff")
+
+
+class _InstrumentColorDelegate(QStyledItemDelegate):
+    """Paints each instrument row in its assigned colour; selection and hover are an outline, so the colour stays."""
+    def __init__(self, combo):
+        super().__init__(combo)
+        self._combo = combo
+
+    def sizeHint(self, option, index):
+        sz = super().sizeHint(option, index)
+        sz.setHeight(max(sz.height(), 28))
+        return sz
+
+    def paint(self, painter, option, index):
+        from PyQt6.QtGui import QColor, QPen
+        from PyQt6.QtWidgets import QStyle
+        color = self._combo.color_for_row(index.row())
+        if not color:
+            return super().paint(painter, option, index)
+        painter.save()
+        try:
+            r = option.rect.adjusted(2, 1, -2, -1)
+            painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(r, 5, 5)
+            st = option.state
+            if st & QStyle.StateFlag.State_Selected or st & QStyle.StateFlag.State_MouseOver:
+                fg = _instrument_text_color(color)
+                pen = QPen(fg); pen.setWidth(2)
+                painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(r.adjusted(1, 1, -1, -1), 5, 5)
+            painter.setPen(_instrument_text_color(color))
+            f = option.font
+            if index.row() == self._combo.currentIndex():
+                f.setBold(True)
+            painter.setFont(f)
+            text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            painter.drawText(r.adjusted(10, 0, -8, 0),
+                             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), text)
+        finally:
+            painter.restore()
+
 
 class _GuiCallBridge(QObject):
     """Queue a callable onto the GUI thread (GROOVEBOX_R23R_GUI_THREAD_BRIDGE_20261031).
@@ -24601,31 +25045,15 @@ class _GlobalKeyFilter(QObject):
                     except Exception:
                         pass
                 return True
-            if key == Qt.Key.Key_Tab and event.type() == QEvent.Type.KeyPress:
+            if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab) and event.type() == QEvent.Type.KeyPress:
                 if self._popup_open():
                     return False
                 host = self.host
-                if host is None:
+                if host is None or not hasattr(host, "_r123_tab_instrument"):
                     return False
-                names = list(getattr(host, "instrument_display_names", None) or getattr(host, "instrument_names_48", []) or [])
-                if not names:
-                    return False
-                cur = host.instrument_selector_dropdown.currentText() if hasattr(host, "instrument_selector_dropdown") else ""
-                hist = getattr(host, "_instrument_history", None)
-                if not isinstance(hist, list):
-                    hist = host._instrument_history = []
-                if mods & Qt.KeyboardModifier.ShiftModifier:
-                    if hist and hasattr(host, "instrument_selector_dropdown"):
-                        host.instrument_selector_dropdown.setCurrentText(hist.pop())
-                    return True
-                others = [n for n in names if n != cur]
-                if others and hasattr(host, "instrument_selector_dropdown"):
-                    import random
-                    pick = random.choice(others)
-                    hist.append(cur)
-                    if len(hist) > 32:
-                        hist.pop(0)
-                    host.instrument_selector_dropdown.setCurrentText(pick)
+                # GROOVEBOX_R123_SHIFT_TAB_LAST_CLICKED_20261119: Qt sends Shift+Tab as Key_Backtab.
+                back = key == Qt.Key.Key_Backtab or bool(mods & Qt.KeyboardModifier.ShiftModifier)
+                host._r123_tab_instrument(back)
                 return True
         except Exception:
             pass
@@ -24693,6 +25121,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._ui_watchdog = None
             QTimer.singleShot(0, self._startup_sequence)
             QTimer.singleShot(0, self._scale_geometric_panels)
+            try:   # GROOVEBOX_R123_MOUSE_TRACER_20261119: default ON, persisted settings
+                import mouse_tracer as _mouse_tracer
+                self._mouse_tracer = _mouse_tracer.install(QApplication.instance())
+            except Exception as _mt_exc:
+                print(f"[UI] mouse tracer unavailable: {_mt_exc}")
         self.setAcceptDrops(True)   # DROP_CONVERT_20261102
         try:
             _app = QApplication.instance()
@@ -24700,6 +25133,28 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 # The exe/ISO start through run_groovebox.py, which never installed it.
                 _app._no_wheel_slider_filter = _NoWheelSliderFilter(_app)
                 _app.installEventFilter(_app._no_wheel_slider_filter)
+        except Exception:
+            pass
+        try:  # GROOVEBOX_R123_TOUCH_FALLBACKS_20261119: one-finger kinetic page scrolling on touchscreens
+            import touch_compat as _tc
+            _tc.load_alt_drag(self)
+            QTimer.singleShot(1500, lambda: _tc.enable_touch_scrolling(self))
+            QTimer.singleShot(8000, lambda: _tc.enable_touch_scrolling(self))
+        except Exception:
+            pass
+        try:  # GROOVEBOX_R123_TABLET_KEYBOARD_20261119: fixed on-screen keyboard in tablet mode
+            import tablet_keyboard as _tk
+            QTimer.singleShot(1200, lambda: _tk.install(self))
+        except Exception:
+            pass
+        try:  # GROOVEBOX_R123_LIVE_KEYS_20261119: Alt = live performance · Ctrl+Shift = heavy commands · Ctrl+/ sheet
+            import live_keys as _lk
+            QTimer.singleShot(1300, lambda: _lk.install(self))
+        except Exception:
+            pass
+        try:  # GROOVEBOX_R124_FEATURES (UNVERIFIED): Science & Live menu, MIDI learn, render stamps, safe mode, profiles
+            import r124_features as _r124
+            QTimer.singleShot(1400, lambda: _r124.install(self))
         except Exception:
             pass
         self.setWindowTitle("Mathematician's Groovebox")
@@ -28515,6 +28970,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.instrument_selector_dropdown.addItems(self.instrument_names_48)
         QTimer.singleShot(0, self._refresh_auto_instrument_labels)
         self.instrument_selector_dropdown.currentIndexChanged.connect(self.on_instrument_switched)
+        # GROOVEBOX_R123_SHIFT_TAB_LAST_CLICKED_20261119: activated = a user pick only (never Tab / programmatic).
+        self.instrument_selector_dropdown.activated.connect(self._r123_note_instrument_clicked)
         # READABILITY_FIX: an uncapped QComboBox in this QHBoxLayout was
         # expanding to fill available space and squeezing the neighboring
         # buttons' text (e.g. "Seeded Live Randomizer" clipping to
@@ -29249,6 +29706,11 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.input_seed_val.textChanged.connect(self._schedule_seed_script_validation)
 
         # No fixed-height spacer: the seed editor is the vertical stretch owner.
+        try:  # GROOVEBOX_R123_LIVE_DECK_20261119: fills the free space under GLOBAL SEED
+            import live_deck as _ld
+            seed_panel.addWidget(_ld.build(self), 3)
+        except Exception as _ld_exc:
+            print(f"[UI] live deck unavailable: {_ld_exc}")
         self.global_geometry_layout.addLayout(seed_panel, 3)
         self.global_geometry_layout.setStretch(0, 3)
         self.global_geometry_layout.setStretch(1, 1)
@@ -29346,6 +29808,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             qe.addLayout(_crow)
             QTimer.singleShot(0, self._r32_show_instrument_color)
             self.instrument_selector_dropdown.currentIndexChanged.connect(lambda *_: self._r32_show_instrument_color())
+            self.instrument_selector_dropdown.set_color_source(self._r32_instrument_color)
         except Exception as _col_exc:
             print(f"[UI] synth colour: {_col_exc}")
 
@@ -30034,7 +30497,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         hz_lbl.setStyleSheet("color:#9fd4ff; font-weight:900; font-size:11pt;")
         self.top_layout.addWidget(hz_lbl)
         self.spin_base_frequency = QDoubleSpinBox()
-        self.spin_base_frequency.setRange(0.0, 50000.0)
+        # GROOVEBOX_R123_ROUTE_HANDLES_20261119: the Fractal Seed engine accepts 20–20000 Hz; 0/50000 aborted the app.
+        self.spin_base_frequency.setRange(20.0, 20000.0)
         self.spin_base_frequency.setDecimals(4)
         self.spin_base_frequency.setSingleStep(0.1)
         self.spin_base_frequency.setValue(432.0)  # ordinary baseline tuning
@@ -30534,10 +30998,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # POWER_V3_GLOBAL_CONTROLS: buttons were constructed above so the Global
         # panel can safely reference them before the Local panel is assembled.
 
-        self.btn_edit_synth.clicked.connect(lambda: self.spawn_floating_window('synth_editor_window', "Synth Settings & Wavetable Interface"))
-        self.btn_script_inst.clicked.connect(lambda: self.spawn_floating_window('script_editor_window', "Instrument Script Editor"))
-        self.btn_view_patchbay.clicked.connect(lambda: self.spawn_floating_window('patch_bay_dialog', "Advanced Modular Patch Bay & Visualizer"))
-        self.btn_domain_eq.clicked.connect(self.open_domain_equation_editor)
+        # GROOVEBOX_R123_PANEL_SYNTH_ROW_20261119: the four launchers go through panel_synth_deck.launch_card —
+        # Expand mode (default) shows the editor as a frame inside the panel-synth row; otherwise the same
+        # floating window as before (spawn_floating_window / open_domain_equation_editor).
+        import panel_synth_deck as _psd
+        self.btn_edit_synth.clicked.connect(lambda: _psd.launch_card(self, "synth"))
+        self.btn_script_inst.clicked.connect(lambda: _psd.launch_card(self, "script"))
+        self.btn_view_patchbay.clicked.connect(lambda: _psd.launch_card(self, "patch"))
+        self.btn_domain_eq.clicked.connect(lambda: _psd.launch_card(self, "domain"))
         self.btn_view_playlist.clicked.connect(lambda: self.spawn_floating_window('playlist_window', "Unquantized Playlist & Paintbrush Window"))
         self.btn_local_randomize.toggled.connect(self._randomize_local_context)
         try:   # R32.9.9: right-click RAND → Fractal (default) / Pure source
@@ -30809,7 +31277,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.spin_seq_length = QSpinBox()
         self.spin_seq_length.setRange(1, STRUCT_MAX_STEPS)
         self.spin_seq_length.setValue(DEFAULT_SEQUENCE_LENGTH)
-
+        sizing_layout.addWidget(QLabel("Default Gate:"))
+        self.slider_seq_default_note_duration = QSlider(Qt.Orientation.Horizontal)
+        self.slider_seq_default_note_duration.setRange(0, 100)
+        self.slider_seq_default_note_duration.setValue(100)
+        self.slider_seq_default_note_duration.setFixedWidth(110)
+        self.slider_seq_default_note_duration.setToolTip(
+            "Global sequencer note-duration default. Changing it applies the new gate to every step; "
+            "then use a selected step's Gate control to make individual overrides."
+        )
+        self.lbl_seq_default_note_duration = QLabel("100%")
+        self.slider_seq_default_note_duration.valueChanged.connect(self._on_sequence_default_note_duration_changed)
+        sizing_layout.addWidget(self.slider_seq_default_note_duration)
+        sizing_layout.addWidget(self.lbl_seq_default_note_duration)
         sizing_layout.addStretch(1)
         sizing_container = QWidget()
         sizing_container.setLayout(sizing_layout)
@@ -31068,6 +31548,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         btn_reset_window_mods.clicked.connect(lambda: self._reset_global_mod_controls())
         btn_reset_window_mods.setMinimumHeight(38)
         editor_bottom_row.addWidget(btn_reset_window_mods, 1)
+        self.btn_reset_window_mods = btn_reset_window_mods
         editor_tools_group = QGroupBox("SYNTH / WINDOW TOOLS")
         editor_tools_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         etl = QVBoxLayout(editor_tools_group)
@@ -31245,8 +31726,19 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "QSlider::groove:horizontal { background:#3b3020; height:5px; } QSlider::handle:horizontal { background:#d4af37; width:12px; margin:-4px 0; }"
             "QCheckBox { color:#e8d8a0; font-weight:800; font-size:8pt; }"
         )
-        cb = QVBoxLayout(self.sample_bridge_group)
-        cb.setContentsMargins(7, 12, 7, 7); cb.setSpacing(5)
+        # GROOVEBOX_R123_BRIDGE_BISECT_20261119: the bridge is bisected into two equal halves —
+        # left = sample morph · multidim · modulation, right = canonical levels · LOCK character — so its
+        # sliders stop running across the whole wide canvas; the row centres it between neighbour panels.
+        _bridge_outer = QHBoxLayout(self.sample_bridge_group)
+        _bridge_outer.setContentsMargins(7, 12, 7, 7); _bridge_outer.setSpacing(10)
+        cb = QVBoxLayout(); cb.setSpacing(5)
+        cb_canon = QVBoxLayout(); cb_canon.setSpacing(5)
+        self._bridge_halves = (cb, cb_canon)
+        _bridge_outer.addLayout(cb, 1)
+        _bridge_sep = QFrame(); _bridge_sep.setFrameShape(QFrame.Shape.VLine)
+        _bridge_sep.setStyleSheet("color:#765d22; background:#765d22;"); _bridge_sep.setFixedWidth(1)
+        _bridge_outer.addWidget(_bridge_sep)
+        _bridge_outer.addLayout(cb_canon, 1)
         # Row 1: enable + invariant.
         bridge_r1 = QHBoxLayout(); bridge_r1.setSpacing(8)
         self.chk_sample_precano = QCheckBox("PRE-CANONICAL SAMPLE MORPH")
@@ -31352,7 +31844,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # CANONICAL_LEVELS_20260910 — actual engine contribution levels.
         level_title = QLabel("CANONICAL LEVELS · SEEDED / RAND / LOCK / EUCLIDEAN / GOAVA / FRACTAL SEED")
         level_title.setStyleSheet("color:#f5d97d; font-size:10pt; font-weight:900;")
-        cb.addWidget(level_title)
+        cb_canon.addWidget(level_title)
         levels_row = QGridLayout(); levels_row.setHorizontalSpacing(8); levels_row.setVerticalSpacing(2)
         _level_defs = (("seeded","SEEDED",100), ("randomizer","RAND",100), ("phase_lock","LOCK",50), ("euclidean","EUCLIDEAN",100), ("goava","GOAVA",33), ("fractal_seed","FRACTAL SEED",100))
         _level_colors = {"seeded":"#e6a800", "randomizer":"#41d17a", "phase_lock":"#12e0c4", "euclidean":"#66ffaa", "goava":"#ff8a42", "fractal_seed":"#c4a7ff"}
@@ -31381,7 +31873,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _rr, _cc = divmod(_i, 2); _base = _cc * 3
             levels_row.addWidget(_lab, _rr, _base); levels_row.addWidget(_sl, _rr, _base+1); levels_row.addWidget(_val, _rr, _base+2)
             levels_row.setColumnStretch(_base+1, 1)
-        cb.addLayout(levels_row)
+        cb_canon.addLayout(levels_row)
         # GROOVEBOX_R23R_MULTIDIM_SYNTH_20261103: the multidimensional synth in the canonical mixer
         _mdrow = QGridLayout(); _mdrow.setHorizontalSpacing(8); _mdrow.setVerticalSpacing(2)
         _gms0 = getattr(self, "geometric_synth_mixer_state", {}) or {}
@@ -31469,14 +31961,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         cb.addLayout(xmod_row)
         self.lbl_sidechain_canonical = QLabel(""); self.lbl_sidechain_canonical.setWordWrap(True)
         self.lbl_sidechain_canonical.setStyleSheet("color:#ffe9a8; font-size:7pt;")
-        cb.addWidget(QLabel("SIDECHAIN (global · canonical while at default; per-step on STEP editor; 'Sidechain' Mod Patch route)"))
-        cb.addWidget(self.lbl_sidechain_canonical)
+        # R123: the sidechain readout lives in the GLOBAL ▸ SIDECHAIN panel (panel_synth_deck.build_sidechain_panel).
 
         # LOCK_CHARACTER_20260910 — relationship controls, not extra engines.
         lock_title = QLabel("LOCK CHARACTER · musical relationship controls")
         lock_title.setStyleSheet("color:#12e0c4; font-size:9pt; font-weight:900;")
         lock_title.setToolTip("LOCK defaults are tuned for coherent phase relationships without collapsing motion: Coupling 62%, Timing Pull 50%, Pitch/Detune Link 62%, Velocity Link 65%, Phase Spread 20%.")
-        cb.addWidget(lock_title)
+        cb_canon.addWidget(lock_title)
         lock_mode_row = QHBoxLayout()
         lock_mode_row.addWidget(QLabel("Lock time"))
         self.combo_phase_lock_time = QComboBox()
@@ -31488,7 +31979,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         )
         self.combo_phase_lock_time.currentTextChanged.connect(lambda t: setattr(self, "phase_lock_time_mode", str(t)))
         lock_mode_row.addWidget(self.combo_phase_lock_time)
-        cb.addLayout(lock_mode_row)
+        cb_canon.addLayout(lock_mode_row)
         lock_grid = QGridLayout(); lock_grid.setHorizontalSpacing(8); lock_grid.setVerticalSpacing(3)
         _lock_defs = (("coupling","Coupling",62), ("timing_pull","Timing Pull",50), ("detune_link","Pitch/Detune Link",62), ("velocity_link","Velocity Link",65), ("phase_spread","Phase Spread",20))
         self._phase_lock_character_labels = {}
@@ -31513,7 +32004,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             _rr, _cc = divmod(_i, 2); _base = _cc * 3
             lock_grid.addWidget(_lab, _rr, _base); lock_grid.addWidget(_sl, _rr, _base+1); lock_grid.addWidget(_val, _rr, _base+2)
             lock_grid.setColumnStretch(_base+1, 1)
-        cb.addLayout(lock_grid)
+        cb_canon.addLayout(lock_grid)
+        cb.addStretch(1); cb_canon.addStretch(1)
 
         # CANONICAL_MORPH_BRIDGE is a full-width lower-deck workspace panel;
         # do not also insert it into the narrow global side column.
@@ -31716,7 +32208,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for _idx, (_name, _sl) in enumerate((
             ("Mix", self.gp_mix_slider), ("Script", self.gp_script_slider),
             ("Domain", self.gp_domain_slider), ("Wire", self.gp_wire_slider))):
-            rr, cc = divmod(_idx, 2)
+            # GROOVEBOX_R123_BRIDGE_BISECT_20261119: one row of four (was 2 × 2 across the whole canvas).
+            rr, cc = 0, _idx
             amount_grid.addWidget(QLabel(_name), rr, cc * 2)
             amount_grid.addWidget(_sl, rr, cc * 2 + 1)
             amount_grid.setColumnStretch(cc * 2 + 1, 1)
@@ -31936,14 +32429,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         local_hint2 = QLabel("CANONICAL CONTROL BAND · 50–100% target · user data remains readable and recoverable")
         local_hint2.setStyleSheet("color:#f5d97d; font-weight:800; padding:2px 4px;")
         local_hint2.setToolTip("Canonical control target: the engine stack may morph the signal while preserving the user-owned source floor and full save/load/export provenance.")
-        master_container.addWidget(local_hint2)
+        # GROOVEBOX_R123_MARKOV_BESIDE_TRAYS_20261119: canonical band + PERFORM/sequencer trays share a row with the Markov Resampler.
+        self.canonical_band_host = QWidget()
+        _r123_band_lay = QVBoxLayout(self.canonical_band_host)
+        _r123_band_lay.setContentsMargins(0, 0, 0, 0); _r123_band_lay.setSpacing(2)
+        _r123_band_lay.addWidget(local_hint2)
         self.lbl_canonical_signal_control = QLabel("CANONICAL SIGNAL CONTROL: 100%")
         self.lbl_canonical_signal_control.setStyleSheet("color:#7dff8a; font-weight:900; padding:2px 4px;")
         self.lbl_canonical_signal_control.setToolTip(
             "Hard invariant: canonical signal control is always 50–100%, with or without a carrier. "
             "If no user slot is available, canonical sequence/automation/AM/FM/PM/effect structure is created rather than rewriting user data."
         )
-        master_container.addWidget(self.lbl_canonical_signal_control)
+        _r123_band_lay.addWidget(self.lbl_canonical_signal_control)
         canonical_resonance_row = QHBoxLayout()
         canonical_resonance_row.addWidget(QLabel("Canonical Resonance / Activity:"))
         self.spin_canonical_resonance = QDoubleSpinBox()
@@ -31986,7 +32483,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "If no user waveform is present, the canonical branch remains audible as a fallback."
         )
         canonical_resonance_row.addWidget(self.spin_canonical_live_overblend)
-        master_container.addLayout(canonical_resonance_row)
+        _r123_band_lay.addLayout(canonical_resonance_row)
         self.spin_canonical_resonance.valueChanged.connect(self._on_canonical_resonance_changed)
         canonical_strategy_row = QHBoxLayout()
         canonical_strategy_row.addWidget(QLabel("Canonical Control Strategy:"))
@@ -32010,16 +32507,32 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.combo_canonical_control_strategy.currentTextChanged.connect(self._on_canonical_control_strategy_changed)
         canonical_strategy_row.addWidget(self.combo_canonical_control_strategy)
         canonical_strategy_row.addStretch(1)
-        master_container.addLayout(canonical_strategy_row)
+        _r123_band_lay.addLayout(canonical_strategy_row)
         self.global_player_group = global_player_group
         # UI_LAYOUT_V34: editor launchers, LIVE DJ, and GLOBAL PLAY PATCHER share
         # one horizontal deck instead of consuming three independent rows.
+        # GROOVEBOX_R123_PANEL_SYNTH_ROW_20261119: panel synths get their own full-width row (enlarged
+        # launchers with live data, Expand frames, other editor modes); LIVE DJ shares the next row with the
+        # new GLOBAL ▸ SIDECHAIN panel.
+        import panel_synth_deck as _psd
+        _psv_widget = None
+        for _i in range(editor_bottom_row.count()):
+            _wi = editor_bottom_row.itemAt(_i).widget()
+            if _wi is not None and _wi is not self.btn_edit_panels_per_sequence and _wi is not self.btn_reset_window_mods:
+                _psv_widget = _wi
+        self.panel_synth_row_group = _psd.build_panel_synth_row(
+            self, (self.btn_edit_panels_per_sequence, _psv_widget, self.btn_reset_window_mods))
+        try:
+            editor_tools_group.deleteLater()
+        except Exception:
+            pass
+        self.editor_tools_group = self.panel_synth_row_group
+        local_context_layout.addWidget(self.panel_synth_row_group, 0)
         performance_deck = QHBoxLayout()
         performance_deck.setContentsMargins(0, 0, 0, 0)
         performance_deck.setSpacing(6)
-        performance_deck.addWidget(self.editor_tools_group, 3)
-        performance_deck.addWidget(self.pkp_ui_group, 4)
-        self.editor_tools_group.setMinimumWidth(0)
+        performance_deck.addWidget(self.pkp_ui_group, 3)
+        performance_deck.addWidget(_psd.build_sidechain_panel(self), 2)
         self.pkp_ui_group.setMinimumWidth(0)
         global_player_group.setMinimumWidth(0)
         local_context_layout.addLayout(performance_deck, 0)
@@ -32596,6 +33109,21 @@ class MathematiciansGrooveboxApp(QMainWindow):
         step_edit.addWidget(self.slider_step_amp)
         self.lbl_step_amp = QLabel("100%")
         step_edit.addWidget(self.lbl_step_amp)
+        step_edit.addWidget(QLabel("Gate:"))
+        self.slider_step_note_duration = QSlider(Qt.Orientation.Horizontal)
+        self.slider_step_note_duration.setRange(0, 100)
+        self.slider_step_note_duration.setValue(100)
+        self.slider_step_note_duration.setFixedWidth(96)
+        self.slider_step_note_duration.setToolTip(
+            "Canonical per-step note gate: 0% suppresses the note; 100% preserves the full authored hold. "
+            "Stored in step_controls and used by sequencer playback and Performance phrase renders."
+        )
+        self.slider_step_note_duration.valueChanged.connect(
+            lambda v: self._on_step_control_slider("note_duration", v / 100.0)
+        )
+        step_edit.addWidget(self.slider_step_note_duration)
+        self.lbl_step_note_duration = QLabel("100%")
+        step_edit.addWidget(self.lbl_step_note_duration)
         step_edit.addWidget(QLabel("Pitch:"))
         self.slider_step_pitch = QSlider(Qt.Orientation.Horizontal)
         self.slider_step_pitch.setRange(25, 400)
@@ -33009,7 +33537,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.master_global_eq_curve.curveChanged.connect(self._on_master_global_eq_changed)
         master_container.insertWidget(0,self.master_global_eq_group)
 
-        master_container.addWidget(self.top_sequencer)
+        _r123_tray_row = QHBoxLayout(); _r123_tray_row.setSpacing(6)
+        _r123_tray_col = QVBoxLayout(); _r123_tray_col.setSpacing(2)
+        _r123_tray_col.addWidget(self.canonical_band_host)
+        _r123_tray_col.addWidget(self.top_sequencer)
+        _r123_tray_row.addLayout(_r123_tray_col, 4)
+        _r123_mk = self._build_markov_resampler_panel()
+        _r123_mk.setMinimumWidth(320); _r123_mk.setMaximumWidth(620)
+        _r123_tray_row.addWidget(_r123_mk, 1)
+        master_container.addLayout(_r123_tray_row)
 
         # GROOVEBOX_R23R_ARC_SEQ_20261103: ring sequencer wraps around the 3D sphere
         try:
@@ -33147,13 +33683,26 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if _arc_host is not None and hasattr(_arc_host, "add_left_widget"):
             # Fill the otherwise empty ring-level side space with the existing
             # geometric-synth panels instead of leaving two dead margins.
-            _arc_host.add_left_widget(self.ball_synth_group)
-            _arc_host.add_left_widget(self.master_vector_group)
-            # GLOBAL_WAVETABLE_PROJECTOR sits beside Master Vector so it is visibly
-            # upstream of the signal monitor/game/export surfaces.
-            _arc_host.add_right_widget(self.wavetable_projector_group)
-            _arc_host.add_right_widget(self.cellular_synth_group)
-            below_seq_layer.addWidget(self.sample_bridge_group, 1)
+            # GROOVEBOX_R123_GEOMETRICS_ROW_20261119: the four geometric synths left the ring view's side
+            # scroll rails (which now give the Mod Path Bay the room beside the Multidim sphere) and sit on
+            # their own row, directly above their mixer: Vector | Wavetable | Ball | Cellular.
+            geometrics_row = QHBoxLayout()
+            geometrics_row.setContentsMargins(0, 0, 0, 0)
+            geometrics_row.setSpacing(6)
+            for _geo in (self.master_vector_group, self.wavetable_projector_group,
+                         self.ball_synth_group, self.cellular_synth_group):
+                _geo.setMinimumWidth(420)
+                _geo.setMaximumWidth(16777215)
+                for _lab in _geo.findChildren(QLabel):
+                    _lab.setWordWrap(True)
+                # GROOVEBOX_R123_GEOMETRICS_EQUAL_HEIGHT_20261119: no AlignTop — the four synths share the row
+                # height (the tallest one), so no empty bars are left under the shorter panels.
+                _geo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+                geometrics_row.addWidget(_geo, 1)
+            master_container.addLayout(geometrics_row)
+            self.geometrics_row = geometrics_row
+            below_seq_layer.addWidget(self.sample_bridge_group, 2)
+            self._bridge_row_centered = True
         else:
             below_seq_layer.addWidget(self.ball_synth_group, 1)
             below_seq_layer.addWidget(self.master_vector_group, 1)
@@ -33178,32 +33727,36 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.geometric_engine_mixer_group.setStyleSheet("QGroupBox { color:#b9c9ff; background:#101522; border:1px solid #475a91; border-radius:6px; margin-top:6px; padding-top:8px; font-weight:900; } QLabel { color:#e1e8ff; font-size:8pt; } QSlider::groove:horizontal { background:#29334a; height:5px; border-radius:2px; } QSlider::handle:horizontal { background:#8fa9ff; width:11px; margin:-4px 0; border-radius:5px; }")
         _gmroot = QVBoxLayout(self.geometric_engine_mixer_group)
         _gmroot.setContentsMargins(6, 10, 6, 5); _gmroot.setSpacing(2)
-        _gmrow = QHBoxLayout(); _gmrow.setSpacing(8)
+        # GROOVEBOX_R123_BRIDGE_BISECT_20261119: a 2-column grid (it now sits beside the bridge).
+        _gmrow = QGridLayout(); _gmrow.setHorizontalSpacing(12); _gmrow.setVerticalSpacing(6)
+        _gm_slot = [0]
+        def _gm_add(_lay):
+            _r, _c = divmod(_gm_slot[0], 2); _gmrow.addLayout(_lay, _r, _c); _gm_slot[0] += 1
         self.geometric_engine_mix_sliders = {}
         for _key, _label, _default in (("vector", "Vector", .80), ("wavetable", "Wavetable", .75), ("ball", "Ball", .65), ("cellular", "Cellular", .70)):
             _cell = QVBoxLayout(); _cell.setSpacing(1)
             _top = QHBoxLayout(); _top.addWidget(QLabel(_label)); _value_label = QLabel(f"{_default:.2f}"); _top.addStretch(1); _top.addWidget(_value_label)
             _sl = QSlider(Qt.Orientation.Horizontal); _sl.setRange(0, 100); _sl.setValue(round(_default*100)); _sl.setToolTip(f"Independent { _label } geometric synth output gain (0–100%).")
             _sl.valueChanged.connect(lambda v, k=_key, lab=_value_label: self._on_geometric_synth_mix_changed(k, v, lab))
-            _cell.addLayout(_top); _cell.addWidget(_sl); _gmrow.addLayout(_cell, 1)
+            _cell.addLayout(_top); _cell.addWidget(_sl); _gm_add(_cell)
             self.geometric_engine_mix_sliders[_key] = (_sl, _value_label)
         _xcell = QVBoxLayout(); _xcell.setSpacing(1)
         _xtop = QHBoxLayout(); _xtop.addWidget(QLabel("Shared cross-mod")); self.lbl_geometric_cross_mod = QLabel("0.0024"); _xtop.addStretch(1); _xtop.addWidget(self.lbl_geometric_cross_mod)
         self.slider_geometric_cross_mod = QSlider(Qt.Orientation.Horizontal); self.slider_geometric_cross_mod.setRange(0, 200); self.slider_geometric_cross_mod.setValue(24); self.slider_geometric_cross_mod.setToolTip("Shared deterministic cross-modulation depth for all four geometric synths; 0.0000–0.0200.")
         self.slider_geometric_cross_mod.valueChanged.connect(self._on_geometric_cross_mod_changed)
-        _xcell.addLayout(_xtop); _xcell.addWidget(self.slider_geometric_cross_mod); _gmrow.addLayout(_xcell, 1)
+        _xcell.addLayout(_xtop); _xcell.addWidget(self.slider_geometric_cross_mod); _gm_add(_xcell)
         _ecell = QVBoxLayout(); _ecell.setSpacing(1)
         _etop = QHBoxLayout(); _etop.addWidget(QLabel("Ensemble modulation")); self.lbl_geometric_ensemble_mod = QLabel("12%"); _etop.addStretch(1); _etop.addWidget(self.lbl_geometric_ensemble_mod)
         self.slider_geometric_ensemble_mod = QSlider(Qt.Orientation.Horizontal); self.slider_geometric_ensemble_mod.setRange(0, 50); self.slider_geometric_ensemble_mod.setValue(12)
         self.slider_geometric_ensemble_mod.setToolTip("Canonical bidirectional modulation between all four geometric synths and the ensemble synth bus; 0–50%. Adaptive scheduling follows the beat grid and detected ensemble activity.")
         self.slider_geometric_ensemble_mod.valueChanged.connect(self._on_geometric_ensemble_mod_changed)
-        _ecell.addLayout(_etop); _ecell.addWidget(self.slider_geometric_ensemble_mod); _gmrow.addLayout(_ecell, 1)
+        _ecell.addLayout(_etop); _ecell.addWidget(self.slider_geometric_ensemble_mod); _gm_add(_ecell)
         _icell = QVBoxLayout(); _icell.setSpacing(1)
         _itop = QHBoxLayout(); _itop.addWidget(QLabel("Inharmonic partials")); self.lbl_geometric_inharmonic = QLabel("0%"); _itop.addStretch(1); _itop.addWidget(self.lbl_geometric_inharmonic)
         self.slider_geometric_inharmonic = QSlider(Qt.Orientation.Horizontal); self.slider_geometric_inharmonic.setRange(0, 100); self.slider_geometric_inharmonic.setValue(0)
         self.slider_geometric_inharmonic.setToolTip("How much of the seeded off-harmonic partial bank and FM colour the Edit Synth voices add. 0% (default) = a pure harmonic series, so canonicals plus a seed add no over/undertones; Randomize All draws it anywhere from 0 to 100%.")
         self.slider_geometric_inharmonic.valueChanged.connect(self._on_geometric_inharmonic_changed)
-        _icell.addLayout(_itop); _icell.addWidget(self.slider_geometric_inharmonic); _gmrow.addLayout(_icell, 1)
+        _icell.addLayout(_itop); _icell.addWidget(self.slider_geometric_inharmonic); _gm_add(_icell)
         # GROOVEBOX_GEO_PANEL_MIX_20261102: per-instrument balance between the Edit Synth panel
         # voice and the four geometric synths (default 50 / 50). Saved with the instrument,
         # shared by Edit Together, and writable by canonical engines (a canonical macro).
@@ -33213,7 +33766,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.slider_geo_panel_mix.setToolTip("This instrument's voice balance, panel / geometric. 50 / 50 (default) = equal; the far ends are 75 / 25 and 25 / 75, so each side always keeps at least a quarter. "
                                              "Canonical engines read it and can write it towards their plan; a value you set stays yours.")
         self.slider_geo_panel_mix.valueChanged.connect(self._on_geo_panel_mix_changed)
-        _pcell.addLayout(_ptop); _pcell.addWidget(self.slider_geo_panel_mix); _gmrow.addLayout(_pcell, 1)
+        _pcell.addLayout(_ptop); _pcell.addWidget(self.slider_geo_panel_mix); _gm_add(_pcell)
         _gmroot.addLayout(_gmrow)
         # GROOVEBOX_R23R_GEOMETRY_PER_INSTRUMENT_20261031: with geometry inside each
         # instrument, the two coupling controls act per instance:
@@ -33232,8 +33785,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.geometric_engine_mix_sliders[_key][0].setToolTip(_tip)
         self.lbl_geometric_mixer_status = QLabel("Depth of each geometric synth on every instrument's own instance · GOAVA stays single-instance")
         self.lbl_geometric_mixer_status.setStyleSheet("color:#91d9bd; font-size:7pt; font-weight:700;")
+        self.lbl_geometric_mixer_status.setWordWrap(True)
         _gmroot.addWidget(self.lbl_geometric_mixer_status)
-        master_container.addWidget(self.geometric_engine_mixer_group)
+        _gmroot.addStretch(1)
+        if getattr(self, "_bridge_row_centered", False):
+            # Row: [GEOMETRIC ENGINE MIXER] [CANONICAL MORPH BRIDGE (bisected)] [MARKOV RESAMPLER]
+            self.geometric_engine_mixer_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            below_seq_layer.insertWidget(0, self.geometric_engine_mixer_group, 1)
+            # Markov Resampler now sits beside the canonical band / sequencer trays (R123).
+        else:
+            master_container.addWidget(self.geometric_engine_mixer_group)
 
         # BOTTOM_CANONICAL_DECK: the three global FX sliders live immediately
         # below the sequencer, where they cannot be hidden by the top
@@ -33274,6 +33835,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         _all_act = export_menu.addAction("⬇ Export… (all formats · parts · bitrate · sample rate)")
         _all_act.triggered.connect(lambda: self.export_all_formats_dialog())
         export_menu.addAction("💾 Project (.MCC)…").triggered.connect(lambda: self.export_project_mcc())
+        export_menu.addAction("🧠 Project Intelligence · Macros / Touch Keyboard / Snapshots…").triggered.connect(
+            self.open_project_intelligence_studio)
+        export_menu.addAction("📊 Monitoring & Diagnostics Center…").triggered.connect(
+            self.open_monitor_center)
         export_menu.addAction("🧊 Project → OBJ (3D song model · exact audio + project inside)…").triggered.connect(
             lambda: self.export_project_obj())
         export_menu.addSeparator()
@@ -33589,9 +34154,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # below the window by the control layout's sizeHint().
         top_content = QWidget()
         top_content.setObjectName("grooveboxTopContent")
-        # Keep the animated mathematical backdrop in the window, not over
-        # the text and data being edited.
-        top_content.setStyleSheet("QWidget#grooveboxTopContent { background:#101b2b; }")
+        self.top_workspace_pane = top_content
         top_layout = QVBoxLayout(top_content)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(4)
@@ -33645,7 +34208,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         bottom_content = QWidget()
         bottom_content.setObjectName("grooveboxBottomContent")
-        bottom_content.setStyleSheet("QWidget#grooveboxBottomContent { background:#101b2b; }")
+        self.bottom_workspace_pane = bottom_content
         bottom_layout = QVBoxLayout(bottom_content)
         bottom_layout.setContentsMargins(6, 6, 6, 6)
         bottom_layout.setSpacing(4)
@@ -33726,6 +34289,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception as _vr_exc:
             print(f"[UI] visual resize hook: {_vr_exc}")
         self.render_pane = bottom_content
+        _apply_workspace_pane_color(self)
 
         # Realtime audio engine state (sounddevice stream)
         self.is_playing = False
@@ -34038,6 +34602,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
         if not hasattr(self, "instrument_selector_dropdown"):
             return
         c = self._r32_instrument_color(self.instrument_selector_dropdown.currentText())
+        # GROOVEBOX_R123_INSTRUMENT_DROPDOWN_COLORS_20261119: the closed selector's frame follows the selected
+        # instrument's colour; the open list paints every row in its own colour (_InstrumentColorDelegate).
+        dd = self.instrument_selector_dropdown
+        try:
+            base = dd.property("_r123BaseSheet")
+            if base is None:
+                base = dd.styleSheet() or ""
+                dd.setProperty("_r123BaseSheet", base)
+            dd.setStyleSheet(str(base) + " QComboBox#instrumentSelector { border:3px solid %s; }" % c)
+            dd.view().viewport().update()
+        except Exception:
+            pass
         if b is not None:
             b.setStyleSheet("QPushButton{background:%s;color:#05070b;font-weight:900;border-radius:6px;}" % c)
         # The selected synth gets a very restrained tint in the existing
@@ -34575,6 +35151,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         mem = self._current_sequence_mem(curr_inst) if hasattr(self, '_current_sequence_mem') else self.instrument_sequencer_memory[curr_inst]
         count = int(mem.get('pattern_length', len(self.seq_step_buttons) or DEFAULT_SEQUENCE_LENGTH))
         self._ensure_seq_mem_length(mem, count)
+        if hasattr(self, "slider_seq_default_note_duration"):
+            try: _global_gate = float(np.clip(float(mem.get("note_duration_default", 1.0)), 0.0, 1.0))
+            except Exception: _global_gate = 1.0
+            self.slider_seq_default_note_duration.blockSignals(True)
+            self.slider_seq_default_note_duration.setValue(int(round(_global_gate * 100.0)))
+            self.slider_seq_default_note_duration.blockSignals(False)
+            self.lbl_seq_default_note_duration.setText(f"{_global_gate*100:.0f}%")
         try: self._refresh_canonical_data_inspector()
         except Exception: pass
         if hasattr(self, "spin_chord_note_count"):
@@ -35927,40 +36510,98 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
 
+    def open_monitor_center(self):
+        """Open the live system, worker-pool, export and UI diagnostics workspace."""
+        try:
+            from monitor_center import open_monitor_center
+            return open_monitor_center(self)
+        except Exception as exc:
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Monitoring & Diagnostics", str(exc))
+            except Exception:
+                print(f"[Monitor Center] {exc}")
+            return None
+
+    def open_project_intelligence_studio(self, selected_slot=None):
+        """Open the unified project/performance control surface."""
+        try:
+            from project_intelligence_studio import open_project_intelligence
+            from unified_project_intelligence import UnifiedProjectIntelligence
+            controller = getattr(self, "_project_intelligence_controller", None)
+            if controller is None:
+                controller = self._project_intelligence_controller = UnifiedProjectIntelligence()
+            dialog = open_project_intelligence(self, controller, selected_slot=selected_slot)
+            return dialog
+        except Exception as exc:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Project Intelligence", str(exc))
+            return None
+
     def keyPressEvent(self, event):
         # TAB_INSTRUMENT_20261107: Tab picks a random other active instrument.
         # Shift-Tab walks back through the history. Hold Enter to record a loop;
         # a tap of Enter with no keys clears it.
         key = event.key()
-        if key == Qt.Key.Key_Tab:
-            names = list(getattr(self, "instrument_display_names", None) or getattr(self, "instrument_names_48", []) or [])
-            if not names:
+        try:
+            _mods = event.modifiers()
+            _keypad = bool(_mods & Qt.KeyboardModifier.KeypadModifier)
+            if _keypad:
+                _kp = {getattr(Qt.Key, f"Key_{i}"): i-1 for i in range(1,10)}
+                _kp[getattr(Qt.Key, "Key_0")] = 9
+                _kp[getattr(Qt.Key, "Key_Period")] = 10
+                _kp[getattr(Qt.Key, "Key_Enter")] = 11
+                if key in _kp:
+                    self.open_project_intelligence_studio(_kp[key])
+                    return
+            _shift = bool(_mods & Qt.KeyboardModifier.ShiftModifier)
+            _fkeys = [getattr(Qt.Key, f"Key_F{i}") for i in range(1, 13)]
+            if _shift and key in _fkeys:
+                self.open_project_intelligence_studio(_fkeys.index(key))
                 return
-            cur = self.instrument_selector_dropdown.currentText() if hasattr(self, "instrument_selector_dropdown") else ""
-            hist = getattr(self, "_instrument_history", None)
-            if not isinstance(hist, list):
-                hist = self._instrument_history = []
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                if hist:
-                    prev = hist.pop()
-                    if hasattr(self, "instrument_selector_dropdown"):
-                        self.instrument_selector_dropdown.setCurrentText(prev)
-                return
-            others = [n for n in names if n != cur]
-            if others:
-                import random
-                pick = random.choice(others)
-                hist.append(cur)
-                if len(hist) > 32:
-                    hist.pop(0)
-                if hasattr(self, "instrument_selector_dropdown"):
-                    self.instrument_selector_dropdown.setCurrentText(pick)
+        except Exception:
+            pass
+        if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            self._r123_tab_instrument(key == Qt.Key.Key_Backtab or bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier))
             return
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if not event.isAutoRepeat():
                 self._enter_loop_press()
             return
         super().keyPressEvent(event)
+
+    def _r123_tab_instrument(self, back=False):
+        """GROOVEBOX_R123_SHIFT_TAB_LAST_CLICKED_20261119 — Tab: a random other instrument (remembered as history).
+        Shift+Tab: back to the instrument the user last selected by clicking (dropdown / instrument picker),
+        never to an instrument Tab itself picked; with no click recorded yet it falls back to the Tab history."""
+        dd = getattr(self, "instrument_selector_dropdown", None)
+        if dd is None:
+            return
+        names = list(getattr(self, "instrument_display_names", None) or getattr(self, "instrument_names_48", []) or [])
+        cur = dd.currentText()
+        hist = getattr(self, "_instrument_history", None)
+        if not isinstance(hist, list):
+            hist = self._instrument_history = []
+        if back:
+            target = getattr(self, "_instrument_last_clicked", None)
+            if not target or target == cur or dd.findText(target) < 0:
+                target = hist.pop() if hist else None
+            if target and target != cur:
+                hist.append(cur)
+                del hist[:-32]
+                dd.setCurrentText(target)
+            return
+        others = [n for n in names if n != cur]
+        if others:
+            import random
+            hist.append(cur)
+            del hist[:-32]
+            dd.setCurrentText(random.choice(others))
+
+    def _r123_note_instrument_clicked(self, *_a):
+        dd = getattr(self, "instrument_selector_dropdown", None)
+        if dd is not None:
+            self._instrument_last_clicked = dd.currentText()
 
     def _enter_loop_press(self):
         """ENTER_HOLD_LOOP_R7: Enter is a hold-to-record looper.
@@ -36292,6 +36933,24 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 game._live_pulse = min(1.0, float(getattr(game, "_live_pulse", 0.0)) + 0.18)
         except Exception:
             pass
+        # KEYBIND_FANOUT_20261119: opt-in multicarrier keyboard performance.
+        # The selected instrument remains at 100%; other instruments receive
+        # the midpoint between neutral ratio and their normal keybind ratio.
+        if bool(getattr(self, "_live_record_all_instruments_keybind", False)):
+            try:
+                selected = str(getattr(getattr(self, "instrument_selector_dropdown", None), "currentText", lambda: "")())
+                names = list(getattr(self, "instrument_display_names", None) or getattr(self, "instrument_names_48", []) or [])
+                for other in names:
+                    other = str(other)
+                    if not other or other == selected: continue
+                    try:
+                        target_ratio = float(self._keychart_ratio(degree))
+                        half_morph_ratio = 1.0 + (target_ratio - 1.0) * 0.5
+                        if abs(_live_bend) > 1e-9: half_morph_ratio *= 2.0 ** (_live_bend / 12.0)
+                        self._pkp_fire_step_hit(other, int(degree), amp=1.0, pitch_ratio=half_morph_ratio,
+                            hit_seconds=0.35, hold_key=ch)
+                    except Exception as _fanout_exc: _gb_log_error("all-instrument keybind fanout", _fanout_exc)
+            except Exception as _fanout_exc: _gb_log_error("all-instrument keybind enumeration", _fanout_exc)
         # NOTE_ENVELOPE_20261107: per-key attack/release/sustain (PKP).
         try:
             bank = self._key_bank() if hasattr(self, "_key_bank") else None
@@ -36312,6 +36971,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 _live_bend = max(-12.0, min(12.0, float(getattr(self, "_live_player_pitch_bend_semitones", 0.0) or 0.0)))
         except Exception:
             _live_bend = 0.0
+        # Live Composition Studio captures keyboard events with their routing decision.
+        try:
+            _ctl = getattr(self, "_live_composition_controller", None)
+            if _ctl is not None and getattr(_ctl, "armed", False):
+                _fanout = bool(getattr(self, "_live_record_all_instruments_keybind", False))
+                _ctl.ingest_note_event(_ctl._elapsed(), 60 + int(degree), 100, 0.25, channel=0,
+                    source_id="keyboard:" + str(ch), key=str(ch),
+                    carrier_mode="all_instruments" if _fanout else "selected_instrument",
+                    keybind_morph_percent=50.0 if _fanout else 100.0,
+                    selected_instrument=str(getattr(getattr(self, "instrument_selector_dropdown", None), "currentText", lambda: "")()))
+        except Exception:
+            pass
         # The jam take records the actual key/sample identity and the bend in
         # the same monotonic time domain, so its pattern envelope is the take.
         try:
@@ -36732,6 +37403,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             form.addRow("Make-up generator", w["makeup_generator"])
             # R32.8 ACCESSIBILITY & WELLBEING
             import accessibility as _a11y
+            w["workspace_pane_color"] = QComboBox(); w["workspace_pane_color"].addItems(["blue_gray", "slate", "graphite", "midnight"])
+            w["workspace_pane_color"].setToolTip("One shared color for all three primary workspace panes. Other windows and the blue startup selector are unchanged.")
+            form.addRow("Workspace pane background (all three)", w["workspace_pane_color"])
             w["color_scheme"] = QComboBox(); w["color_scheme"].addItems(list(_a11y.SCHEMES))
             w["color_scheme"].setToolTip("Transforms every colour of every window (palette + style sheets). protan/deutan/tritan-safe "
                                          "re-map colours for red-, green- and blue-weak vision; warm night lowers blue light.")
@@ -36849,6 +37523,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 data.update(collect())
                 ok = cs.save(data)
                 cs.apply_env(data)
+                _apply_workspace_pane_color(self, data.get("workspace_pane_color", "blue_gray"))
                 # LIVE_COMPAT_20261107: push viz and makeup to open players now.
                 try:
                     players = []
@@ -37526,7 +38201,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "bars": settings["bars"],
             "root_midi": settings["root_midi"],
             "base_frequency_hz": settings["base_frequency_hz"],
-            "reference_frequency_hz": float(self.spin_base_frequency.value()) if hasattr(self, "spin_base_frequency") else 432.0,
+            "reference_frequency_hz": min(20000.0, max(20.0, float(self.spin_base_frequency.value()))) if hasattr(self, "spin_base_frequency") else 432.0,
             "scale": settings["scale"],
             "symbol_budget": settings["symbol_budget"],
             # Scenario omission/phase shifting is an explicit Canonical-only
@@ -38722,10 +39397,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             pass
         mode = "userdata · canonical superwrite"
+        # GROOVEBOX_R123_ROUTE_HANDLES_20261119: RANDOMIZE ALL PATCH knows the routes — it serves instruments that
+        # have no patch input (route-aware cables) and re-voices every existing route group (cables, Mod Matrix,
+        # Patch Motion, sidechain) with the project seed; locked groups (Autopilot ▸ HANDLES) stay untouched.
+        _route_note = ""
+        try:
+            import route_handles as _rh
+            import patch_bay_sync as _pbs
+            _added = [] if "cables" in _rh.locked_groups(self) else _pbs.randomize_patch(self)
+            _rr = _rh.randomize_routes(self, random.Random("all-patch|%s|%d" % (self.get_numeric_seed(),
+                                       len(getattr(self, "patch_connections", []) or []))),
+                                       amount=0.75, groups=("cables", "matrix", "motion", "sidechain"))
+            _route_note = " · %d new cable(s) · routes %s" % (len(_added), ", ".join(
+                "%s %s" % (k, v) for k, v in _rr.items() if v))
+        except Exception as _rexc:
+            print(f"[GlobalPlay] route-aware patch: {_rexc}")
         if hasattr(self, "scope_status_label"):
             n_w = len(self.global_algo_state.get("wire") or [])
             self.scope_status_label.setText(
-                f"🎲 RANDOMIZE ALL PATCH · {n_w} wires · applied · {mode}"
+                f"🎲 RANDOMIZE ALL PATCH · {n_w} wires · applied · {mode}{_route_note}"
             )
         # Preserve the per-cycle toggle palette rather than replacing it with
         # a static green sheet after every generation.
@@ -39386,6 +40076,74 @@ class MathematiciansGrooveboxApp(QMainWindow):
     # =====================================================================
     # SEQUENCE_BANK_V6
     # =====================================================================
+    def _reapply_workspace_pane_color(self):
+        """Re-apply the saved/selected pane colour (used when a pane is created or moved later)."""
+        return _apply_workspace_pane_color(self, getattr(self, "_workspace_pane_color_name", None))
+
+    def _build_markov_resampler_panel(self):
+        """GROOVEBOX_R123_MARKOV_RESAMPLER_WINDOW_20261119 — main-window home of the Markov Resampler."""
+        box = QGroupBox("⛓ MARKOV RESAMPLER · polynomial-weighted · canonical-aware")
+        box.setStyleSheet(
+            "QGroupBox { color:#9fe7ff; background:#0f1a22; border:1px solid #2f6a80; border-radius:7px; margin-top:6px;"
+            " padding-top:10px; font-weight:900; } QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 5px; }"
+            " QLabel { color:#dbeef7; font-size:8pt; }")
+        lay = QVBoxLayout(box); lay.setContentsMargins(8, 12, 8, 8); lay.setSpacing(6)
+        self.btn_markov_resampler = QPushButton("⛓ MARKOV RESAMPLER")
+        self.btn_markov_resampler.setMinimumHeight(44)
+        self.btn_markov_resampler.setStyleSheet(
+            "QPushButton { background:#123344; color:#c9f3ff; border:2px solid #5fd3ff; border-radius:9px;"
+            " padding:8px 14px; font-weight:900; font-size:11pt; } QPushButton:hover { background:#1b4a60; }")
+        self.btn_markov_resampler.setToolTip(
+            "Open the Markov Resampler editor for the selected instrument's selected sequence: model states, "
+            "transition weights, polynomial curve, seed, canonical binding, preview, before/after comparison "
+            "and an explanation of every decision. Apply is undoable.")
+        self.btn_markov_resampler.clicked.connect(self._open_markov_resampler)
+        lay.addWidget(self.btn_markov_resampler)
+        intro = QLabel("Rebuilds the selected sequence by a deterministic polynomial-weighted Markov walk over its "
+                       "steps. Same seed and settings give the same result; the Autopilot Composer keeps its own "
+                       "row resampler.")
+        intro.setWordWrap(True); lay.addWidget(intro)
+        self.lbl_markov_resampler_status = QLabel("")
+        self.lbl_markov_resampler_status.setWordWrap(True)
+        self.lbl_markov_resampler_status.setStyleSheet("color:#ffe58a; font-size:8pt; font-weight:700;")
+        lay.addWidget(self.lbl_markov_resampler_status)
+        lay.addStretch(1)
+        self.markov_resampler_group = box
+        QTimer.singleShot(0, self._markov_resampler_status_refresh)
+        return box
+
+    def _open_markov_resampler(self):
+        try:
+            import markov_resampler_window as _mrw
+            return _mrw.open_window(self)
+        except Exception as exc:
+            try:  # GROOVEBOX_R124_ERROR_REPORT: type + location, not a bare "-3"
+                import error_report as _er
+                _er.report(self, "Markov Resampler", exc)
+            except Exception:
+                print(f"[Markov Resampler] open failed: {exc!r}")
+            return None
+
+    def _markov_resampler_status_refresh(self, *_):
+        lbl = getattr(self, "lbl_markov_resampler_status", None)
+        if lbl is None:
+            return
+        try:
+            import markov_resampler as _mr
+            spec = _mr.normalize_spec(getattr(self, "markov_resampler_spec", None))
+            active = sorted(self._active_engine_sources()) if spec["follow_canonicals"] else []
+            names = {"seeded": "SEEDED", "randomizer": "RAND", "phase_lock": "LOCK", "euclidean": "EUCLIDEAN",
+                     "goava": "GOAVA", "fractal_seed": "FRACTAL"}
+            canon = ", ".join(names.get(a, a) for a in active) or ("none active" if spec["follow_canonicals"] else "not followed")
+            name, seq, mem = self._selected_sequence_context()
+            last = (mem or {}).get("markov_resampler_last") or {}
+            moved = sum(1 for o, q in zip(last.get("positions", []), last.get("sources", [])) if o != q)
+            lbl.setText(f"Target: {name} · sequence {seq}\nCanonicals: {canon}\n"
+                        f"p = {spec['locality']:g} · advance {spec['advance']:+d} · {spec['decay']} · lane {spec['input_lane']}"
+                        + (f"\nLast apply: {moved} steps moved" if last else ""))
+        except Exception as exc:
+            lbl.setText(f"Status unavailable: {exc}")
+
     def _current_instrument_name(self):
         return (self.instrument_selector_dropdown.currentText()
                 if hasattr(self, "instrument_selector_dropdown")
@@ -39781,15 +40539,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _global_convolve_kernel(self, klen, sample_rate, gf):
         """Global Convolve kernel that tracks the canonical engines and the workspace.
 
-        k[n] = A(n)·Σ_j w_j·sin(2π f_j n / sr + φ_j)
-          f = gf·(1, MEUM, PHI, MEUM²)          base, Meum undertow, φ partial, GOAVA partial
-          w = (1, ½, ½·L_fractal, ⅓·L_goava)    partial weights follow the engine levels L ∈ [0,1]
-          φ_j = 2π·u_j·(1 − L_lock)·(L_seeded ∨ L_rand)   phases are children of the workspace
-                digest (u_j = seed_child64(digest, "conv", j)/2⁶⁴); PHASE LOCK pulls them back to 0
-          A(n) = exp(−n/klen·3·L_div) · E(n)  divergence shortens the tail; E is a Euclidean
-                gate E(n) = 1 if ⌊8n/klen⌋·5 mod 8 < 5 else 1−½·L_euclid (EUCLIDEAN pulse)
-        With no engine on and divergence 0 the kernel reduces to the original base + Meum pair, so
-        defaults stay neutral; every term is deterministic from the seed and saved state.
+        GROOVEBOX_R123_GEOMETRIC_LATTICE_CONVOLVE_20261119: the kernel spans the ENTIRE geometric
+        harmonic spectrum, equidistantly on the log-frequency axis (constant ratio M = Meum):
+          base lattice     f_k = gf·M^k        for every integer k with 20 Hz ≤ f_k ≤ min(20 kHz, 0.45·sr)
+          FRACTAL lattice  gf·φ·M^k            interleaved φ-offset lattice, weight ½·L_fractal
+          GOAVA lattice    gf·M^(k+½)          Meum half-step lattice (fills the midpoints), weight ⅓·L_goava
+        k[n] = A(n)·Σ_j w_j·sin(2π f_j n / sr + φ_j); every base partial has the same weight, so no part of
+        the spectrum is favoured (the old kernel held only 4 partials: gf, gf·M, gf·φ, gf·M², which
+        filtered the mix down to four narrow bands).
+          w_j  equal per lattice partial, scaled by the resolution compensation of _geometric_convolve_partials
+          φ_j = 2π·(b_j + u_j·(1 − L_lock)·(L_seeded ∨ L_rand))   b_j = j·Φ⁻¹ mod 1 (golden base phase);
+                u_j = seed_child64(digest, "conv", j)/2⁶⁴ are children of the workspace digest; PHASE LOCK
+                pulls them back to the golden base
+          A(n) = exp(−n/klen·3·L_div) · E(n) · Hann½(n)   divergence tail, Euclidean gate, smooth taper
+        With no engine on and divergence 0 the kernel is the neutral golden-phase base lattice, so the
+        default is a pure function of the base frequency and sample rate, and every term stays
+        deterministic from the seed and saved state (Seed-only canonical compositions replay exactly).
         """
         dig, L, active = self._global_convolve_workspace()
         sr = float(max(1, int(sample_rate)))
@@ -39798,14 +40563,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
         lf, lg, ll, ls, lr, le = (on("fractal_seed"), on("goava"), on("phase_lock"), on("seeded"),
                                   on("randomizer"), on("euclidean"))
         phase_amt = max(ls, lr) * (1.0 - ll)
-        freqs = (gf, gf * MEUM_CONSTANT, gf * 1.6180339887498949, gf * MEUM_CONSTANT * MEUM_CONSTANT)
-        weights = (1.0, 0.5, 0.5 * lf, (1.0 / 3.0) * lg)
+        freqs, weights, base_ph = _geometric_convolve_partials(gf, sr, klen, fractal=lf, goava=lg)
         k = np.zeros(klen, dtype=np.float64)
-        for j, (f, w) in enumerate(zip(freqs, weights)):
+        for j, (f, w, b) in enumerate(zip(freqs, weights, base_ph)):
             if w <= 0.0:
                 continue
-            u = seed_child64(dig, "conv", j) / float(1 << 64)
-            k += w * ot_sin_vec_equiv(2 * np.pi * (f / sr) * n + 2 * np.pi * u * phase_amt)
+            u = (seed_child64(dig, "conv", j) / float(1 << 64)) if phase_amt > 0.0 else 0.0
+            k += w * ot_sin_vec_equiv(2 * np.pi * (f / sr) * n + 2 * np.pi * (b + u * phase_amt))
         try:
             div = float(getattr(self, "seed_divergence", 0.0) or 0.0) if getattr(self, "_r32_divergence_user", False) else 0.0
         except Exception:
@@ -39821,6 +40585,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         taper[:half] = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(half) / max(1, half - 1))
         env = env * taper
         self._global_convolve_trace = {"digest": "%016x" % dig, "active": active, "phase_amt": phase_amt,
+                                       "lattice": "gf*M^k", "partials": len(freqs),
+                                       "band_hz": [float(min(freqs)) if freqs else 0.0, float(max(freqs)) if freqs else 0.0],
                                        "weights": list(weights), "divergence": div, "euclid": le}
         return (k * env).astype(np.float32)
 
@@ -40936,6 +41702,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
             c = 0.0
         return max(0.0, min(1.0, d / 128.0)), max(0.0, min(1.0, c))
 
+    def _md_ensemble_count(self):
+        """Instrument count for the equidistant convolve spread (R123), same count rule as _md_convolution."""
+        names = list(getattr(self, "instrument_names_48", []) or [])
+        states = getattr(self, "instrument_param_state", {}) or {}
+        return max(len(names), len(states) if isinstance(states, dict) else 0, 2)
+
     def _md_canon_share(self):
         st = getattr(self, "geometric_synth_mixer_state", {}) or {}
         try:
@@ -41297,6 +42069,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
             pitches.append(round(0.75 + c * 0.5, 4))
             probabilities.append(int(round(70 + d * 30)))
             offsets.append(round((b - 0.5) * 0.16, 4))
+        # GROOVEBOX_R123_ROUTE_HANDLES_20261119: the randomizer knows the routes. Instruments patched into this
+        # one (cables, Patch Motion) lend it their hits with probability = cable weight (inverted cables give
+        # the complement, call-and-response); a sidechain keyed by the kick leaves room where the kick plays.
+        try:
+            import route_handles as _rh
+
+            def _ru(i, j):
+                blk = hashlib.sha256(digest + b"route" + int(i).to_bytes(4, "little") + int(j).to_bytes(2, "little")).digest()
+                return int.from_bytes(blk[:4], "little") / 2**32
+            steps, _used = _rh.route_steps(self, name, steps, self._current_sequence_mem, _ru)
+            if _used and hasattr(self, "scope_status_label"):
+                self.scope_status_label.setText("🎲 Sequence %s randomized · routes: %s" % (seq, "; ".join(_used)))
+        except Exception as _rexc:
+            print(f"[Randomize sequence] routes: {_rexc}")
         mem.update({"steps": steps, "gates": list(steps), "amplitudes": amps,
                     "pitches": pitches, "probabilities": probabilities, "offsets": offsets,
                     "pattern_length": n, "user_owned": True,
@@ -41394,10 +42180,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         # applied afterwards; they never replace/disable this generation stage.
         _seed_base = _md.canonical_params(seed_int, int(slot), (), _density, _convolve,
                                          seed_reach=_reach, named_overrides=_named,
-                                         divergence=_divergence)
+                                         divergence=_divergence, count=self._md_ensemble_count())
         canon = _md.canonical_params(seed_int, int(slot), engines, _density, _convolve,
                                      seed_reach=_reach, named_overrides=_named,
-                                     divergence=_divergence)
+                                     divergence=_divergence, count=self._md_ensemble_count())
         user = ((getattr(self, "instrument_param_state", {}) or {}).get(name, {}) or {}).get("multidim")
         _policy = getattr(self, "canonical_ownership_policy", None)
         params = _md.merge_params(canon, user if isinstance(user, dict) else None,
@@ -43188,7 +43974,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         for lane_name, default in (("phase_shift", 0.0), ("eq_gain_db", 0.0),
                                    ("eq_frequency", 1000.0), ("eq_q", 0.707),
                                    ("sidechain_depth", 0.0), ("phase_mod_depth", 0.0),
-                                   ("trigger_probability", 1.0)):
+                                   ("trigger_probability", 1.0), ("note_duration", 1.0)):
+            if lane_name == "note_duration":
+                try: default = float(np.clip(float(mem.get("note_duration_default", 1.0)), 0.0, 1.0))
+                except Exception: default = 1.0
             values = controls.get(lane_name)
             if not isinstance(values, list):
                 values = list(mem.get(lane_name)) if isinstance(mem.get(lane_name), list) else []
@@ -43229,6 +44018,33 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 j = min(old_n - 1, max(0, int(phase * old_n)))
                 out.append(copy.deepcopy(src[j]))
             mem[key] = out
+        # Canonical per-step lanes share the same normalized phase map as the
+        # visible pads, so a resize cannot detach note gates from their steps.
+        _controls = mem.get("step_controls")
+        if isinstance(_controls, dict) and n != old_n:
+            for _lane_name, _lane_values in list(_controls.items()):
+                if not isinstance(_lane_values, list):
+                    continue
+                _src_lane = list(_lane_values[:old_n])
+                try:
+                    _note_duration_default = float(np.clip(float(mem.get("note_duration_default", 1.0)), 0.0, 1.0))
+                except Exception:
+                    _note_duration_default = 1.0
+                _lane_defaults = {
+                    "phase_shift": 0.0, "eq_gain_db": 0.0, "eq_frequency": 1000.0,
+                    "eq_q": 0.707, "sidechain_depth": 0.0, "phase_mod_depth": 0.0,
+                    "trigger_probability": 1.0, "note_duration": _note_duration_default,
+                    "fx_probability": 1.0,
+                }
+                if len(_src_lane) < old_n:
+                    _lane_default = _lane_defaults.get(_lane_name, 0.0)
+                    _src_lane.extend([_lane_default] * (old_n - len(_src_lane)))
+                _mapped_lane = []
+                for _i in range(n):
+                    _phase = (_i + 0.5) / float(n)
+                    _j = min(old_n - 1, max(0, int(_phase * old_n)))
+                    _mapped_lane.append(copy.deepcopy(_src_lane[_j]))
+                _controls[_lane_name] = _mapped_lane
         touched = mem.get("touched")
         if touched:
             try:
@@ -44758,6 +45574,14 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.slider_step_pitch.blockSignals(False)
             self.lbl_step_pitch.setText(f"{pitch:.2f}×")
         controls = view.get("step_controls", {}) if isinstance(view.get("step_controls", {}), dict) else {}
+        _nd_lane = controls.get("note_duration", [])
+        _nd = float(_nd_lane[s_idx]) if isinstance(_nd_lane, list) and s_idx < len(_nd_lane) else 1.0
+        _nd = float(np.clip(_nd if math.isfinite(_nd) else 1.0, 0.0, 1.0))
+        if hasattr(self, "slider_step_note_duration"):
+            self.slider_step_note_duration.blockSignals(True)
+            self.slider_step_note_duration.setValue(int(round(_nd * 100.0)))
+            self.slider_step_note_duration.blockSignals(False)
+            self.lbl_step_note_duration.setText(f"{_nd*100:.0f}%")
         phase_values = controls.get("phase_shift", view.get("phase_shift", []))
         phase_radians = float(phase_values[s_idx]) if isinstance(phase_values, list) and s_idx < len(phase_values) else 0.0
         phase_degrees = int(round(math.degrees(phase_radians)))
@@ -44949,6 +45773,23 @@ class MathematiciansGrooveboxApp(QMainWindow):
         except Exception:
             return {"layers": {}, "combined": {"mode": "linear", "score": 0.0, "count": 0}}
 
+    def _on_sequence_default_note_duration_changed(self, value):
+        """Apply the canonical global gate default to every step in the selected sequence."""
+        curr_i = self.instrument_selector_dropdown.currentText()
+        mem = self._current_sequence_mem(curr_i) if hasattr(self, "_current_sequence_mem") else self.instrument_sequencer_memory[curr_i]
+        self._adopt_canonical_for_edit(mem, curr_i)
+        gate = float(np.clip(float(value) / 100.0, 0.0, 1.0))
+        n = max(1, int(mem.get("pattern_length", len(mem.get("steps", [])) or DEFAULT_SEQUENCE_LENGTH)))
+        self._ensure_seq_mem_length(mem, n)
+        mem["note_duration_default"] = gate
+        controls = mem.setdefault("step_controls", {})
+        controls["note_duration"] = [gate] * n
+        self.lbl_seq_default_note_duration.setText(f"{gate*100:.0f}%")
+        try: self._canonical_write_sequence_runtime(curr_i, self._current_sequence_index(curr_i))
+        except Exception: pass
+        try: self._refresh_canonical_fingerprint()
+        except Exception: pass
+
     def _on_step_control_slider(self, lane_name, value):
         """Write a per-step canonical control lane and refresh project identity."""
         if self.selected_step_idx is None:
@@ -44959,7 +45800,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self._adopt_canonical_for_edit(mem, curr_i)   # CANONICAL_SEQ_DISPLAY_20261102
         self._ensure_seq_mem_length(mem, s + 1)
         controls = mem.setdefault("step_controls", {})
-        _lane_default = {"eq_frequency": 1000.0, "eq_q": 0.707, "fx_probability": 1.0, "trigger_probability": 1.0}.get(str(lane_name), 0.0)
+        _lane_default = {"eq_frequency": 1000.0, "eq_q": 0.707, "fx_probability": 1.0,
+                         "trigger_probability": 1.0, "note_duration": 1.0}.get(str(lane_name), 0.0)
         lane = controls.setdefault(str(lane_name), [_lane_default] * len(mem.get("steps", [])))
         if len(lane) < len(mem.get("steps", [])):
             lane.extend([_lane_default] * (len(mem.get("steps", [])) - len(lane)))
@@ -44985,6 +45827,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             self.lbl_step_sidechain.setText(f"{lane[s]*100:.0f}%")
         elif lane_name == "trigger_probability" and hasattr(self, "lbl_step_probability"):
             self.lbl_step_probability.setText(f"{lane[s]*100:.0f}%")
+        elif lane_name == "note_duration" and hasattr(self, "lbl_step_note_duration"):
+            self.lbl_step_note_duration.setText(f"{lane[s]*100:.0f}%")
         self._mark_step_touched(mem, s)
         try: self._canonical_write_sequence_runtime(curr_i, self._current_sequence_index(curr_i))
         except Exception: pass
@@ -45930,6 +46774,25 @@ class MathematiciansGrooveboxApp(QMainWindow):
         self.instrument_param_state = {}
         self.instrument_param_generated = {}
         self.patch_connections = []
+        # GROOVEBOX_R123_ROUTE_HANDLES_20261119: Clear Memory (also run by Autopilot between projects) resets every
+        # route store to its boot value — before, sidechain / Patch Motion / Markov / Mod Matrix rows / automation
+        # lanes leaked into the next project.
+        self.sidechain_state = {"schema": 1, "default_amount": 0.0,
+            "global": {"enabled": True, "amount": 0.0, "source": "master", "attack_ms": 5.0, "release_ms": 120.0},
+            "targets": {}, "inherit_global": True}
+        self.patch_motion_state = {"schema": 1, "routes": [], "matrix": [[r * 8 + c + 1 for c in range(8)] for r in range(8)]}
+        try:
+            import markov_resampler as _mr_clear
+            self.markov_resampler_spec = _mr_clear.normalize_spec({})
+        except Exception:
+            self.markov_resampler_spec = {}
+        self.r99_mod_matrix = []
+        self.r32_automation = []
+        try:
+            import route_handles as _rh_clear
+            QTimer.singleShot(0, lambda: _rh_clear.broadcast(self))
+        except Exception:
+            pass
         if hasattr(self, "domain_eq_engine") and self.domain_eq_engine is not None:
             self.domain_eq_engine.domains = []
             self.domain_eq_engine.set_seed(0.0)
@@ -46808,6 +47671,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "automator_timing_mode": str(getattr(self, "automator_timing_mode", "wrap")),
             "global_mod_state": _safe_json(getattr(self, "global_mod_state", {})),
             "md_net_mod_max": float(getattr(self, "md_net_mod_max", 0.5)),
+            "markov_resampler_spec": _safe_json(getattr(self, "markov_resampler_spec", None) or {}),
             "md_stoch_default_mix": float(getattr(self, "md_stoch_default_mix", 1.0)),
             "automation_morph_span": float(getattr(self, "automation_morph_span", 1.0)),
             "global_track_offset": float(getattr(self, "global_track_offset", 0.0)), 
@@ -46925,6 +47789,13 @@ class MathematiciansGrooveboxApp(QMainWindow):
     def _apply_project_snapshot(self, data):
         # GROOVEBOX_R32_PROJECT_SCHEMA_20261110: R32 engine state is restored after the rest.
         _r32_unpack_document(data)          # R32.8 COMPACT_MCC
+        _ui_before = None
+        try:   # R123: remember control values so explicit restores below win over the catch-all map
+            import ui_autostate as _uas
+            if isinstance(data, dict) and isinstance(data.get("ui_auto"), dict):
+                _ui_before = _uas.current_values(self)
+        except Exception:
+            _ui_before = None
         try:
             return self._apply_project_snapshot_core(data)
         finally:
@@ -46937,7 +47808,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             try:   # R32.8 UI_AUTOSTATE: every other workspace control, through its own handlers
                 import ui_autostate
                 if isinstance(data, dict) and isinstance(data.get("ui_auto"), dict):
-                    _n, _sk = ui_autostate.restore(self, data["ui_auto"], QApplication.instance())
+                    _n, _sk = ui_autostate.restore(self, data["ui_auto"], QApplication.instance(),
+                                                   protect=ui_autostate.changed_since(self, _ui_before))
                     if _sk:
                         print(f"[Project] restored {_n} controls; {_sk} saved controls not in this layout")
             except Exception as exc:
@@ -47415,6 +48287,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if hasattr(self, "spin_auto_span"):
                 self.spin_auto_span.blockSignals(True); self.spin_auto_span.setValue(int(round(self.automation_morph_span * 100)))
                 self.spin_auto_span.blockSignals(False)
+        except Exception:
+            pass
+        # GROOVEBOX_R123_MARKOV_RESAMPLER_WINDOW_20261119: editor settings travel with the project.
+        try:
+            import markov_resampler as _mr_load
+            self.markov_resampler_spec = _mr_load.normalize_spec(data.get("markov_resampler_spec") or {})
+            if getattr(self, "_markov_resampler_window", None) is not None:
+                self._markov_resampler_window._load_spec(self.markov_resampler_spec)
+            self._markov_resampler_status_refresh()
         except Exception:
             pass
         # MD_NET_MOD_R31: projects saved before the control existed ran at the old fixed 1.0 ceiling.
@@ -47938,11 +48819,71 @@ class MathematiciansGrooveboxApp(QMainWindow):
         m = menu if menu is not None else QMenu(parent)
         m.addAction("🖥 System Settings…   Ctrl+,", self._show_system_settings)
         m.addAction("⚙ Compatibility…", lambda: self._show_compat_dialog())
+        try:
+            import compat_settings as _eqcs
+            _eq_audio = m.addAction("Attach equation-encoded audio to project saves (25 MiB cap)")
+            _eq_audio.setCheckable(True)
+            _eq_audio.setChecked(bool(_eqcs.load().get("equation_audio_save", False)))
+            _eq_audio.setToolTip("Write a lossless float32 .eqaudio sidecar beside saved MCC projects. Disabled by default.")
+            _eq_audio.toggled.connect(lambda enabled: _eqcs.update(equation_audio_save=bool(enabled)))
+        except Exception:
+            pass
         m.addAction("🩺 System / Performance Health…", self._open_system_health_panel)
         m.addAction("⌨ Command Console…   Ctrl+Shift+`", lambda: __import__("command_console").open_window(self))
+        try:
+            __import__("tablet_keyboard").add_menu(self, m)
+        except Exception as _tk_exc:
+            print(f"[UI] tablet keyboard menu unavailable: {_tk_exc}")
         m.addSeparator()
         m.addAction("🧩 Window panes…", self._show_ui_panes)
+        try:
+            self._r123_add_ui_comfort_menus(m)
+        except Exception as _r123_exc:
+            print(f"[UI] comfort menus unavailable: {_r123_exc}")
         return m
+
+    def _r123_add_ui_comfort_menus(self, m):
+        """GROOVEBOX_R123_MOUSE_TRACER_20261119 / COMPAT_SCROLL: persisted pointer-trail and scroll settings."""
+        import compat_settings as _cs
+        from PyQt6.QtGui import QActionGroup
+        cur = _cs.load()
+        mt = m.addMenu("🖱 Mouse tracer")
+        on = mt.addAction("Show pointer trail")
+        on.setCheckable(True); on.setChecked(bool(cur.get("mouse_tracer", True)))
+
+        def _upd(**kw):
+            _cs.update(**kw)
+            try:
+                __import__("mouse_tracer").reload_settings()
+            except Exception:
+                pass
+        on.toggled.connect(lambda v: _upd(mouse_tracer=bool(v)))
+        clicks = mt.addAction("Ripple on click")
+        clicks.setCheckable(True); clicks.setChecked(bool(cur.get("mouse_tracer_clicks", True)))
+        clicks.toggled.connect(lambda v: _upd(mouse_tracer_clicks=bool(v)))
+        mt.addSeparator()
+        for title, key, opts in (
+            ("Style", "mouse_tracer_mode", (("Trail", "trail"), ("Ring", "ring"), ("Trail + ring", "trail+ring"))),
+            ("Length", "mouse_tracer_length", (("Short (16)", 16), ("Normal (48)", 48), ("Long (128)", 128))),
+            ("Fade", "mouse_tracer_fade_ms", (("Quick (250 ms)", 250), ("Normal (600 ms)", 600), ("Slow (1500 ms)", 1500))),
+            ("Width", "mouse_tracer_width", (("Thin (2 px)", 2), ("Normal (4 px)", 4), ("Bold (8 px)", 8))),
+            ("Colour", "mouse_tracer_color", (("Cyan", "#4fd1ff"), ("Amber", "#ffc24f"), ("Lime", "#8dff6a"),
+                                              ("Magenta", "#ff6ad5"), ("White", "#f2f5f8"))),
+        ):
+            sub = mt.addMenu(title)
+            grp = QActionGroup(sub); grp.setExclusive(True)
+            for label, val in opts:
+                a = sub.addAction(label); a.setCheckable(True); a.setChecked(cur.get(key) == val); grp.addAction(a)
+                a.triggered.connect(lambda _c=False, k=key, v=val: _upd(**{k: v}))
+        sc = m.addMenu("↕ Scroll window panels")
+        grp = QActionGroup(sc); grp.setExclusive(True)
+        for label, val in (("Tool windows (default)", "windows"),
+                           ("Tool windows + main window (compatibility)", "windows+main"),
+                           ("Off", "off")):
+            a = sc.addAction(label); a.setCheckable(True); a.setChecked(cur.get("scroll_panels", "windows") == val)
+            grp.addAction(a)
+            a.triggered.connect(lambda _c=False, v=val: (__import__("window_scroll").set_mode(v),
+                                                         self.statusBar().showMessage("Scroll mode applies to windows opened from now on; restart for the main window.", 8000)))
 
     def _show_ui_panes(self, *_args):
         """UI_PANES_R6: pane formats for every Groovebox window."""
@@ -48097,6 +49038,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
             dlg = RenderQueueDialog(self)
             dlg.setModal(False)
             dlg.setWindowModality(Qt.WindowModality.NonModal)
+            # The queue controller/scheduler outlives this view. Delete the view
+            # on X and clear the singleton so reopening creates a fresh, valid UI.
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            def _clear_render_queue_ref(*_args, _dlg=dlg):
+                try:
+                    if getattr(self, "_render_queue_window", None) is _dlg:
+                        self._render_queue_window = None
+                except Exception:
+                    pass
+            dlg.destroyed.connect(_clear_render_queue_ref)
             self._render_queue_window = dlg
         dlg.show(); dlg.raise_(); dlg.activateWindow()
         return dlg
@@ -48301,6 +49252,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             return None
 
         def _write_project(frozen):
+            # Equation payload generation runs on the existing project I/O worker;
+            # it is never called from the real-time audio callback.
+            try:
+                import compat_settings as _eqcs
+                if bool(_eqcs.load().get("equation_audio_save", False)) and hasattr(self, "_get_shared_mixdown_buffer"):
+                    _eq_buf, _eq_sr = self._get_shared_mixdown_buffer(
+                        purpose="equation audio project attachment", force=True)
+                    from equation_audio_payload import attach_to_project
+                    frozen = attach_to_project(path, frozen, _eq_buf, int(_eq_sr), origin="project-master-mixdown")
+            except Exception as _eq_exc:
+                print(f"[EquationAudio] attachment skipped; ordinary project save continues: {_eq_exc}")
             final = self._atomic_write_document(path, frozen)
             # R52: record the successful commit on this existing project-I/O
             # worker lane. Journal failures must never invalidate a good MCC.
@@ -48747,6 +49709,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 from mcc_integrity import select_verified
                 load_path, integrity_status = select_verified(load_path)
             data = __import__("safe_io").load_json(load_path, encoding="utf-8")
+            try:
+                from equation_audio_payload import verify_project_attachment
+                _eq_status = verify_project_attachment(load_path, data)
+                self._equation_audio_payload_status = _eq_status or {"valid": False, "reason": "no attachment"}
+                if _eq_status:
+                    print(f"[EquationAudio] verified {_eq_status['file']} · {_eq_status['bytes']} bytes")
+            except Exception as _eq_exc:
+                self._equation_audio_payload_status = {"valid": False, "reason": str(_eq_exc)}
+                print(f"[EquationAudio] sidecar verification warning; project load continues: {_eq_exc}")
             self._apply_project_snapshot(data)
             self._current_project_path = path
             try:
@@ -49084,10 +50055,10 @@ class MathematiciansGrooveboxApp(QMainWindow):
         offs = list(mem.get("offsets") or [])
         probs = list(mem.get("probabilities") or [])
         hz0 = float(self.trigger_note_freq.hz()) if hasattr(self, "trigger_note_freq") else 432.0
-        note_n = max(1, int(step_s * 0.92 * sr))
+        max_note_n = max(1, int(step_s * 0.92 * sr))
         total = int((n * step_s + 0.3) * sr)
         out = np.zeros(total, dtype=np.float64)
-        t = np.arange(note_n, dtype=np.float64) / sr
+        gate_lanes = (mem.get("step_controls", {}) or {}).get("note_duration", [])
         cache = {}
         k0 = int(getattr(self, "_perf_counter", 0))
         for i in range(n):
@@ -49096,10 +50067,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             prob = float(probs[i]) if i < len(probs) else 1.0
             if prob < 1.0 and self._perf_meum_u(k0 + i) >= prob:
                 continue
+            gate = float(gate_lanes[i]) if isinstance(gate_lanes, list) and i < len(gate_lanes) else 1.0
+            gate = float(np.clip(gate if math.isfinite(gate) else 1.0, 0.0, 1.0))
+            if gate <= 0.0:
+                continue
+            note_n = max(1, min(max_note_n, int(max_note_n * gate)))
             ratio = float(pits[i]) if i < len(pits) and pits[i] else 1.0
-            v = cache.get(round(ratio, 6))
+            cache_key = (round(ratio, 6), note_n)
+            v = cache.get(cache_key)
             if v is None:
-                v = cache[round(ratio, 6)] = self._audition_voice(program, hz0 * ratio, t, sr)
+                t = np.arange(note_n, dtype=np.float64) / sr
+                v = cache[cache_key] = self._audition_voice(program, hz0 * ratio, t, sr)
             amp = float(amps[i]) if i < len(amps) else 1.0
             off = float(offs[i]) if i < len(offs) else 0.0
             s0 = int(max(0.0, (i + off) * step_s) * sr)
@@ -54707,11 +55685,20 @@ class MathematiciansGrooveboxApp(QMainWindow):
                                 pass
                             if not (s_idx < len(steps) and steps[s_idx]) and _canonical_on:
                                 amp *= float(0.25 + 0.75 * float(_node_field.get("trigger_probability", 0.0)))
-                            # PKP hold relative to THIS instrument's step length
+                            # Canonical per-step note gate. This scales actual held note
+                            # time (not merely the visual pad); zero suppresses the note.
+                            _nd_controls = mem.get("step_controls", {}) if isinstance(mem.get("step_controls", {}), dict) else {}
+                            _nd_lane = _nd_controls.get("note_duration", [])
+                            _note_gate = float(_nd_lane[s_idx]) if isinstance(_nd_lane, list) and s_idx < len(_nd_lane) else 1.0
+                            _note_gate = float(np.clip(_note_gate if math.isfinite(_note_gate) else 1.0, 0.0, 1.0))
+                            if _note_gate <= 0.0:
+                                continue
+                            # PKP hold relative to THIS instrument's step length.
+                            # Gate is applied after PKP's authored envelope scaling.
                             _sw = float(inst_step_duration)
                             if _sw < 0.0:
                                 _sw = 0.0
-                            _hold = float(inst_step_duration) * (float(max(_pat, 1)) ** (2.0 * float(pkp_envelope) - 1.0))
+                            _hold = float(inst_step_duration) * (float(max(_pat, 1)) ** (2.0 * float(pkp_envelope) - 1.0)) * _note_gate
                             _note_end = s_start + _hold
                             _lo = s_start - _sw
                             _hi = _note_end + _sw
@@ -56088,8 +57075,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                             print(f"[Global Convolve] tracking kernel fallback: {_kexc}")
                             kernel = None
                     if kernel is None:
-                        kernel = (ot_sin_vec_equiv(2*np.pi*(gf/ max(sample_rate,1))*np.arange(klen)) +
-                                  0.5*ot_sin_vec_equiv(2*np.pi*(gf*MEUM_CONSTANT/max(sample_rate,1))*np.arange(klen)))
+                        # R123: neutral zero-phase geometric lattice over the whole band (same law as the tracker).
+                        _ff, _ww, _pp = _geometric_convolve_partials(gf, float(max(sample_rate, 1)), klen)
+                        _nn = np.arange(klen, dtype=np.float64)
+                        kernel = np.zeros(klen, dtype=np.float64)
+                        for _f, _w, _p in zip(_ff, _ww, _pp):
+                            kernel += _w * ot_sin_vec_equiv(2*np.pi*(_f/max(sample_rate,1))*_nn + 2*np.pi*_p)
+                        _half = max(8, klen // 2); _tp = np.zeros(klen)
+                        _tp[:_half] = 0.5 - 0.5*np.cos(2.0*np.pi*np.arange(_half)/max(1, _half-1))
+                        kernel = kernel * _tp
                     kernel = np.asarray(kernel, dtype=np.float32)
                 kn = np.linalg.norm(kernel)
                 if kn != 0.0:
@@ -57255,7 +58249,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
         _banks_snap = getattr(self, "_canonical_panels_user_store", None)
         banks = getattr(self, "instrument_sequence_banks", {}) or {}
+        # GROOVEBOX_R123_USER_SEQUENCE_SURVIVES_REBUILD_20261119: a sequence the user edited while
+        # canonicals were active (randomize, clear, Markov resample, undo restore ...) is user material,
+        # not engine residue. Fold it into the user store first, so a rebuild never wipes it to the boot slate.
+        def _r123_user_mem(_m):
+            return (isinstance(_m, dict) and bool(_m.get("user_owned"))
+                    and not str(_m.get("canonical_owner") or "").startswith("canonical:"))
         if isinstance(_banks_snap, dict):
+            for _bname, _bank in list(banks.items()):
+                if isinstance(_bank, dict):
+                    for _sidx, _smem in list(_bank.items()):
+                        if _r123_user_mem(_smem):
+                            _banks_snap.setdefault(_bname, {})[_sidx] = copy.deepcopy(_smem)
             for _bname, _bank in list(banks.items()):
                 if _bname in _banks_snap:
                     banks[_bname] = copy.deepcopy(_banks_snap[_bname])
@@ -57347,6 +58352,8 @@ class MathematiciansGrooveboxApp(QMainWindow):
             if isinstance(_mem, dict):
                 _ordered = list(_mem.keys())
                 for _k in _ordered:
+                    if _r123_user_mem(_mem.get(_k)):
+                        _pat_snap[_k] = copy.deepcopy(_mem[_k])   # R123: user edit becomes the user baseline
                     if _k not in _pat_snap:
                         continue
                     _mem[_k] = copy.deepcopy(_pat_snap[_k])
@@ -58749,6 +59756,15 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     if hasattr(self, "lbl_geometric_ensemble_mod"):
                         self.lbl_geometric_ensemble_mod.setText(f"{int(round(mix['ensemble_mod_amt'] * 100))}%")
 
+            # GROOVEBOX_R123_ROUTE_HANDLES_20261119: every route group the newer panels own — patch cables,
+            # Mod Matrix rows, Patch Motion routes, sidechain, Markov Resampler, automation lanes, global-panel
+            # controls — is randomized with the same seeded RNG (topology kept; locked groups untouched).
+            try:
+                import route_handles as _rh
+                _rh_res = _rh.randomize_routes(self, random.Random(int(rng.integers(0, 2 ** 62))), amount=1.0)
+                print("[Randomize All] routes:", _rh_res)
+            except Exception as _rh_exc:
+                print(f"[Randomize All] routes: {_rh_exc}")
             # Refresh UI without opening any obsolete panel/tab windows.
             try:
                 self._refresh_sequence_selector()
@@ -64877,6 +65893,18 @@ class MathematiciansGrooveboxApp(QMainWindow):
             hub = QDialog(None, Qt.WindowType.Window)
             hub.setWindowTitle("📦 Export")
             hub.resize(780, 720)
+            # Closing the hub must really close this window, not leave a hidden
+            # top-level QWidget cached forever. Export jobs belong to the scheduler,
+            # not to this UI, so they continue safely after the hub is closed.
+            hub.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            def _clear_export_hub_refs(*_args, _hub=hub):
+                try:
+                    if getattr(self, "_export_hub", None) is _hub:
+                        self._export_hub = None
+                        self._export_window = None
+                except Exception:
+                    pass
+            hub.destroyed.connect(_clear_export_hub_refs)
             lay = QVBoxLayout(hub); lay.setContentsMargins(4, 4, 4, 4)
             tabs = _QTW(); lay.addWidget(tabs)
             win = self._export_window = _ew.ExportWindow(self)
@@ -65430,6 +66458,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "global_input_xmod": float(gms.get("input_xmod", 1.0) or 1.0),
             "global_mod_state": {k: float(gms.get(k, 1.0) or 1.0) for k in ("xmod", "input_xmod", "synth", "patch", "script", "domain")},
             "md_net_mod_max": float(getattr(self, "md_net_mod_max", 0.5)),
+            "markov_resampler_spec": _safe_json(getattr(self, "markov_resampler_spec", None) or {}),
             "md_stoch_default_mix": float(getattr(self, "md_stoch_default_mix", 1.0)),
             "automation_morph_span": float(getattr(self, "automation_morph_span", 1.0)),
             "canonical_resonance_factor": resonance,
@@ -66564,9 +67593,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 pass
         extras[:] = alive
         n = 2 + sum(1 for w in extras if getattr(w, "_gb_extra_kind", "") == kind)
+        # GROOVEBOX_R123_TASKBAR_LAUNCH_REGISTRY_20261119: every failure is reported visibly.
+        try:
+            import taskbar_launch as _tl
+            kind = _tl.canonical(kind)
+        except Exception:
+            _tl = None
+        self._last_launch_error = None
         try:
             from memory_guard import estimate_window_bytes
             if not self._memory_ok(estimate_window_bytes(kind), f"open {kind} window"):
+                self._last_launch_error = "not enough free memory to open this window safely"
                 return None
             if kind == "performance":
                 from performance import Performance
@@ -66592,38 +67629,16 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 w = LivePlayerWindow(self)
             elif kind == "video_synth":
                 fn = getattr(self, "_r32_open_clip_editor", None)
-                if not callable(fn): return None
-                return fn()
+                if not callable(fn):
+                    return self._report_launch_failure(kind, "the clip/timeline video synth entry point is missing from this build")
+                res = fn()
+                if res is None:
+                    return self._report_launch_failure(kind, "the video synth editor did not open (see the log for the cause)")
+                return res
             else:
-                launchers = {
-                    "multidim": ("multidim_ui", "open_multidim_window"),
-                    "studio_3d": ("studio_3d", "open_window"),
-                    "game_studio": ("studio_3d", "open_window"),
-                    "composition_lab": ("composition_workbench", "open_window"),
-                    "seed_atlas": ("seed_atlas", "open_window"),
-                    "script_studio": ("script_studio", "open_window"),
-                    "plugins": ("plugin_library", "open_window"),
-                    "lua": ("lua_workspace", "open_window"),
-                    "programs": ("program_builder", "open_window"),
-                    "files": ("file_studio", "open_window"),
-                    "experiences": ("experiences", "open_window"),
-                    "science": ("project_tools", "open_window"),
-                }
-                target = launchers.get(kind)
-                if target is None:
-                    return None
-                module = __import__(target[0], fromlist=[target[1]])
-                fn = getattr(module, target[1])
-                result = fn(self)
-                if result is None:
-                    return None
-                # Existing launcher windows own their lifecycle. Bring the result forward;
-                # do not wrap/reparent dialogs and accidentally detach them from their host.
-                if hasattr(result, "show"):
-                    result.show(); result.raise_()
-                    try: result.activateWindow()
-                    except Exception: pass
-                return result
+                if _tl is None:
+                    return self._report_launch_failure(kind, "taskbar_launch.py is missing from this build")
+                return _tl.launch_module(kind, self)
             w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
             w._gb_extra_kind = kind
             w.setWindowTitle(f"#{n} {w.windowTitle() or kind.replace('_', ' ').title()}")   # number first: the bar truncates titles
@@ -66631,8 +67646,38 @@ class MathematiciansGrooveboxApp(QMainWindow):
             w.show(); w.raise_(); w.activateWindow()
             return w
         except Exception as exc:
-            print(f"[Windows] new {kind} window failed: {exc}")
-            return None
+            return self._report_launch_failure(kind, str(exc) if type(exc).__name__ == "LaunchError" else f"{type(exc).__name__}: {exc}")
+
+    def _report_launch_failure(self, kind, reason):
+        """R123: a launch that fails must say so — status bar, Task Bar status, non-modal dialog."""
+        self._last_launch_error = str(reason)
+        try:
+            import taskbar_launch as _tl
+            e = _tl.entry(kind)
+            label = e.label if e else kind
+        except Exception:
+            label = kind
+        msg = f"Could not open {label}: {reason}"
+        print(f"[Windows] {msg}", flush=True)
+        try:
+            self.statusBar().showMessage(msg, 12000)
+        except Exception:
+            pass
+        try:
+            mgr = getattr(self, "_main_window_relaunch_filter", None)
+            strip = getattr(mgr, "_window_strip", None) if mgr is not None else None
+            if strip is not None and hasattr(strip, "show_status"):
+                strip.show_status(msg, error=True)
+        except Exception:
+            pass
+        try:
+            box = QMessageBox(QMessageBox.Icon.Warning, "Window did not open", msg, QMessageBox.StandardButton.Ok, self)
+            box.setWindowModality(Qt.WindowModality.NonModal)
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            box.show()
+        except Exception:
+            pass
+        return None
 
     def _open_performance(self):
         """Open or re-open Performance as an independent top-level window.
@@ -68893,6 +69938,17 @@ class MathematiciansGrooveboxApp(QMainWindow):
             except RuntimeError:
                 window = None
 
+        # GROOVEBOX_R123_PANEL_EXPAND_FRAMES_20261119: a window embedded in the panel row's Expand frame is
+        # hidden whenever another frame page is shown — it is still open, so bring its page forward instead of
+        # deleting and rebuilding it (that deleted the live embedded widget under the frame).
+        try:
+            if (window is not None and window.property("r123Embedded")
+                    and getattr(self, "_r123_embed_build", None) != attr_name):
+                import panel_synth_deck as _psd
+                _psd.show_embedded(self, attr_name)
+                return window
+        except RuntimeError:
+            window = None
         if window is None or not window.isVisible():
             if window is not None:
                 # R33: the hidden previous copy is rebuilt below; release it explicitly (its signal lambdas
@@ -69110,7 +70166,7 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 # New: cable list — multiple simultaneous routes, each independently editable.
                 cable_list = QListWidget()
-                cable_list.setToolTip("Active cables in this patch. Select one to edit its settings above.")
+                cable_list.setToolTip("Every patch cable of the project (yours and generated). Select one to edit its settings above.")
                 pm_layout.addWidget(QLabel("Active Cables"))
                 pm_layout.addWidget(cable_list, 1)
 
@@ -69129,48 +70185,22 @@ class MathematiciansGrooveboxApp(QMainWindow):
 
                 patch_log = QTextEdit()
                 patch_log.setReadOnly(True)
-                patch_log.setPlainText("# Resonance Nullifier Matrix:\n- Z-Pinch Resonator Out ---> Topological Fold In (Phase-Locked)\n- Stochastic Noise Matrix Out ---> Geometric Resonance Nullifier Core (Engaged)")
+                patch_log.setPlainText("# Patch log — every cable change in this session is listed here (Undo reverts any of them).")
                 pm_layout.addWidget(patch_log)
 
-                def _cable_label():
-                    return (
-                        f"{source_list.currentText()} ==[{cable_curve_combo.currentText()}, "
-                        f"{cable_polarity_combo.currentText()}, depth {spin_cable_depth.value():.2f}"
-                        f"{', norm' if chk_cable_normalize.isChecked() else ''}]==> {target_list.currentText()}"
-                    )
-
-                def _connect_cable():
-                    label = _cable_label()
-                    cable_list.addItem(label)
-                    patch_log.append(f"- {label} (Geometric Link Established)")
-
-                def _remove_selected_cable():
-                    row = cable_list.currentRow()
-                    if row >= 0:
-                        item = cable_list.takeItem(row)
-                        if item is not None:
-                            patch_log.append(f"- REMOVED: {item.text()}")
-
-                def _clear_cables():
-                    cable_list.clear()
-                    patch_log.append("# Patch cleared — all cables removed.")
-
-                def _randomize_patch():
-                    rng_seed = getattr(self, "global_algo_state", {}).get("seed", 0.0) if hasattr(self, "global_algo_state") else 0.0
-                    rnd = random.Random(f"patchmodular::{rng_seed}::{cable_list.count()}")
-                    curves = ["Linear", "Exponential", "Logarithmic", "S-Curve", "Step-Quantized"]
-                    src = rnd.choice(self.instrument_names_48)
-                    dst = rnd.choice(self.instrument_names_48)
-                    source_list.setCurrentText(f"{src} Out")
-                    target_list.setCurrentText(f"{dst} In")
-                    cable_curve_combo.setCurrentText(rnd.choice(curves))
-                    spin_cable_depth.setValue(round(rnd.uniform(0.2, 1.0), 2))
-                    _connect_cable()
-
-                btn_patch.clicked.connect(_connect_cable)
-                btn_remove_cable.clicked.connect(_remove_selected_cable)
-                btn_clear_cables.clicked.connect(_clear_cables)
-                btn_randomize_patch.clicked.connect(_randomize_patch)
+                # GROOVEBOX_R123_PATCH_BAY_IS_PROJECT_STATE_20261119: the cable list is a live view of
+                # self.patch_connections (saved, undoable, used by render / Mod Matrix / randomizers).
+                import patch_bay_sync as _pbs
+                _pb_view = _pbs.bind(self, {"source": source_list, "target": target_list, "depth": spin_cable_depth,
+                                            "curve": cable_curve_combo, "polarity": cable_polarity_combo,
+                                            "normalize": chk_cable_normalize, "list": cable_list, "log": patch_log})
+                btn_patch.clicked.connect(lambda: _pb_view["connect_fn"]())
+                btn_remove_cable.clicked.connect(lambda: _pb_view["remove_fn"]())
+                btn_clear_cables.clicked.connect(lambda: _pb_view["clear_fn"]())
+                btn_randomize_patch.clicked.connect(lambda: _pb_view["randomize_fn"]())
+                btn_randomize_patch.setToolTip("Adds route-aware cables from the project seed: instruments with no input are "
+                                               "served first, playing instruments are preferred, no duplicate or self patch. "
+                                               "Same seed + same patch → same result. Undo restores.")
 
                 pm_layout.addStretch(1)
                 pm_content.setLayout(pm_layout)
@@ -69265,6 +70295,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             else:
                 main_layout.addWidget(QLabel(f"Active Panel: {window_title}"))
         setattr(self, attr_name, window)
+        if getattr(self, "_r123_embed_build", None) == attr_name:
+            # GROOVEBOX_R123_PANEL_SYNTH_ROW_20261119: built for an Expand frame — the panel row embeds it.
+            return window
         try:
             # R33: windows decorated while being built (Edit Synth's light glass) keep that style; restyling the
             # finished window here re-polished every widget (~20 % of opening Edit Synth) and replaced its style.
@@ -69413,6 +70446,9 @@ class MathematiciansGrooveboxApp(QMainWindow):
             "_last_videogame_path",
             "canonical_engine_levels", "phase_lock_characteristics", "_rand_instance_seed", "_rand_generation_counter",
             "imported_3d_model_path", "imported_3d_model_meta", "voxel_grid_size", "voxel_alias_pct", "voxel_paint_color", "voxel_paint_blend_pct", "voxel_cells",
+            # GROOVEBOX_R123_ROUTE_HANDLES_20261119: every route store the randomizers / Autopilot write is undoable.
+            "sidechain_state", "patch_motion_state", "markov_resampler_spec", "r99_mod_matrix", "r32_automation",
+            "geometric_synth_mixer_state",
         )
         for key in _history_keys:
             try:
@@ -69538,6 +70574,29 @@ class MathematiciansGrooveboxApp(QMainWindow):
                     setattr(self, key, _hp.unpack(snap[key]))
                 except Exception:
                     pass
+        # GROOVEBOX_R123_USER_SEQUENCE_SURVIVES_REBUILD_20261119: undo/redo moves the canonical user
+        # baseline too, so the rebuild that follows cannot re-apply the edit that was just undone.
+        try:
+            import copy as _c2
+            def _r123_um(_m):
+                return (isinstance(_m, dict) and bool(_m.get("user_owned"))
+                        and not str(_m.get("canonical_owner") or "").startswith("canonical:"))
+            _pst = getattr(self, "_canonical_panels_user_store", None)
+            if isinstance(_pst, dict):
+                for _bn, _bk in (getattr(self, "instrument_sequence_banks", {}) or {}).items():
+                    if not isinstance(_bk, dict):
+                        continue
+                    _sb = _pst.setdefault(_bn, {})
+                    for _si, _sm in _bk.items():
+                        if _r123_um(_sm) or _r123_um(_sb.get(_si)):
+                            _sb[_si] = _c2.deepcopy(_sm)
+            _mst = getattr(self, "_canonical_pattern_user_store", None)
+            if isinstance(_mst, dict):
+                for _k, _m in (getattr(self, "instrument_sequencer_memory", {}) or {}).items():
+                    if _r123_um(_m) or _r123_um(_mst.get(_k)):
+                        _mst[_k] = _c2.deepcopy(_m)
+        except Exception:
+            pass
         try: self._sync_canonical_widgets_from_state()
         except Exception: pass
         try:
@@ -69631,6 +70690,12 @@ class MathematiciansGrooveboxApp(QMainWindow):
                 self._refresh_sequencer_automation_row()
             if hasattr(self, "_refresh_sequence_selector"):
                 self._refresh_sequence_selector()
+        except Exception:
+            pass
+        # GROOVEBOX_R123_ROUTE_HANDLES_20261119: patch bay list, sidechain panel, Markov / Mod Matrix views follow.
+        try:
+            import route_handles as _rh
+            _rh.broadcast(self)
         except Exception:
             pass
         # Refresh every dependent surface without mutating data.

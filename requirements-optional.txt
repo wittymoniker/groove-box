@@ -1,3 +1,17 @@
 # Optional integrations; Groovebox operates without these.
 mido
 juliacall
+# Lua is installed as a required appliance runtime by BUILD_ISO/runtime_setup_v35_22q.sh.
+# Desktop/source installs may install it explicitly with: python -m pip install lupa
+# File Manager .7z archives (archive_tools.py); the ISO ships the 7zip program instead.
+py7zr
+# R123 dependency audit: imported (all guarded) but previously unlisted.
+lupa            # Lua workspace/plugins + LuaJIT hybrid pool (the ISO installs it as required)
+psutil          # CPU/RAM meters, export scheduler (falls back to /proc)
+soundfile       # WAV/FLAC read in audio features, post-process, performance
+threadpoolctl   # BLAS thread caps for predictive buffer / library tuning
+cryptography    # signed updates, release manifest, authoring signatures
+keyring         # secrets store (falls back to file store)
+pyudev          # hotplug monitor (Linux only)
+pedalboard      # optional extra FX host in features_r99
+opencv-python-headless  # optional camera capture in live composition studio

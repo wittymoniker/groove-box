@@ -47,6 +47,7 @@ DEFAULTS = {
     "carrier_mix": 0.46,            # imported carrier video: base share of each exported frame (0.05-1.0)
     "video_tile_max": 0.18,         # operator-bound video tiles: largest width as a fraction of the frame (0.05-0.5)
     "autosave": True,               # open project is autosaved in place (main-window Autosave box)
+    "equation_audio_save": False,   # R120: opt-in lossless float32 .eqaudio sidecar on explicit project saves (25 MiB cap)
     "auto_copy_to_drive": False,    # also copy each project save to the first connected USB / SD drive
     "export_in_worker": True,       # R32.6: exports always run in worker processes (EXPORT_SCHEDULER_R31); EXPORT_WORKER_20261102: render exports in a separate process (window stays smooth)
     "ui_scale": 0,                  # R97: Auto resolves from connected display dimensions; explicit percent still supported
@@ -55,6 +56,7 @@ DEFAULTS = {
     "video_makeup": "low",          # PLAYER_MAKEUP_20261107: off | low | high make-up audio for video-only files
     "makeup_generator": "drone",
     "mem_budget_pct": 0,            # R32.8 DYNAMIC_RAM: 0 = auto by tier, else 25-90 % of RAM
+    "workspace_pane_color": "blue_gray", # shared background for all three primary workspace panes
     "color_scheme": "normal",       # R32.8 ACCESSIBILITY: normal | high contrast | protan/deutan/tritan-safe | grayscale | warm night | inverted
     "color_scheme_outputs": False,  # also transform generated video (exports + live rig)
     "touch_keyboard": "auto",       # auto (touchscreens only) | on | off
@@ -110,6 +112,19 @@ DEFAULTS = {
     "dev_overlay_stall_s": 3.0,         # a UI gap this long counts as a freeze (2 freezes → rollback)
     "dev_overlay_max_errors": 3,        # errors raised from overlay code before rollback
     "dev_overlay_script_timeout_s": 600,  # scratchpad script time limit
+    # GROOVEBOX_R123_MOUSE_TRACER_20261119: subtle pointer trail, ON by default (System Settings ·
+    # Settings/Compat → Mouse tracer). Works on Wayland: drawn inside Groovebox windows only.
+    "mouse_tracer": True,
+    "mouse_tracer_mode": "trail",       # trail | ring | trail+ring
+    "mouse_tracer_length": 48,          # points kept in the trail (4-256)
+    "mouse_tracer_fade_ms": 600,        # how long a point stays visible (100-5000 ms)
+    "mouse_tracer_width": 4,            # px at the head (1-24)
+    "mouse_tracer_color": "#4fd1ff",    # #rrggbb
+    "mouse_tracer_clicks": True,        # brief ripple on mouse press
+    # GROOVEBOX_R123_COMPAT_SCROLL_20261119 (window_scroll.py): windows = every tool window scrolls
+    # when its content does not fit (WINDOW_SCROLL_R7 behaviour) · windows+main = compatibility mode,
+    # the main window also gets one scroll area across all its panels · off = no wrapping.
+    "scroll_panels": "windows",
     # Internal migration provenance. These keys are persisted but never shown as UI controls.
     "_user_touched_keys": [],
     "_default_migration_audit": {"count": 0, "sha256": ""},
@@ -207,6 +222,8 @@ def _clean(raw):
         _schemes = tuple(_a11y.SCHEMES)
     except Exception:          # settings must load even if the accessibility module is missing/broken
         _schemes = ("normal",)
+    pane_color = str(raw.get("workspace_pane_color", out.get("workspace_pane_color", "blue_gray"))).strip().lower()
+    out["workspace_pane_color"] = pane_color if pane_color in ("blue_gray", "slate", "graphite", "midnight") else "blue_gray"
     cs_ = str(raw.get("color_scheme", out.get("color_scheme", "normal")))
     out["color_scheme"] = cs_ if cs_ in _schemes else "normal"
     tk = str(raw.get("touch_keyboard", out.get("touch_keyboard", "auto"))).lower()
@@ -222,7 +239,7 @@ def _clean(raw):
     for key in ("autosave", "auto_copy_to_drive", "play_all_outputs", "audio_via_video_player", "native_voice",
                 "appliance_tuning", "export_in_worker", "smart_process", "pin_enabled", "pin_lock_on_start",
                 "ask_session_name", "startup_chime", "noisy_exports", "play_export_when_done", "party_mode", "party_sounds", "emoji_labels",
-                "live_autosave", "color_scheme_outputs", "no_mouse", "no_keyboard"):
+                "live_autosave", "color_scheme_outputs", "no_mouse", "no_keyboard", "equation_audio_save"):
         if key in raw:
             out[key] = bool(raw[key])
     for key, lo, hi, dflt in (("pin_idle_minutes", 0, 240, 0), ("pin_digits", 4, 8, 4)):
@@ -267,6 +284,22 @@ def _clean(raw):
     # existing profile with party_defaults_r6=True has crossed the legacy
     # migration boundary, so preserve its explicit saved False as well as True.
     out["party_defaults_final"] = True
+
+    # R123: mouse tracer + compatibility scroll.
+    out["mouse_tracer"] = bool(raw.get("mouse_tracer", out["mouse_tracer"]))
+    out["mouse_tracer_clicks"] = bool(raw.get("mouse_tracer_clicks", out["mouse_tracer_clicks"]))
+    _m = str(raw.get("mouse_tracer_mode", out["mouse_tracer_mode"])).strip().lower()
+    out["mouse_tracer_mode"] = _m if _m in ("trail", "ring", "trail+ring") else DEFAULTS["mouse_tracer_mode"]
+    for key, lo, hi in (("mouse_tracer_length", 4, 256), ("mouse_tracer_fade_ms", 100, 5000), ("mouse_tracer_width", 1, 24)):
+        try:
+            out[key] = max(lo, min(hi, int(float(raw.get(key, out[key])))))
+        except (TypeError, ValueError):
+            out[key] = DEFAULTS[key]
+    _c = str(raw.get("mouse_tracer_color", out["mouse_tracer_color"])).strip()
+    out["mouse_tracer_color"] = _c.lower() if (len(_c) == 7 and _c[0] == "#" and all(ch in "0123456789abcdefABCDEF" for ch in _c[1:])) else DEFAULTS["mouse_tracer_color"]
+    _sp = str(raw.get("scroll_panels", out["scroll_panels"])).strip().lower()
+    _sp = {"auto": "windows", "always": "windows+main", "main": "windows+main"}.get(_sp, _sp)
+    out["scroll_panels"] = _sp if _sp in ("off", "windows", "windows+main") else DEFAULTS["scroll_panels"]
 
     # R97: UI scaling now defaults to the existing display-aware Auto mode.
     # Migrate only the exact former factory default (100%), and never rewrite

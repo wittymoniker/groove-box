@@ -7057,7 +7057,7 @@ class Performance(QDialog):
                 st={"bpm":float(host.spin_bpm.value()) if hasattr(host,"spin_bpm") else 0.0,
                     "playing":bool(getattr(host,"is_playing",False)),
                     "pos_s":(float(getattr(host,"play_cursor",0) or 0)/sr) if sr>0 else 0.0}
-                threading.Thread(target=svc.send_jam,args=(targets,st),daemon=True).start()
+                __import__("thread_budget").spawn("jam-send", svc.send_jam, targets, st, coalesce=True)  # R123 bounded
         if self.chk_jam_follow.isChecked() and svc.jam_latest:
             node,row=max(svc.jam_latest.items(),key=lambda kv: kv[1].get("recv",0))
             if time.time()-row.get("recv",0)>5: return
@@ -7066,7 +7066,7 @@ class Performance(QDialog):
             if node not in offs:
                 offs[node]=0.0
                 peer=next((p for p in svc.peer_list() if p.get("node_id")==node),None)
-                if peer: threading.Thread(target=lambda: offs.__setitem__(node,svc.clock_offset(peer)),daemon=True).start()
+                if peer: __import__("thread_budget").spawn("jam-clock-%s" % node, lambda: offs.__setitem__(node,svc.clock_offset(peer)), coalesce=True)
             try:
                 bpm=float(st.get("bpm") or 0)
                 if bpm>0 and hasattr(host,"spin_bpm") and abs(host.spin_bpm.value()-bpm)>1e-6: host.spin_bpm.setValue(bpm)
@@ -7105,7 +7105,7 @@ class Performance(QDialog):
         svc=self._nearby_service()
         if svc is None: return
         self.lbl_live.setText("🎙 Talking (release F8 to stop)…" if down else "Live: off")
-        threading.Thread(target=lambda: (svc.ptt(down)),daemon=True).start()
+        __import__("thread_budget").spawn("ptt", svc.ptt, down)  # R123: ordered-enough, bounded
 
     def _ptt_autolisten(self):
         """Play push-to-talk audio from live 'ptt' peers; close when they stop."""
@@ -7558,7 +7558,13 @@ class Performance(QDialog):
         if hasattr(self, "bar_sysop"):
             self.bar_sysop.setValue(100 if not error else 0)
         r = result if isinstance(result, dict) else {}
+        if kind == "Update check" and not error:
+            self.lbl_sysop.setText("Update staged and tested — review the result.")
+            self._upd_review(r); return
         if error or (r and r.get("ok") is False):
+            if kind == "Update check":
+                try: __import__("self_update").discard_staged()
+                except Exception: pass
             msg = error or r.get("message") or "; ".join(r.get("problems", [])[:5]) or "failed"
             self.lbl_sysop.setText(f"{kind} failed: {msg}"); self._on_sysop_log(f"FAILED: {msg}")
             QMessageBox.warning(self, kind, str(msg)[:1500]); return
@@ -7608,21 +7614,90 @@ class Performance(QDialog):
         self._on_sysop_done("Scan", found, "")
 
     def _upd_apply(self):
+        """GROOVEBOX_R123_UNSIGNED_SOURCE_UPDATE_20261119: update from a folder / .zip / .tar.gz without a
+        signing key: current PIN (when one is set) → staged basic tests → authenticity report → extra
+        warnings below 75 % similarity → install with rollback."""
         it = self.lst_updates.currentItem() if hasattr(self, "lst_updates") else None
         if it is None:
             self._upd_scan(); return
         src = it.data(Qt.ItemDataRole.UserRole)
+        if getattr(self, "_sysop_busy", None):
+            QMessageBox.information(self, "Update", f"Busy: {self._sysop_busy}. Wait for it to finish."); return
         if QMessageBox.question(self, "Apply update", f"Update this Groovebox from\n{src['path']}\n({src['version']})?\n\n"
-                                "It is tested first; a rollback copy is kept.") != QMessageBox.StandardButton.Yes:
+                                "It is tested first (compile + core imports in a separate process); a rollback copy is kept.") != QMessageBox.StandardButton.Yes:
+            return
+        if not self._upd_pin_ok():
             return
         import self_update as su
+        def job(log, prog):
+            def p(ph, d, t):
+                prog(ph, d, t)
+                if d == 0 or (t and d >= t):
+                    log(f"[{ph}] {d}/{t}")
+            return su.prepare(src, p, allow_unsigned=True)
+        self._upd_pending_src = src
+        self._sysop_start("Update check", job)
+
+    def _upd_pin_ok(self) -> bool:
+        """True when no PIN is set, or the current PIN was entered correctly."""
+        try:
+            import compat_settings as _cs, pin_lock as _pl
+            cur = _cs.load()
+            if not _pl.pin_configured(cur):
+                return True
+        except Exception as exc:
+            QMessageBox.warning(self, "Update", f"Could not read the PIN setting ({exc}); update cancelled."); return False
+        from PyQt6.QtWidgets import QInputDialog, QLineEdit as _QLE
+        pin, ok = QInputDialog.getText(self, "Update · PIN", "Enter your current Groovebox PIN to install a source update:",
+                                       _QLE.EchoMode.Password)
+        if not ok:
+            return False
+        if not _pl.check_pin(str(pin), cur):
+            QMessageBox.warning(self, "Update", "Wrong PIN — nothing was installed."); return False
+        return True
+
+    def _upd_review(self, prep):
+        """GUI thread: show the basic-test result and authenticity warnings; install only when confirmed."""
+        import self_update as su
+        if not prep.get("ok"):
+            su.discard_staged()
+            QMessageBox.warning(self, "Update refused", "The new source did not pass the basic tests, so nothing was installed:\n\n"
+                                + "\n".join(prep.get("problems", [])[:12])); return
+        auth = prep.get("authenticity", {}); sim = auth.get("similarity", {}); warns = auth.get("warnings", [])
+        summary = (f"Version: {prep.get('version', '?')}\nBasic tests: passed ({prep['verify'].get('files', 0)} modules)\n"
+                   f"Similarity to this Groovebox: {float(sim.get('score', 0)):.0%} (paths {float(sim.get('paths', 0)):.0%}, "
+                   f"content {float(sim.get('content', 0)):.0%})\n" + "\n".join("✓ " + c for c in auth.get("checks", [])))
+        if warns:
+            box = QMessageBox(self); box.setIcon(QMessageBox.Icon.Warning); box.setWindowTitle("Update · authenticity warning")
+            box.setText("This source did not pass every basic authenticity test.")
+            box.setInformativeText("\n".join("⚠ " + w for w in warns) + "\n\n" + summary)
+            box.setStandardButtons(QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ignore)
+            box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if box.exec() != QMessageBox.StandardButton.Ignore:
+                su.discard_staged(); self.lbl_sysop.setText("Update cancelled (authenticity warnings)."); return
+            if float(sim.get("score", 0)) < su.SIMILARITY_MIN:
+                if QMessageBox.warning(self, "Update · second warning",
+                                       f"Only {float(sim.get('score', 0)):.0%} of this source matches the current Groovebox.\n"
+                                       "It may be a different program, a very old/new version, or a modified copy.\n"
+                                       "Installing replaces matching files (a rollback copy is kept).\n\nInstall anyway?",
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                       QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                    su.discard_staged(); self.lbl_sysop.setText("Update cancelled."); return
+            if auth.get("severity") == "high":
+                from PyQt6.QtWidgets import QInputDialog
+                word, ok = QInputDialog.getText(self, "Update · final confirmation",
+                                                "Less than 40 % similar. Type INSTALL to continue:")
+                if not ok or str(word).strip().upper() != "INSTALL":
+                    su.discard_staged(); self.lbl_sysop.setText("Update cancelled."); return
+        elif QMessageBox.question(self, "Install update", summary + "\n\nInstall now?") != QMessageBox.StandardButton.Yes:
+            su.discard_staged(); return
         native = self.chk_upd_native.isChecked()
         def job(log, prog):
             def p(ph, d, t):
                 prog(ph, d, t)
                 if d == 0 or (t and d >= t):
                     log(f"[{ph}] {d}/{t}")
-            return su.update_from(src, p, native=native)
+            return su.install(prep, p, native=native)
         self._sysop_start("Update", job)
 
     def _upd_rollback(self):
@@ -9190,7 +9265,7 @@ class _AudioVisualizer(QWidget):
     def set_file(self, path: str):
         self._path = path; self._env = self._cache.get(path)
         if self._env is None and path:
-            threading.Thread(target=self._decode, args=(path,), daemon=True).start()
+            __import__("thread_budget").spawn("wave-decode", self._decode, path, kind="bulk")
         self._timer.start(); self.update()
 
     def clear(self):
@@ -9203,7 +9278,7 @@ class _AudioVisualizer(QWidget):
         """Decode the file's level envelope for the volume meter (even with the visualizer off)."""
         if path and path not in cls._cache and not cls._decoding.get(path):
             cls._decoding[path] = True
-            threading.Thread(target=cls._decode_env, args=(path,), daemon=True).start()
+            __import__("thread_budget").spawn("env-decode", cls._decode_env, path, kind="bulk")
         return cls._cache.get(path)
 
     def _decode(self, path):
@@ -10700,6 +10775,11 @@ class FileManagerDialog(QDialog):
         btn_dups.clicked.connect(self._index_duplicates); row3.addWidget(btn_dups)
         btn_src=QPushButton("📦 Export MatGroovebox Source"); btn_src.setToolTip("Archive the Groovebox source code (.tar.gz / .zip / .MCC) into this folder or drive.")
         btn_src.clicked.connect(self._export_source_archive); row3.addWidget(btn_src)
+        # GROOVEBOX_R123_ARCHIVE_TOOLS_20261119: compress / extract .zip .tar.gz .7z .MCC
+        self.btn_compress=QPushButton("🗜 Compress…"); self.btn_compress.setToolTip("Compress the selected files/folders into .zip, .tar.gz, .7z or a .MCC Groovebox package (in this folder).")
+        self.btn_compress.clicked.connect(self._compress_selected); row3.addWidget(self.btn_compress)
+        self.btn_extract=QPushButton("📂 Extract…"); self.btn_extract.setToolTip("Extract the selected .zip / .tar.gz / .7z / .MCC package into a new folder beside it (paths are kept inside that folder).")
+        self.btn_extract.clicked.connect(self._extract_selected); row3.addWidget(self.btn_extract)
         row3.addStretch(1); root.addLayout(row3)
         self.lbl_status=QLabel(""); self.lbl_status.setWordWrap(True); self.lbl_status.setStyleSheet("color:#8ab4c8; font-size:9pt;"); root.addWidget(self.lbl_status)
         self.lbl_status.setText("Ready · directory listing starts after the window is mapped.")
@@ -11152,7 +11232,9 @@ class FileManagerDialog(QDialog):
                 icon=_kind_icon(kind)+" "
             item=QListWidgetItem(icon+name); item.setData(Qt.ItemDataRole.UserRole,full); item.setData(Qt.ItemDataRole.UserRole+1,kind); self.list_widget.addItem(item)
         self._apply_name_filter()
+        _note = getattr(self, "_status_note", ""); self._status_note = ""
         self.lbl_status.setText(
+            (f"{_note} · " if _note else "") +
             f"{self.list_widget.count()} item(s) · { _raw_count } entries read"
             + (f" · { _hidden_count } hidden dotfile(s)" if _hidden_count else "")
             + (f" · classifying {len(pending)} video file(s) in background…" if pending else " · scan complete")
@@ -11292,7 +11374,42 @@ class FileManagerDialog(QDialog):
         ext=_gb_ext(path)
         if ext in MEDIA_EXT:self._open_in_player()
         elif ext in PROJECT_EXT or ext in GAME_EXT:self._open_project_or_game()
+        elif self._is_archive_path(path):self._preview_archive(path)
         else:self.lbl_status.setText("This file type is not a Groovebox media/project/game target.")
+    # GROOVEBOX_R123_FM_ARCHIVE_DOUBLE_CLICK_20261119: double-clicking a .zip/.tar.gz/.7z/.MCC package
+    # previews its contents and offers Extract here (same safe, threaded path as the Extract… button).
+    def _is_archive_path(self,path):
+        try:
+            import archive_tools as _at
+            return _at.is_archive(path)
+        except Exception:
+            return False
+    def _preview_archive(self,path):
+        import archive_tools as _at
+        name=os.path.basename(path); size=0
+        try: size=os.path.getsize(path)
+        except OSError: pass
+        detail=""; summary=f"{name} · {_at.detect_format(path) or 'archive'} · {size/1048576:.1f} MB"
+        if size<=256*1024*1024:
+            try:
+                members=_at.list_members(path)
+                total=sum(int(m.get("size") or 0) for m in members)
+                files=[m for m in members if not m.get("is_dir")]
+                summary+=f"\n{len(files)} files, {total/1048576:.1f} MB unpacked"
+                detail="\n".join(m["name"] for m in members[:400])+("\n…" if len(members)>400 else "")
+            except Exception as e:
+                summary+=f"\nCould not list contents: {e}"
+        else:
+            summary+="\n(Large package: contents are listed during extraction.)"
+        dest=_at.default_extract_dir(path)
+        box=QMessageBox(self); box.setWindowTitle("Archive"); box.setIcon(QMessageBox.Icon.Question)
+        box.setText(summary+f"\n\nExtract into:\n{dest}")
+        if detail: box.setDetailedText(detail)
+        bx=box.addButton("Extract here",QMessageBox.ButtonRole.AcceptRole); box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is not bx: return
+        if self._system_blocked(os.path.dirname(path) or self._dir, action="extract into"): return
+        self._archive_job("Extracting", lambda prog: _at.extract_archive(path, progress=prog))
     def _new_folder(self):
         name,ok=QInputDialog.getText(self,"New Folder","Folder name:"); name=name.strip()
         if not ok:return
@@ -11579,6 +11696,70 @@ class FileManagerDialog(QDialog):
             except Exception as e:
                 bridge.done.emit("",str(e))
         threading.Thread(target=run,daemon=True,name="groovebox-source-export").start()
+
+    def _archive_job(self, label, fn):
+        """Run an archive_tools call off the UI thread; progress and the result land in the status line."""
+        if getattr(self, "_archive_busy", False):
+            self.lbl_status.setText("An archive job is already running — wait for it to finish."); return
+        self._archive_busy = True
+        for b in (getattr(self, "btn_compress", None), getattr(self, "btn_extract", None)):
+            b is not None and b.setEnabled(False)
+        bridge=_FileToolsBridge(self); self._archive_bridge=bridge
+        bridge.progress.connect(lambda d,t: self.lbl_status.setText(f"{label}… {d}/{t} files"))
+        def _done(out, err):
+            self._archive_busy = False
+            for b in (getattr(self, "btn_compress", None), getattr(self, "btn_extract", None)):
+                b is not None and b.setEnabled(True)
+            msg = f"{label} done: {out}" if not err else f"{label} failed: {err}"
+            self._status_note = msg                     # kept visible across the folder refresh
+            self.refresh()
+            self.lbl_status.setText(msg)
+            if err:
+                QMessageBox.warning(self, label, err)
+        bridge.done.connect(_done)
+        self.lbl_status.setText(f"{label}…")
+        def run():
+            try:
+                out = fn(lambda d,t: (d % 50 == 0 or d == t) and bridge.progress.emit(int(d), int(t)))
+                bridge.done.emit(str(out), "")
+            except Exception as e:
+                bridge.done.emit("", str(e) or type(e).__name__)
+        threading.Thread(target=run, daemon=True, name="groovebox-archive").start()
+
+    def _compress_selected(self):
+        from PyQt6.QtWidgets import QInputDialog
+        import archive_tools as _at
+        paths=self._selected_paths()
+        if not paths:
+            QMessageBox.information(self,"Compress","Select one or more files or folders to compress first."); return
+        caps=_at.capabilities()
+        items=[_at.FORMAT_LABELS[f] + ("" if caps.get(f, True) else "  (needs 7-Zip)") for f in _at.CREATE_FORMATS]
+        choice,ok=QInputDialog.getItem(self,"Compress","Archive format:",items,0,False)
+        if not ok: return
+        fmt=_at.CREATE_FORMATS[items.index(choice)]
+        if fmt=="7z" and not caps.get("7z"):
+            QMessageBox.warning(self,"Compress",str(_at._no_7z())); return
+        stem=os.path.basename(paths[0].rstrip(os.sep)) if len(paths)==1 else "Archive_"+time.strftime("%Y%m%d_%H%M%S")
+        for suf in (".tar.gz",".zip",".7z",".MCC",".mcc"):
+            if len(paths)==1 and os.path.isfile(paths[0]) and stem.endswith(suf): stem=stem[:-len(suf)]
+        stem=os.path.splitext(stem)[0] if len(paths)==1 and os.path.isfile(paths[0]) else stem
+        default=os.path.join(self._dir, stem+_at.SUFFIX[fmt])
+        path,_=QFileDialog.getSaveFileName(self,"Compress to",default,f"Archive (*{_at.SUFFIX[fmt]})")
+        if not path: return
+        self._archive_job("Compressing", lambda prog: _at.create_archive(paths, path, fmt, progress=prog))
+
+    def _extract_selected(self):
+        import archive_tools as _at
+        paths=[p for p in self._selected_paths() if os.path.isfile(p)]
+        if not paths:
+            QMessageBox.information(self,"Extract","Select a .zip, .tar.gz, .7z or .MCC package to extract first."); return
+        bad=[p for p in paths if not _at.is_archive(p)]
+        if bad:
+            QMessageBox.warning(self,"Extract",_at._not_archive_message(bad[0], _at.detect_format(bad[0]))); return
+        def job(prog):
+            outs=[_at.extract_archive(p, progress=prog) for p in paths]
+            return outs[0] if len(outs)==1 else f"{len(outs)} archives → " + ", ".join(os.path.basename(o) for o in outs)
+        self._archive_job("Extracting", job)
 
     def _undo_trash(self):
         if not self._last_trash_moves: self.lbl_status.setText("Nothing to undo."); return

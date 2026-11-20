@@ -43,6 +43,31 @@ def ics_inv(x: float, handedness: float=1.0) -> float:
     a=inverse_ics_scalar(float(x))
     return a if handedness >= 0 else -a
 
+def isn_inv_point(a: float, b: float) -> float:
+    """Angle of the point (a, b) from the +a axis via the isosceles triangle (0, r·â, p):
+    equal edges r = |p|, unequal edge = chord to (r, 0); angle = isn⁻¹(chord / r) ∈ [0, π]."""
+    r = math.hypot(a, b)
+    if r == 0.0:
+        return 0.0
+    return isn_inv(min(2.0, math.hypot(a - r, b) / r))
+
+
+def graph_number(points) -> float:
+    """Book p.42 (Scientific Theories and Inventions, "average of all angles"): one number for a set of
+    points that changes with the graph's shape, scale, rotation and perspective:
+
+        G = (1/m) · Σ (isn⁻¹(x, y) + isn⁻¹(z, x)) · √(x² + y² + z²)
+
+    Points are (x, y) or (x, y, z); deterministic, uses only the series kernels."""
+    pts = [tuple(float(v) for v in p) + (0.0,) * (3 - len(p)) for p in points]
+    if not pts:
+        return 0.0
+    tot = 0.0
+    for x, y, z in pts:
+        tot += (isn_inv_point(x, y) + isn_inv_point(z, x)) * math.sqrt(x * x + y * y + z * z)
+    return tot / len(pts)
+
+
 def _u(seed, label):
     h=hashlib.sha256(f"{seed}|{label}".encode()).digest()
     return int.from_bytes(h[:8],'big')/float(2**64)

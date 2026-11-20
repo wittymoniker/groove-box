@@ -10,6 +10,9 @@ open the Mod Matrix. Projects save the settings (project_schema: mod_matrix_mirr
 """
 from __future__ import annotations
 
+# GROOVEBOX_R123_MOD_PATH_WIDEN_PHI_20261119: every Mod Path Bay panel / scroll area is drawn 1.618× (golden
+# ratio) wider than its "width" setting — the setting keeps its old meaning and saved values stay valid.
+WIDTH_PHI = 1.618
 DEFAULTS = {"side": "both", "flip": False, "opacity": 0.92, "width": 320, "follow": 1.0}
 
 
@@ -244,7 +247,13 @@ def _panel_builder(host, win, follow, reroute_pad, perspective_pad, panels, appl
             stage.setVisible(not hide); box.setVisible(not hide); col.setText("▸" if hide else "▾")
         def _toggle(_=False, side=side):
             st = settings(host); st["collapsed_" + side] = not bool(st.get("collapsed_" + side, False)); _collapse()
-        col.clicked.connect(_toggle); bar.addWidget(col); _collapse()
+        col.clicked.connect(_toggle)
+        try:  # GROOVEBOX_R123_TOUCH_FALLBACKS_20261119: touch fallback for right-drag
+            import touch_compat
+            alt = touch_compat.alt_toggle_button(host); alt.setMinimumHeight(0); bar.addWidget(alt)
+        except Exception:
+            pass
+        bar.addWidget(col); _collapse()
         try:
             __import__("jam_tools").mirror_accessories(host, fr, stage)
         except Exception:
@@ -280,7 +289,7 @@ def attach(host, win):
         side = str(s.get("side", "both"))
         for name, pn in panels.items():
             show = side == "both" or side == name
-            pn["frame"].setVisible(show); pn["frame"].setFixedWidth(int(s["width"]))
+            pn["frame"].setVisible(show); pn["frame"].setFixedWidth(int(round(int(s["width"]) * WIDTH_PHI)))
             pn["effect"].setOpacity(float(s["opacity"])); pn["stage"].flip_v = bool(s["flip"])
 
     def toggle():
@@ -340,13 +349,13 @@ def attach_arc(host, arc):
         for name, pn in panels.items():
             show = side == "both" or side == name
             pn["frame"].setVisible(show)
-            pn["frame"].setMinimumWidth(min(int(s["width"]), 520)); pn["frame"].setMaximumWidth(540)
+            pn["frame"].setMinimumWidth(min(int(round(int(s["width"]) * WIDTH_PHI)), 841)); pn["frame"].setMaximumWidth(874)
             pn["effect"].setOpacity(float(s["opacity"])); pn["stage"].flip_v = bool(s["flip"])
 
     make = _panel_builder(host, win, follow, reroute_pad, perspective_pad, panels, apply)
     for side, lay in (("left", left_l), ("right", right_l)):
         fr = make(side)
-        fr.setMinimumHeight(520)
+        fr.setMinimumHeight(860)  # R123: geometrics moved to their own row — the Mod Path Bay gets the room
         lay.insertWidget(0, fr)
 
     def refresh():

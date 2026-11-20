@@ -14,7 +14,7 @@ are, under the transparent viewport.
 """
 from __future__ import annotations
 
-_STATE = {"filter": None}
+_STATE = {"filter": None, "mode": None}
 _MARK = "gb_scroll_wrapped"
 _SKIP_CLASSES = ("QMessageBox", "QFileDialog", "QColorDialog", "QFontDialog", "QInputDialog",
                  "QProgressDialog", "QMenu", "QToolTip", "QSplashScreen", "QErrorMessage", "QWizard",
@@ -33,9 +33,35 @@ def _class_chain(w):
         return
 
 
+def scroll_mode() -> str:
+    """GROOVEBOX_R123_COMPAT_SCROLL_20261119: compat setting ``scroll_panels``
+    (windows | windows+main | off). Read once per process; changes apply to windows opened later."""
+    m = _STATE.get("mode")
+    if m is None:
+        try:
+            import compat_settings as cs
+            m = str(cs.load().get("scroll_panels", "windows"))
+        except Exception:
+            m = "windows"
+        _STATE["mode"] = m
+    return m
+
+
+def set_mode(mode: str) -> None:
+    _STATE["mode"] = None
+    try:
+        import compat_settings as cs
+        cs.update(scroll_panels=str(mode))
+    except Exception:
+        pass
+
+
 def eligible(w) -> bool:
     """True when ``w`` is a top-level window this module should wrap."""
     try:
+        mode = scroll_mode()
+        if mode == "off":
+            return False
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QScrollArea, QAbstractScrollArea
         if w is None or not w.isWindow() or w.property(_MARK) or w.property("gb_no_auto_scroll"):
@@ -43,7 +69,10 @@ def eligible(w) -> bool:
         if isinstance(w, (QScrollArea, QAbstractScrollArea)):
             return False
         names = set(_class_chain(w))
-        if names & set(_SKIP_CLASSES):
+        skip = set(_SKIP_CLASSES)
+        if mode == "windows+main":            # compatibility: one scroll across all main-window panels
+            skip.discard("MathematiciansGrooveboxApp")
+        if names & skip:
             return False
         t = w.windowType()
         if t in (Qt.WindowType.Popup, Qt.WindowType.ToolTip, Qt.WindowType.SplashScreen,

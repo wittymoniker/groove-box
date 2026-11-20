@@ -2428,6 +2428,7 @@ class MultidimWindow(QDialog):
     def _audition(self):
         try:
             self.host.instrument_selector_dropdown.setCurrentText(self._name())
+            self.host._instrument_last_clicked = self._name()   # GROOVEBOX_R123_SHIFT_TAB_LAST_CLICKED_20261119
             self.host.trigger_selected_note()
         except Exception:
             pass
@@ -2724,7 +2725,12 @@ class MainMDPanel(QWidget):
             "Lives above the step arc so the two never intersect."
         )
         self.sld_top_geometrics.valueChanged.connect(self._on_top_geometrics_changed)
-        _tg_lay.addWidget(self.sld_top_geometrics, 1)
+        # GROOVEBOX_R123_BRIDGE_BISECT_20261119: centred and capped — on the wide canvas this one slider
+        # used to run ~3600 px; the strip now keeps it at a comfortable length in the middle.
+        self.sld_top_geometrics.setMaximumWidth(1100)
+        _tg_lay.addStretch(1)
+        _tg_lay.addWidget(self.sld_top_geometrics, 3)
+        _tg_lay.addStretch(1)
         self.top_geo_strip.setMinimumHeight(36)
 
         self.bottom_dock = QFrame(self)
@@ -3350,7 +3356,7 @@ class ArcSequencerView(QWidget):
 
     def _prepare_side_widget(self, widget):
         try:
-            widget.setMaximumWidth(540)
+            widget.setMaximumWidth(874)   # R123: 540 × 1.618
         except Exception:
             pass
         try:
@@ -3371,7 +3377,7 @@ class ArcSequencerView(QWidget):
             lay = panel._content_layout
             lay.invalidate(); lay.activate()
             hint = lay.sizeHint()
-            content.setMinimumWidth(max(panel.width(), hint.width(), 320))
+            content.setMinimumWidth(max(panel.width(), hint.width(), 518))   # R123: 320 × 1.618
             content.setMinimumHeight(max(panel.height(), hint.height()))
             content.resize(content.minimumSize())
         except Exception:
@@ -3398,7 +3404,7 @@ class ArcSequencerView(QWidget):
         content = QWidget(panel)
         content.setStyleSheet("background: transparent;")
         content.setMinimumWidth(0)
-        content.setMaximumWidth(540)
+        content.setMaximumWidth(874)   # R123: 540 × 1.618
         content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay = QVBoxLayout(content)
         lay.setContentsMargins(1, 1, 1, 1)
@@ -3488,8 +3494,10 @@ class ArcSequencerView(QWidget):
         return (self.width() - self._content_width()) / 2.0
 
     def _side_width(self):
-        # R29c: side parameter rails widen to 560px
-        return min(max(280, int(self._content_width() * 0.17)), 560)
+        # R29c: side parameter rails widen to 560px.
+        # GROOVEBOX_R123_MOD_PATH_WIDEN_PHI_20261119: the Mod Path Bay rails are 1.618× wider (golden ratio):
+        # 280→453 min, 17 %→27.5 % of the canvas, 560→906 max — the sphere keeps ≥ 45 % of the width.
+        return min(max(453, int(self._content_width() * 0.275)), 906)
 
 
     def _center_rect(self):

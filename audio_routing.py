@@ -2,7 +2,6 @@ import sys
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal
-from main_window import MainWindow
 
 class SynthVoiceChannel(QObject):
     parameter_changed = pyqtSignal(str, float)
@@ -38,6 +37,7 @@ class SynthVoiceChannel(QObject):
         return 0.85
 
 if __name__ == "__main__":
+    from main_window import MainWindow  # optional standalone harness; not part of the app
     app = QApplication(sys.argv)
     window = MainWindow()
 

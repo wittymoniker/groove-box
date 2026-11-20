@@ -128,24 +128,14 @@ class SignalLab(QWidget):
     def _send_to_host(self,local):
         if self.mode.currentText() not in ('Carrier','Sample'):
             QMessageBox.information(self,'Draw Program/Tuning','Program and Tuning curves stay derived until explicitly saved/baked; they are not silently written into userdata.'); return
-        out=os.path.join(tempfile_dir(),'groovebox_drawn_'+('local' if local else 'global')+'.wav'); n=int(round(self.sr.value()*self.duration.value())); self._write_wav(out,self._curve(n),self.sr.value())
-        self.last_generated=out
+        n=int(round(self.sr.value()*self.duration.value())); sr=int(self.sr.value()); x=self._curve(n)
         try:
-            if local:
-                name=''
-                for attr in ('selected_instrument','current_instrument'):
-                    v=getattr(self.host,attr,None)
-                    if isinstance(v,str) and v: name=v; break
-                if not name:
-                    combo=getattr(self.host,'instrument_selector',None) or getattr(self.host,'instrument_combo',None)
-                    if combo is not None and hasattr(combo,'currentText'): name=combo.currentText()
-                store=getattr(self.host,'instrument_media_samples',None)
-                if not isinstance(store,dict): store={}; setattr(self.host,'instrument_media_samples',store)
-                store[name or 'selected']={'path':out,'derived':True,'userdata':False,'source':'draw'}
-            else:
-                setattr(self.host,'global_media_sample',{'path':out,'derived':True,'userdata':False,'source':'draw'})
-                setattr(self.host,'_global_carrier_path',out)
-            self.report.setPlainText(('Local' if local else 'Global')+' derived carrier sent: '+out)
+            # GROOVEBOX_R118_CARRIER_BRIDGE (reconstructed R123): the send really changes the carrier the engine plays.
+            import carrier_bridge
+            rec=carrier_bridge.send(self.host,x,'instrument_carrier:'+carrier_bridge.selected_instrument(self.host) if local else 'global_carrier',
+                                    kind='audio',rate=float(sr),source='draw',name='drawn_'+('local' if local else 'global'))
+            self.last_generated=rec.get('path','')
+            self.report.setPlainText(('Local' if local else 'Global')+' drawn carrier sent ('+str(rec['samples'])+' samples @ '+str(sr)+' Hz, sha256 '+rec['sha256'][:12]+')')
         except Exception as e: QMessageBox.warning(self,'Send failed',str(e))
     def _load_reference(self):
         p,_=QFileDialog.getOpenFileName(self,'Load reference WAV','','WAV (*.wav)')

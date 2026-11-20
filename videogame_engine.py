@@ -1180,7 +1180,13 @@ def classify_from_composition(
     try:
         import seed_media_bridge as _smb
         _pkt = _smb.identity_packet({"seed": seed, "seed_script": seed_script or ""})
-        fingerprint = (_pkt.get("fingerprint") or fingerprint)[:16]
+        # GROOVEBOX_R123_GAME_IDENTITY_KEEPS_COMPOSITION_20261119: the seed-media fingerprint is the
+        # cross-media FAMILY; the game identity is that family refined by the composition (bpm, length,
+        # rows, engines, graph scripts, algorithms). Previously the family replaced fp_src outright,
+        # so two different compositions on the same seed produced the same game.
+        _fam = str(_pkt.get("fingerprint") or "")[:16]
+        if _fam:
+            fingerprint = hashlib.sha256((_fam + "|" + fp_src).encode("utf-8")).hexdigest()[:16]
     except Exception:
         pass
 
@@ -10972,14 +10978,22 @@ else
 fi
 
 echo "==> Installing Python packages: $PIP_DEPS"
-python3 -m pip install --upgrade pip wheel
-python3 -m pip install $PIP_DEPS
+# GROOVEBOX_R123_PEP668_SAFE_PIP_20261119: Debian 12+, Ubuntu 23.04+, Fedora 38+ and Homebrew mark the system
+# Python "externally managed" (PEP 668) and refuse a plain pip install, which aborted this script under set -e.
+gb_pip(){ python3 -m pip install "$@" 2>/dev/null || python3 -m pip install --break-system-packages "$@"; }
+gb_pip --upgrade pip wheel || true
+gb_pip $PIP_DEPS
 
 echo "==> Placing codec binaries into /bin ..."
 FF=$(command -v ffmpeg || true)
 FP=$(command -v ffprobe || true)
-if [ -n "$FF" ]; then cp -f "$FF" /bin/ffmpeg || ln -sf "$FF" /bin/ffmpeg; fi
-if [ -n "$FP" ]; then cp -f "$FP" /bin/ffprobe || ln -sf "$FP" /bin/ffprobe; fi
+# GROOVEBOX_R123_USRMERGE_SAFE_CODEC_LINK_20261119: on merged-/usr systems /bin/ffmpeg IS the package binary;
+# copying it onto itself fails and the old "ln -sf" fallback replaced the real ffmpeg with a link to itself.
+gb_place(){ src="$1"; dst="$2"; [ -n "$src" ] || return 0
+  if [ -e "$dst" ] && [ "$(readlink -f "$src")" = "$(readlink -f "$dst")" ]; then return 0; fi
+  cp -f "$src" "$dst" 2>/dev/null || ln -sf "$(readlink -f "$src")" "$dst" 2>/dev/null || true; }
+gb_place "$FF" /bin/ffmpeg
+gb_place "$FP" /bin/ffprobe
 
 echo "==> Verify:"
 python3 -c "import numpy, PyQt6.QtCore, sounddevice, PIL; print('python deps OK')"
@@ -11015,8 +11029,11 @@ brew install python ffmpeg || brew upgrade python ffmpeg
 
 echo "==> pip dependencies (shared: host app + exported games)..."
 PIP_DEPS="numpy PyQt6 sounddevice Pillow"
-python3 -m pip install --upgrade pip wheel
-python3 -m pip install $PIP_DEPS
+# GROOVEBOX_R123_PEP668_SAFE_PIP_20261119: Debian 12+, Ubuntu 23.04+, Fedora 38+ and Homebrew mark the system
+# Python "externally managed" (PEP 668) and refuse a plain pip install, which aborted this script under set -e.
+gb_pip(){ python3 -m pip install "$@" 2>/dev/null || python3 -m pip install --break-system-packages "$@"; }
+gb_pip --upgrade pip wheel || true
+gb_pip $PIP_DEPS
 
 echo "==> Codec binaries into the resolver's lookup path ..."
 FF=$(command -v ffmpeg || true)
@@ -11024,7 +11041,13 @@ FP=$(command -v ffprobe || true)
 for pair in "ffmpeg|$FF" "ffprobe|$FP"; do
   name="${pair%%|*}"; path="${pair#*|}"
   if [ -n "$path" ]; then
-    ln -sf "$path" "/bin/$name" 2>/dev/null || ln -sf "$path" "/usr/local/bin/$name" 2>/dev/null || true
+    real="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+    for dst in "/bin/$name" "/usr/local/bin/$name"; do
+      # GROOVEBOX_R123_USRMERGE_SAFE_CODEC_LINK_20261119: never relink a binary onto itself (Intel Homebrew
+      # installs ffmpeg in /usr/local/bin; "ln -sf" there replaced it with a self-link).
+      if [ -e "$dst" ] && [ "$(cd "$(dirname "$dst")" && pwd -P)/$(basename "$dst")" = "$real" ]; then break; fi
+      ln -sf "$real" "$dst" 2>/dev/null && break
+    done
   fi
 done
 

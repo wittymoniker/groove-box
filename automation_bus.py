@@ -42,8 +42,8 @@ def targets(app):
             return
         for k, v in d.items():
             p = "%s/%s" % (prefix, k)
-            if isinstance(v, bool):
-                continue
+            if isinstance(v, bool) or k == "schema" or str(k).endswith(("_version", "_schema")):
+                continue                     # R123: format markers are never automation / randomizer targets
             if isinstance(v, (int, float)):
                 out.append(p)
             elif isinstance(v, dict):
@@ -72,7 +72,12 @@ def _span(key, base):
     for k, s in SPANS.items():
         if key == k or key.endswith(k):
             return s
-    return (0.0, 1.0) if 0.0 <= float(base) <= 1.0 else (float(base) * 0.25, float(base) * 4.0 + 1.0)
+    b = float(base)
+    if 0.0 <= b <= 1.0:
+        return (0.0, 1.0)
+    if b < 0.0:                       # R123: negative bases (dB, offsets) used to give a reversed span → never automated
+        return (b * 4.0 - 1.0, b * 0.25)
+    return (b * 0.25, b * 4.0 + 1.0)
 
 
 def lanes(app):

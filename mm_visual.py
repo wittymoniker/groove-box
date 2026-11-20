@@ -56,7 +56,8 @@ def make_widget(app, parent=None, mirror=False, follow=None):
             self.setMinimumHeight(190)
             self.setToolTip("Mod Matrix stage: each row is a ribbon in a 3.5-D grid (time × depth × live value). Canonical rows "
                             "glow cyan, user rows amber. GOAVA shapes drift through it; L-systems grow inside and outside them. "
-                            "The floor tilts with the governor depth.")
+                            "The floor tilts with the governor depth. Right-drag: routing side rotates the reroute poles (left/right) and "
+                            "sets the perspective magnitude (up/down); perspective side turns the perspective view.")
             self.hist = {}; self.t0 = time.monotonic(); self.mirror = bool(mirror); self.follow = follow
             self.flip_v = False; self._phase = 0.0; self._last = time.monotonic()
             self.timer = QTimer(self); self.timer.setInterval(42); self.timer.timeout.connect(self._tick); self.timer.start()
@@ -64,6 +65,56 @@ def make_widget(app, parent=None, mirror=False, follow=None):
                 self.nums = list(app.get_seed_values(t_value=0.0) or [])[:8] or [MEUM]
             except Exception:
                 self.nums = [MEUM]
+
+        # GROOVEBOX_R123_MODPATH_RIGHT_DRAG_20261119: right-drag on a Mod Path Bay stage drags the other
+        # Mod Path features. Routing stage (left): left/right rotates every reroute pole, up/down sets the
+        # perspective magnitude. Perspective stage (right): drag turns the perspective view (az / el).
+        def mousePressEvent(self, e):
+            if __import__("touch_compat").right_like(e):
+                self._rlast = e.position(); e.accept(); return
+            # touch fallbacks: sticky Alt-drag = right-drag at once; touch-and-hold then drag = right-drag
+            try:
+                import touch_compat
+                if getattr(self, "_hold_g", None) is None:
+                    self._hold_g = touch_compat.HoldGesture(self, app, lambda p: setattr(self, "_rlast", p))
+                if self._hold_g.press(e):
+                    self._rlast = e.position(); e.accept(); return
+            except Exception:
+                pass
+            super().mousePressEvent(e)
+
+        def mouseMoveEvent(self, e):
+            if getattr(self, "_hold_g", None) is not None:
+                self._hold_g.move(e)
+            last = getattr(self, "_rlast", None)
+            if last is None:
+                return super().mouseMoveEvent(e)
+            d = e.position() - last; self._rlast = e.position()
+            try:
+                import mm_fields
+                st = mm_fields.settings(app)
+                dx = -d.x() if self.mirror else d.x()
+                if self.mirror:
+                    ang = dx * 0.012
+                    ca, sa = math.cos(ang), math.sin(ang)
+                    for q in st.get("points") or []:
+                        q[0], q[1] = q[0] * ca - q[1] * sa, q[0] * sa + q[1] * ca
+                    st["mag"] = round(max(-1.0, min(1.0, float(st.get("mag", 0.0)) - d.y() * 0.005)), 3)
+                else:
+                    st["az"] = (float(st.get("az", 0.0)) + dx * 0.012) % (2 * math.pi)
+                    st["el"] = max(-1.5, min(1.5, float(st.get("el", 0.35)) - d.y() * 0.012))
+            except Exception:
+                pass
+            e.accept(); self.update()
+
+        def mouseReleaseEvent(self, e):
+            self._rlast = None
+            if getattr(self, "_hold_g", None) is not None:
+                self._hold_g.release()
+            super().mouseReleaseEvent(e)
+
+        def contextMenuEvent(self, e):
+            e.accept()
 
         def _tick(self):
             if not self.isVisible():

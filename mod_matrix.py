@@ -360,7 +360,7 @@ QFrame#mpmHeader, QFrame#mpmCol { background: rgba(10,16,30,200); border:1px sol
 QSplitter::handle { background: rgba(120,150,255,60); border-radius:2px; }
 QSplitter::handle:horizontal { width:6px; } QSplitter::handle:vertical { height:6px; }
 """)
-    d.setWindowModality(Qt.WindowModality.NonModal); d.resize(1640, 1000); d.setMinimumSize(1100, 700)
+    d.setWindowModality(Qt.WindowModality.NonModal); d.resize(1880, 1000); d.setMinimumSize(1640, 700)
     root = QVBoxLayout(d); root.setContentsMargins(10, 10, 10, 10); root.setSpacing(8)
 
     # ---------------------------------------------------------------- header
@@ -386,9 +386,10 @@ QSplitter::handle:horizontal { width:6px; } QSplitter::handle:vertical { height:
         sa = QScrollArea(); sa.setWidgetResizable(True); sa.setFrameShape(QFrame.Shape.NoFrame); sa.setWidget(widget)
         return sa
 
-    left, lv = column(300); centre, cv = column(620); right, rv = column(300)
+    # GROOVEBOX_R123_MOD_PATH_WIDEN_PHI_20261119: side scroll columns 1.618× wider (300 → 485, 360 → 583)
+    left, lv = column(485); centre, cv = column(620); right, rv = column(485)
     cols3.addWidget(left); cols3.addWidget(centre); cols3.addWidget(right)
-    cols3.setStretchFactor(0, 0); cols3.setStretchFactor(1, 1); cols3.setStretchFactor(2, 0); cols3.setSizes([360, 920, 360])
+    cols3.setStretchFactor(0, 0); cols3.setStretchFactor(1, 1); cols3.setStretchFactor(2, 0); cols3.setSizes([583, 920, 583])
     lbox = QToolBox(); lv.addWidget(lbox, 1)
     rbox = QToolBox(); rv.addWidget(rbox, 1)
 
@@ -527,6 +528,9 @@ QSplitter::handle:horizontal { width:6px; } QSplitter::handle:vertical { height:
                                         % (v_["depth"], v_["scale_canonical"], v_["scale_user"], v_["canonical_weight"]))
     tm = QTimer(d); tm.setInterval(300); tm.timeout.connect(refresh); tm.start(); refresh()
     d.show(); app._mod_matrix_dialog = d
+    # GROOVEBOX_R123_ROUTE_HANDLES_20261119: route_handles.broadcast() repaints the row table after a randomizer,
+    # Autopilot or undo changed the rows behind this window.
+    app._r99_mod_matrix_refresh = lambda: fill() if d.isVisible() else None
     return d
 
 

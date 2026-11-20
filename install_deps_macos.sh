@@ -20,7 +20,16 @@ brew install python ffmpeg portaudio glm || brew upgrade python ffmpeg portaudio
 SELECTED="$(python3 "$ROOT/scripts/ensure_runtime_dependencies.py" --force-install)"
 "$SELECTED" "$ROOT/scripts/provision_first_launch.py"
 echo "==> Verify complete runtime:"
-"$SELECTED" -c "import numpy, scipy, cffi, sounddevice, PIL; import PyQt6.QtCore, PyQt6.QtMultimedia, PyQt6.QtMultimediaWidgets; print('Groovebox required Python/Qt runtime OK')"
+"$SELECTED" -c "import numpy, scipy, cffi, PIL; import PyQt6.QtCore, PyQt6.QtMultimedia, PyQt6.QtMultimediaWidgets; print('Groovebox required Python/Qt runtime OK')"
+# GROOVEBOX_R123_SOUNDDEVICE_OPTIONAL_20261119: sounddevice is OPTIONAL (runtime_contract).
+# Its import raises PortAudioError when no audio server is running yet (headless, first boot,
+# SSH); that must never fail the installer or loop run_hybrid.sh into re-provisioning.
+"$SELECTED" -c "
+try:
+    import sounddevice; print('sounddevice OK')
+except Exception as e:
+    print('sounddevice optional: %s: %s' % (type(e).__name__, str(e).splitlines()[0] if str(e) else ''))
+" || true
 "$SELECTED" - <<'PY'
 import subprocess, sys
 try:

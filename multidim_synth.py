@@ -205,13 +205,32 @@ def preset_params(name):
     return p
 
 
-def convolution_wet(base, density, slot=0):
+def equidistant_slot_spread(slot, count=None):
+    """GROOVEBOX_R123_EQUIDISTANT_CONVOLVE_SPREAD_20261119 — slot offset in −0.5 … 0.5.
+
+    With the instrument count known, the golden-angle order is kept (neighbouring slots land far apart)
+    but the positions are replaced by their rank, (rank + ½)/count − ½, so the ensemble sits at exactly
+    equidistant points across the whole range. Without a count the legacy golden-angle value is used."""
+    g = 0.6180339887498949
+    slot = int(slot)
+    try:
+        n = int(count) if count is not None else 0
+    except (TypeError, ValueError):
+        n = 0
+    if n < 2 or not 0 <= slot < n:
+        return ((slot * g) % 1.0) - 0.5
+    mine = (slot * g) % 1.0
+    rank = sum(1 for j in range(n) if ((j * g) % 1.0, j) < (mine, slot))
+    return (rank + 0.5) / n - 0.5
+
+
+def convolution_wet(base, density, slot=0, count=None):
     """GROOVEBOX_R23R_MULTIDIM_CONVOLUTION_DEFAULTS_20261103 — the convolution scheme the other two
     synth groups use, for this synth: ``density`` n = 0 … 1 comes from the instrument count (two
     instruments = maximal density, 128 = minimal; n = 0.5 at the scheme midpoint), and each slot is
     spread around it by the golden angle so the ensemble covers the range instead of repeating."""
     n = min(1.0, max(0.0, float(density)))
-    spread = ((int(slot) * 0.6180339887498949) % 1.0) - 0.5            # −0.5 … 0.5, golden-angle spaced
+    spread = equidistant_slot_spread(slot, count)                       # −0.5 … 0.5, equidistant over the ensemble
     ns = min(1.0, max(0.0, n + 0.25 * spread))
     w = dict(base)
     w["patch"] = dict(base.get("patch") or {})
@@ -228,12 +247,12 @@ def convolution_wet(base, density, slot=0):
     return w
 
 
-def convolve_defaults(base, density, convolve, slot=0):
+def convolve_defaults(base, density, convolve, slot=0, count=None):
     """(1 − c) · preset + c · convolution density, number by number (c = Global Convolve)."""
     c = min(1.0, max(0.0, float(convolve)))
     if c <= 0.0:
         return base
-    wet = convolution_wet(base, density, slot)
+    wet = convolution_wet(base, density, slot, count)
     out = dict(base)
     out["patch"] = dict(base.get("patch") or {})
     for k in ("res_mix", "res_q", "block_ms", "restitution", "gravity", "rot_hz", "lo", "hi"):
@@ -248,7 +267,7 @@ def convolve_defaults(base, density, convolve, slot=0):
 
 
 def _canonical_params_uncached(seed_int, slot, engines=(), density=0.5, convolve=0.0,
-                               seed_reach=1.0, named_overrides=None, divergence=0.0):
+                               seed_reach=1.0, named_overrides=None, divergence=0.0, count=None):
     """Build a deterministic per-slot canonical programme.
 
     ``seed_reach`` controls how far seed-derived numeric values travel from
@@ -343,7 +362,7 @@ def _canonical_params_uncached(seed_int, slot, engines=(), density=0.5, convolve
     p["_canonical_xmod_bindings"] = canonical_xmod_bindings(eng)
     p["xmod_bindings"] = list(p["_canonical_xmod_bindings"])
     p["xmod_canonical_enabled"] = True
-    p = convolve_defaults(p, density, convolve, slot)
+    p = convolve_defaults(p, density, convolve, slot, count)
 
     # Explicit named overrides are applied after convolve so named values remain
     # authoritative. Only existing numeric synth controls are accepted.
@@ -384,26 +403,26 @@ _CANONICAL_PARAMS_CACHE_LOCK = _threading.RLock()
 _CANONICAL_PARAMS_CACHE_LIMIT = 96
 
 def canonical_params(seed_int, slot, engines=(), density=0.5, convolve=0.0,
-                     seed_reach=1.0, named_overrides=None, divergence=0.0):
+                     seed_reach=1.0, named_overrides=None, divergence=0.0, count=None):
     try:
         engine_key = tuple(sorted({str(e).lower() for e in (engines or ())}))
         override_blob = _json.dumps(named_overrides if isinstance(named_overrides, dict) else {},
                                     sort_keys=True, separators=(",", ":"),
                                     ensure_ascii=True, allow_nan=False)
         key = (int(seed_int), int(slot), engine_key, float(density), float(convolve),
-               float(seed_reach), float(divergence), override_blob)
+               float(seed_reach), float(divergence), override_blob, None if count is None else int(count))
     except (TypeError, ValueError, OverflowError):
         # Preserve permissive behavior for odd legacy callers; simply bypass
         # caching when an input cannot be represented canonically.
         return _canonical_params_uncached(seed_int, slot, engines, density, convolve,
-                                           seed_reach, named_overrides, divergence)
+                                           seed_reach, named_overrides, divergence, count)
     with _CANONICAL_PARAMS_CACHE_LOCK:
         cached = _CANONICAL_PARAMS_CACHE.get(key)
         if cached is not None:
             _CANONICAL_PARAMS_CACHE.move_to_end(key)
             return _copy.deepcopy(cached)
     result = _canonical_params_uncached(seed_int, slot, engine_key, density, convolve,
-                                        seed_reach, named_overrides, divergence)
+                                        seed_reach, named_overrides, divergence, count)
     with _CANONICAL_PARAMS_CACHE_LOCK:
         _CANONICAL_PARAMS_CACHE[key] = _copy.deepcopy(result)
         _CANONICAL_PARAMS_CACHE.move_to_end(key)

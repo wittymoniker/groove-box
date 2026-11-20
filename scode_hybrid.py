@@ -18,9 +18,6 @@ import numpy as np
 
 _CACHE = OrderedDict()
 _CACHE_MAX = 256
-_CACHE_BYTES_MAX = 64 * 1024 * 1024
-_CACHE_BYTES = 0
-_JULIA_OK = None
 
 
 def fingerprint(seed, script: str = "") -> str:
@@ -49,22 +46,14 @@ def control_vector(seed, t: float, script: str = "", env_fn=None) -> dict:
     return {"freq": freq, "amp": amp, "phase": phase, "meum": meum, "raw": vals[:4]}
 
 
-def _julia_parity(vec: dict) -> bool:
-    """Julia is allowed only if one operator matches the Python reference."""
-    global _JULIA_OK
-    if _JULIA_OK is not None:
-        return _JULIA_OK
+def _julia_parity(vec: dict | None = None) -> bool:
+    """True when the router has a Julia kernel that matched the NumPy reference (R123: the old check compared the
+    Meum-normalized eqr_isn with a plain sine, so a working Julia could never pass)."""
     try:
-        import julia_bridge as jb
-        if not jb.julia_available():
-            _JULIA_OK = False
-            return False
-        py = float(np.sin(vec["phase"]))
-        jl = jb.jl_eqr_isn(vec["phase"])
-        _JULIA_OK = jl is not None and abs(float(jl) - py) < 1e-6
+        import hybrid_runtime as hr
+        return hr.kernel_matrix().get("osc_fill", {}).get("julia", "unavailable") != "unavailable"
     except Exception:
-        _JULIA_OK = False
-    return _JULIA_OK
+        return False
 
 
 def fill_block(vec: dict, n: int, sr: int = 48000) -> np.ndarray:
@@ -72,18 +61,9 @@ def fill_block(vec: dict, n: int, sr: int = 48000) -> np.ndarray:
     n = max(1, int(n))
     sr = max(1, int(sr))
     phase = (vec["phase"] + np.arange(n) * vec["freq"] / sr) % (2 * np.pi)
-    try:
-        import groovebox as g
-        fn = getattr(g, "_GB_ACCEL_FUNCS", {}).get("voice")
-        if fn is not None:
-            out = np.zeros(n, dtype=np.float32)
-            ph = phase.astype(np.float64)
-            fn(ph.ctypes.data_as(__import__("ctypes").POINTER(__import__("ctypes").c_double)),
-               n, float(vec["meum"]), 1.0, 0.0, 0.0, 1, 1, 0, 0, 0.2,
-               1, 0, 1.0, 1.0, out.ctypes.data_as(__import__("ctypes").POINTER(__import__("ctypes").c_float)))
-            return out * float(vec["amp"])
-    except Exception:
-        pass
+    # R123: the unchecked native voice path is gone — it produced a different waveform than the NumPy fallback, so
+    # the same seed sounded different on machines with and without the accel library. Every backend (Rust, C++, C,
+    # Go, LuaJIT, Julia) now goes through the router, which only uses one that matches the reference.
     try:   # R99: the hybrid router picks NumPy / LuaJIT / Julia for this fill, parity-checked against NumPy
         import hybrid_runtime as hr
         return hr.run("osc_fill", float(vec["phase"]), float(vec["freq"]), n, sr, float(vec["amp"]), float(vec["meum"]))
@@ -97,30 +77,19 @@ def pool_block(seed, instrument: str, block: int, t: float, n: int, sr: int = 48
     """Return (vector, buffer), using the identity cache."""
     fp = fingerprint(seed, script)
     key = (fp, str(instrument), int(block))
-    global _CACHE_BYTES
     hit = _CACHE.get(key)
     if hit is not None:
         _CACHE.move_to_end(key)
-        vec, cached_buf = hit
-        if cached_buf.shape == (max(1, int(n)),):
-            return dict(vec), cached_buf.copy()
+        return hit, fill_block(hit, n, sr)
     vec = control_vector(seed, t, script, env_fn)
     buf = fill_block(vec, n, sr)
-    frozen = np.ascontiguousarray(buf, dtype=np.float32).copy()
-    previous = _CACHE.pop(key, None)
-    if previous is not None and isinstance(previous, tuple) and len(previous) == 2 and isinstance(previous[1], np.ndarray):
-        _CACHE_BYTES = max(0, _CACHE_BYTES - previous[1].nbytes)
-    _CACHE[key] = (dict(vec), frozen)
-    _CACHE_BYTES += frozen.nbytes
-    while len(_CACHE) > _CACHE_MAX or _CACHE_BYTES > _CACHE_BYTES_MAX:
-        _old_key, old = _CACHE.popitem(last=False)
-        if isinstance(old, tuple) and len(old) == 2 and isinstance(old[1], np.ndarray):
-            _CACHE_BYTES = max(0, _CACHE_BYTES - old[1].nbytes)
+    _CACHE[key] = vec
+    while len(_CACHE) > _CACHE_MAX:
+        _CACHE.popitem(last=False)
     return vec, buf
 
 
 def visual_vector(seed, instrument: str, block: int):
     """What the visual pool should read. None if the audio block is not cached yet."""
     fp = fingerprint(seed, "")
-    item = _CACHE.get((fp, str(instrument), int(block)))
-    return dict(item[0]) if item else None
+    return _CACHE.get((fp, str(instrument), int(block)))

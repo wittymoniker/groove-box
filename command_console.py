@@ -28,9 +28,10 @@ except Exception:  # headless
 _COMMANDS: Dict[str, Callable[..., str]] = {}
 
 
-def command(name: str, help: str = ""):
+def command(name: str, help: str = "", slow: bool = False):
     def deco(fn):
         fn._help = help
+        fn._slow = bool(slow)   # R123: slow commands run off the GUI thread
         _COMMANDS[name] = fn
         return fn
     return deco
@@ -346,13 +347,129 @@ def _cmd_exports(app=None, **_kw):
         return f"export scheduler unavailable: {exc}"
 
 
-@command("threads", "show adaptive worker and scheduler budgets")
+@command("threads", "worker pools, lanes, one-shot jobs and live thread count")
 def _cmd_threads(app=None, **_kw):
     try:
+        import threading
         import thread_budget as tb
-        return f"lane_workers={tb.lane_workers()}\nscheduler_budget={tb.scheduler_budget()}"
+        lines = [f"usable_cores={tb.usable_cores()}  lane_workers={tb.lane_workers()}  bulk={tb.bulk_workers()}  "
+                 f"interactive={tb.interactive_workers()}  engine={tb.engine_workers()}",
+                 f"scheduler_budget={tb.scheduler_budget()}",
+                 f"oneshot={tb.oneshot_report()}"]
+        try:
+            rep = tb.lane_report(limit=12) or {}
+            for row in (rep.get("lanes") or []) if isinstance(rep, dict) else rep:
+                lines.append(f"  lane {row}")
+            if isinstance(rep, dict):
+                lines.append(f"  running={rep.get('running')}  forecast={rep.get('forecast')}")
+        except Exception:
+            pass
+        names = {}
+        for t in threading.enumerate():
+            fam = t.name.split("-")[0] if t.name.startswith("groovebox") else t.name.rstrip("0123456789-_ ")
+            names[fam] = names.get(fam, 0) + 1
+        lines.append(f"live threads={threading.active_count()}: " + ", ".join(f"{k}×{v}" for k, v in sorted(names.items(), key=lambda kv: -kv[1])[:20]))
+        return "\n".join(lines)
     except Exception as exc:
         return f"thread budget unavailable: {exc}"
+
+
+@command("abi", "native C++ runtime selection (Julia / Mesa / Z3 CXXABI)")
+def _cmd_abi(app=None, **_kw):
+    try:
+        import json
+        import native_abi_guard as g
+        rep = g.report()
+        rep["loaded"] = g.loaded_runtimes()
+        return json.dumps(rep, indent=1, default=str)
+    except Exception as exc:
+        return f"abi guard unavailable: {exc}"
+
+
+@command("toolchains", "compilers/runtimes for Program Builder; Go GOROOT + telemetry state", slow=True)
+def _cmd_toolchains(app=None, **_kw):
+    try:
+        import json
+        import program_builder, toolchain_env
+        return json.dumps({"available": program_builder.toolchains(), "env": toolchain_env.describe()}, indent=1, default=str)
+    except Exception as exc:
+        return f"toolchains unavailable: {exc}"
+
+
+@command("env", "low-level environment that shapes rendering, audio and threads")
+def _cmd_env(app=None, **_kw):
+    keys = ("QT_QPA_PLATFORM", "QT_SCALE_FACTOR", "WAYLAND_DISPLAY", "DISPLAY", "XDG_SESSION_TYPE", "PULSE_SERVER",
+            "PIPEWIRE_LATENCY", "LD_PRELOAD", "LD_LIBRARY_PATH", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+            "PYTHON_JULIACALL_LIB", "JULIA_NUM_THREADS", "JULIA_DEPOT_PATH", "GROOVEBOX_DATA_DIR", "LIBGL_ALWAYS_SOFTWARE",
+            "MESA_LOADER_DRIVER_OVERRIDE", "GOROOT", "GOTOOLCHAIN")
+    return "\n".join(f"{k}={os.environ.get(k, '')}" for k in keys)
+
+
+@command("doctor", "self-diagnostics: ABI, toolchains, Task Bar entry points, Qt platform", slow=True)
+def _cmd_doctor(app=None, **_kw):
+    out = []
+    def chk(label, fn):
+        try:
+            ok, msg = fn()
+        except Exception as exc:
+            ok, msg = False, f"{type(exc).__name__}: {exc}"
+        out.append(f"[{'ok' if ok else '!!'}] {label}: {msg}")
+    def _abi():
+        import native_abi_guard as g
+        r = g.report(); loaded = g.loaded_runtimes()
+        libs = [p for p in loaded if "libstdc++" in p]
+        return len(set(os.path.realpath(p) for p in libs)) <= 1, f"libstdc++ mapped={libs or 'none yet'}"
+    def _go():
+        import toolchain_env, shutil
+        if not shutil.which("go"):
+            return True, "Go not installed (optional)"
+        return toolchain_env.go_env() is not None, f"GOROOT={toolchain_env.go_root()}"
+    def _julia():
+        import shutil
+        j = shutil.which("julia")
+        return True, (j or "Julia not on PATH (optional; Program Builder .jl disabled)")
+    def _taskbar():
+        import taskbar_launch
+        bad = [f"{k}: {why}" for k, (ok, why) in taskbar_launch.audit().items() if not ok]
+        return not bad, "all entry points resolve" if not bad else "; ".join(bad)
+    def _qpa():
+        try:
+            from PyQt6.QtGui import QGuiApplication
+            return True, QGuiApplication.platformName() or "(no app)"
+        except Exception as exc:
+            return False, str(exc)
+    chk("C++ runtime", _abi); chk("Go toolchain", _go); chk("Julia", _julia)
+    chk("Task Bar launchers", _taskbar); chk("Qt platform", _qpa)
+    try:
+        import monitor_center
+        for name, ok, detail in monitor_center.engine_self_tests(force=True):
+            out.append(f"[{'ok' if ok else '!!'}] {name}: {detail}")
+    except Exception as exc:
+        out.append(f"[!!] engine self-tests: {exc}")
+    return "\n".join(out)
+
+
+@command("signals", "any-signal → any-context: kinds, converters, contexts, recent sends; 'signals test' runs self-tests")
+def _cmd_signals(app=None, args="", **_kw):
+    import carrier_bridge as cb
+    a = str(args or "").strip().lower()
+    if a.startswith("test"):
+        import monitor_center
+        return "\n".join(f"[{'ok' if ok else '!!'}] {n}: {d}" for n, ok, d in monitor_center.engine_self_tests(force=True))
+    d = cb.describe()
+    lines = ["rule: " + d["rule"], "kinds: " + ", ".join(d["kinds"]), "converters:"]
+    lines += [f"  {k}  ({v})" for k, v in d["converters"].items()]
+    lines.append("contexts:")
+    lines += [f"  {k}: {v}" for k, v in d["contexts"].items()]
+    try:
+        ok, why = cb.seed_only(app) if app is not None else (False, "no app")
+        lines.append(f"guaranteed profile active: {'yes' if ok else 'no'} ({why})")
+    except Exception:
+        pass
+    if d["recent"]:
+        lines.append("recent:")
+        lines += ["  " + str(h)[:160] for h in d["recent"]]
+    return "\n".join(lines)
 
 
 @command("ui", "show active window geometry and screen work area")
@@ -457,7 +574,18 @@ def _run_line(line: str, app=None) -> str:
         return traceback.format_exc()
 
 
+try:
+    from PyQt6.QtCore import QObject, pyqtSignal
+
+    class _ResultBridge(QObject):
+        done = pyqtSignal(str, str)
+except Exception:  # headless
+    _ResultBridge = None
+
+
 class CommandConsole(QWidget):
+    HISTORY_MAX = 200
+
     def __init__(self, app=None, parent=None):
         super().__init__(parent)
         self.app = app
@@ -472,9 +600,15 @@ class CommandConsole(QWidget):
         self.out = QPlainTextEdit()
         self.out.setReadOnly(True)
         self.out.setFont(QFont("monospace", 10))
+        self.out.setMaximumBlockCount(5000)   # R123: bounded scrollback
         self.inp = QLineEdit()
-        self.inp.setPlaceholderText("help · status · canonicals · project · seed · goava · fractal · runtime · exports · :app.spin_bpm.value()")
+        self.inp.setPlaceholderText("help · doctor · threads · abi · toolchains · env · status · :app.spin_bpm.value()   (↑/↓ history, Tab completes)")
         self.inp.returnPressed.connect(self._submit)
+        self.inp.installEventFilter(self)
+        self._history, self._hpos = [], 0
+        self._bridge = _ResultBridge() if _ResultBridge else None
+        if self._bridge is not None:
+            self._bridge.done.connect(self._finish)
         row = QHBoxLayout()
         go = QPushButton("Run")
         go.clicked.connect(self._submit)
@@ -483,10 +617,32 @@ class CommandConsole(QWidget):
         row.addWidget(self.inp, 1)
         row.addWidget(go)
         row.addWidget(clr)
-        lay.addWidget(QLabel("Field console — does not block audio. Type help."))
+        lay.addWidget(QLabel("Field console — never blocks audio; slow commands run in the background. Type help."))
         lay.addWidget(self.out, 1)
         lay.addLayout(row)
         self._println(_run_line("help", app))
+
+    def eventFilter(self, obj, ev):
+        try:
+            from PyQt6.QtCore import QEvent
+            if obj is self.inp and ev.type() == QEvent.Type.KeyPress:
+                k = ev.key()
+                if k == Qt.Key.Key_Up and self._history:
+                    self._hpos = max(0, self._hpos - 1); self.inp.setText(self._history[self._hpos]); return True
+                if k == Qt.Key.Key_Down and self._history:
+                    self._hpos = min(len(self._history), self._hpos + 1)
+                    self.inp.setText(self._history[self._hpos] if self._hpos < len(self._history) else ""); return True
+                if k == Qt.Key.Key_Tab:
+                    t = self.inp.text().strip().lower()
+                    hits = sorted(c for c in _COMMANDS if c.startswith(t))
+                    if len(hits) == 1:
+                        self.inp.setText(hits[0] + " ")
+                    elif hits:
+                        self._println("  ".join(hits))
+                    return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
 
     def _println(self, text: str):
         self.out.appendPlainText(text.rstrip() + "\n")
@@ -495,8 +651,35 @@ class CommandConsole(QWidget):
     def _submit(self):
         line = self.inp.text()
         self.inp.clear()
+        if line.strip():
+            if not self._history or self._history[-1] != line:
+                self._history.append(line)
+                del self._history[:-self.HISTORY_MAX]
+            self._hpos = len(self._history)
         self._println(f"› {line}")
-        self._println(_run_line(line, self.app))
+        name = (line.strip().split() or [""])[0].lower()
+        fn = _COMMANDS.get(name)
+        if fn is not None and getattr(fn, "_slow", False) and self._bridge is not None:
+            self._println(f"  … {name} running in the background")
+            def work(line=line):
+                self._bridge.done.emit(line, _run_line(line, self.app))
+            try:
+                import thread_budget
+                thread_budget.spawn("console-" + name, work)
+            except Exception:
+                import threading
+                threading.Thread(target=work, name="console-" + name, daemon=True).start()
+            return
+        self._finish(line, _run_line(line, self.app))
+
+    def _finish(self, line, result):
+        self._println(result)
+        try:
+            controller = getattr(self.app, "_live_composition_controller", None)
+            if controller is not None:
+                controller.ingest_console_command(line, result, success=not str(result).startswith(("usage error", "unknown command", "Traceback")))
+        except Exception:
+            pass
 
 
 def open_window(app=None):

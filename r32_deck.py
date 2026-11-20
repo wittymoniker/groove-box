@@ -600,6 +600,7 @@ def place(app, side="top"):
     except Exception:
         pass
     app._r32_deck_side = side
+    QTimer.singleShot(0, lambda: _recolor(app))
     if side in ("top", "bottom"):
         sc.setMaximumWidth(16777215)
         into_splitter(app, at_end=(side == "bottom"))
@@ -647,6 +648,16 @@ def apply_pane_minimums(app):
             w.setMaximumHeight(16777215)
 
 
+def _recolor(app):
+    """GROOVEBOX_R123_ALL_PANES_TINT_20261119: the deck takes the workspace pane colour wherever it sits."""
+    fn = getattr(app, "_reapply_workspace_pane_color", None)
+    if callable(fn):
+        try:
+            fn()
+        except Exception as exc:
+            print(f"[deck] pane colour: {exc}")
+
+
 def into_splitter(app, at_end=False):
     sp = getattr(app, "render_splitter", None); sc = getattr(app, "_r32_deck_scroll", None)
     dock = getattr(app, "_r32_deck", None)
@@ -677,6 +688,7 @@ def into_splitter(app, at_end=False):
     for i in range(sp.count()):
         sp.setCollapsible(i, False)
     apply_pane_minimums(app)
+    _recolor(app)
     try:
         sizes = sp.sizes(); total = sum(sizes) or 1200
         deck = max(sc.minimumHeight(), 200)

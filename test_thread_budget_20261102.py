@@ -26,23 +26,36 @@ def _with_env(**kw):
                 os.environ[k] = v
 
 
-def test_override_wins():
+# GROOVEBOX_R123_THREAD_BUDGET_TESTS_20261119: realigned with the current policy in
+# thread_budget.py (overrides are clamped to real capacity; laptops/tablets keep one CPU for
+# the UI + audio callback; math width cap 8, tablets 4; shared lanes keep one CPU, two on 3 cores).
+def test_override_wins(monkeypatch):
+    monkeypatch.setattr(tb, "usable_cores", lambda: 8)
     assert _with_env(GROOVEBOX_THREADS="3") == 3
+    monkeypatch.setattr(tb, "usable_cores", lambda: 2)
+    assert _with_env(GROOVEBOX_THREADS="3") == 2          # never more than the machine has
 
 
 def test_maths_never_exceeds_the_usable_cpu_budget(monkeypatch):
+    import compat_settings as cs
     monkeypatch.delenv("GROOVEBOX_THREADS", raising=False)
-    for cores, want in ((1, 1), (2, 2), (4, 4), (8, 6), (64, 6)):   # R30: math width capped at 6
-        monkeypatch.setattr(tb, "usable_cores", lambda c=cores: c)
-        assert tb.compute_threads() == want, (cores, want)
+    table = {"laptop": ((1, 1), (2, 2), (4, 3), (8, 7), (64, 8)),
+             "tablet": ((1, 1), (2, 2), (4, 3), (8, 4)),
+             "desktop": ((1, 1), (4, 4), (8, 8), (64, 8))}
+    for kind, rows in table.items():
+        monkeypatch.setattr(cs, "hardware_class", lambda k=kind: k)
+        for cores, want in rows:
+            monkeypatch.setattr(tb, "usable_cores", lambda c=cores: c)
+            assert tb.compute_threads() == want, (kind, cores, want)
 
 
 def test_shared_lane_leaves_one_cpu_for_ui_and_audio(monkeypatch):
     monkeypatch.delenv("GROOVEBOX_WORKERS", raising=False)
     monkeypatch.setattr(tb, "_memory_headroom_cap", lambda n: n)   # RAM headroom is machine-specific
-    for cores, want in ((1, 1), (2, 1), (4, 2), (8, tb._MAX_SHARED_WORKERS), (64, tb._MAX_SHARED_WORKERS)):   # R30: one CPU for UI/audio, one for the OS
+    for cores, want in ((1, 1), (2, 1), (3, 1), (4, 3), (8, tb._MAX_SHARED_WORKERS), (64, tb._MAX_SHARED_WORKERS)):
         monkeypatch.setattr(tb, "usable_cores", lambda c=cores: c)
         assert tb.lane_workers() == want, (cores, want)
+        assert tb.lane_workers() < max(2, cores)
 
 
 def test_apply_respects_existing_environment():

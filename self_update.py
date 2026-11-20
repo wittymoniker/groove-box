@@ -44,7 +44,10 @@ MARKERS = ("groovebox.py", "run_groovebox.py", "compat_settings.py")
 CORE_IMPORTS = ("compat_settings", "thread_budget", "groovebox_paths", "operation_station_transfer", "self_update")
 SKIP_DIRS = {"__pycache__", ".git", ".pytest_cache", ".venv", "venv", "node_modules", "exports", "renders",
              "projects", "samples", "modules", "user_data"}
-ARCHIVE_RE = re.compile(r"^(MATH_GROOVEBOX|MATGROOVEBOX|MathematiciansGroovebox).*\.(zip|tar\.gz|tgz)$", re.I)
+# R123: MATH-GROOVEBOX / MATH_GROOVEBOX / "Math Groovebox" … (hyphen, underscore or space)
+ARCHIVE_RE = re.compile(r"^(MATH[-_ ]?GROOVEBOX|MATGROOVEBOX|Mathematicians[-_ ]?Groovebox).*\.(zip|tar\.gz|tgz)$", re.I)
+SIMILARITY_MIN = 0.75          # below this the source is treated as possibly not Groovebox (extra warnings)
+SOURCE_SUFFIXES = (".py", ".sh", ".md", ".txt", ".json", ".toml", ".cfg", ".ini", ".jl", ".lua", ".go", ".c", ".h")
 KEEP_ROLLBACKS = 3
 Progress = Optional[Callable[[str, int, int], None]]
 
@@ -140,6 +143,17 @@ def find_update_sources(extra_roots=(), depth: int = 3) -> List[Dict]:
     found: List[Dict] = []; seen = set()
     for r in list(extra_roots) + removable_roots():
         root = Path(r)
+        if root.is_file() and str(r) in [str(x) for x in extra_roots]:
+            # R123: a file the user picked explicitly is accepted by type, not by name; its contents are
+            # checked during staging (_find_root + basic tests + authenticity).
+            n = root.name.lower()
+            kind = ("clone" if n.endswith(".mgbclone.zip") else
+                    "archive" if n.endswith((".zip", ".tar.gz", ".tgz")) else None)
+            if kind and os.path.realpath(root) not in seen:
+                seen.add(os.path.realpath(root)); st = root.stat()
+                found.append({"path": str(root), "kind": kind, "mtime": st.st_mtime, "size": st.st_size,
+                              "version": root.name, "drive": str(root.parent)})
+            continue
         if not root.is_dir():
             continue
         cands = [root] + list(_walk_limited(root, depth))
@@ -238,7 +252,36 @@ def _find_root(d: Path) -> Optional[Path]:
     return None
 
 
-def _check_signature(path: Path) -> None:
+def signature_state(path: Path) -> Dict:
+    """GROOVEBOX_R123_UNSIGNED_SOURCE_UPDATE_20261119: {'state': no-key|valid|unsigned|invalid, 'message'}.
+
+    A present-but-wrong signature is always refused (it means the file was altered after signing).
+    A missing signature with a trusted key installed is allowed only through the PIN-confirmed path."""
+    keys = [Path("/etc/groovebox/update-signing.pub"), Path("/var/lib/groovebox-system/update-signing.pub")]
+    if not any(k.is_file() and k.stat().st_size for k in keys):
+        return {"state": "no-key", "message": "no update key installed"}
+    if not Path(str(path) + ".sig").is_file():
+        return {"state": "unsigned", "message": "no .sig beside the archive"}
+    ver = APP_ROOT / "update_signing.py"
+    try:
+        r = subprocess.run([sys.executable, str(ver), "verify", str(path)], capture_output=True, text=True, timeout=120)
+    except Exception as exc:
+        return {"state": "invalid", "message": f"signature check failed to run: {exc}"}
+    msg = (r.stdout + r.stderr).strip()[-300:]
+    return {"state": "valid" if r.returncode == 0 else "invalid", "message": msg}
+
+
+def _check_signature(path: Path, allow_unsigned: bool = False) -> Dict:
+    st = signature_state(path)
+    if st["state"] == "invalid":
+        raise PermissionError("update signature refused: " + st["message"])
+    if st["state"] == "unsigned" and not allow_unsigned:
+        raise PermissionError("update is unsigned and a trusted update key is installed — confirm with your PIN "
+                              "in System ▸ Update to install an unsigned source archive")
+    return st
+
+
+def _legacy_check_signature(path: Path) -> None:
     """With a trusted key installed only signed archives are accepted (same rule as pre-boot)."""
     keys = [Path("/etc/groovebox/update-signing.pub"), Path("/var/lib/groovebox-system/update-signing.pub")]
     if not any(k.is_file() and k.stat().st_size for k in keys):
@@ -249,9 +292,10 @@ def _check_signature(path: Path) -> None:
         raise PermissionError("update signature refused: " + (r.stdout + r.stderr).strip()[-300:])
 
 
-def stage(source, progress: Progress = None) -> Path:
+def stage(source, progress: Progress = None, allow_unsigned: bool = False) -> Path:
     """Copy / unpack the source into updates/staging-<ts>/ and return the Groovebox root in it."""
     src = Path(source["path"] if isinstance(source, dict) else source)
+    sig = {"state": "n/a", "message": "folder / clone bundle"}
     base = updates_dir() / ("staging-" + time.strftime("%Y%m%d-%H%M%S"))
     if base.exists():
         shutil.rmtree(base, ignore_errors=True)
@@ -269,16 +313,16 @@ def stage(source, progress: Progress = None) -> Path:
             raise ValueError("clone bundle checksum failed: " + ", ".join(r.get("bad", [])[:3]))
         _extract_zip(src, base / "tree", progress, prefix="payload/")
     elif name.endswith(".zip"):
-        _check_signature(src); _extract_zip(src, base / "tree", progress)
+        sig = _check_signature(src, allow_unsigned); _extract_zip(src, base / "tree", progress)
     elif name.endswith((".tar.gz", ".tgz")):
-        _check_signature(src); _extract_tar(src, base / "tree", progress)
+        sig = _check_signature(src, allow_unsigned); _extract_tar(src, base / "tree", progress)
     else:
         raise ValueError(f"unsupported update source: {src}")
     root = _find_root(base / "tree")
     if root is None:
         shutil.rmtree(base, ignore_errors=True)
         raise ValueError("no Groovebox (groovebox.py + run_groovebox.py + compat_settings.py) inside " + str(src))
-    __import__("safe_io").atomic_write_text(base / "SOURCE.json", json.dumps({"source": str(src), "root": str(root), "time": time.time()}), encoding="utf-8")
+    __import__("safe_io").atomic_write_text(base / "SOURCE.json", json.dumps({"source": str(src), "root": str(root), "time": time.time(), "signature": sig}), encoding="utf-8")
     return root
 
 
@@ -309,6 +353,142 @@ def verify_staged(root: Path, timeout: float = 600.0) -> Dict:
         problems.append((r.stderr or "verifier crashed").strip()[-300:])
     return {"ok": r.returncode == 0 and not problems, "problems": problems[:40], "files": len(py),
             "version": version_of_tree(root), "fingerprint": fingerprint(root)}
+
+
+# --------------------------------------------------------------------------- authenticity
+def _source_files(root: Path) -> Dict[str, Path]:
+    out = {}
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
+                             and not d.startswith("app-overlay"))
+        for f in filenames:
+            if f.lower().endswith(SOURCE_SUFFIXES):
+                p = Path(dirpath) / f
+                out[p.relative_to(root).as_posix()] = p
+    return out
+
+
+def _line_set(p: Path, cap: int = 4 << 20) -> set:
+    try:
+        data = p.read_bytes()[:cap]
+    except OSError:
+        return set()
+    return {hashlib.blake2s(ln.strip(), digest_size=8).digest() for ln in data.splitlines() if ln.strip()}
+
+
+def similarity(new_root: Path, app_root: Path = APP_ROOT) -> Dict:
+    """How much the candidate looks like this Groovebox (0 … 1).
+
+    score = 0.4 · path overlap (Jaccard of source file paths)
+          + 0.6 · content overlap (size-weighted Jaccard of distinct lines of the shared files;
+                  identical files count 1 without reading them twice)."""
+    a, b = _source_files(app_root), _source_files(new_root)
+    if not a or not b:
+        return {"score": 0.0, "paths": 0.0, "content": 0.0, "shared": 0, "only_new": len(b), "only_current": len(a)}
+    shared = sorted(set(a) & set(b))
+    paths = len(shared) / max(1, len(set(a) | set(b)))
+    wsum = csum = 0.0
+    for rel in shared:
+        pa, pb = a[rel], b[rel]
+        try:
+            w = float(max(pa.stat().st_size, pb.stat().st_size, 1))
+            if pa.stat().st_size == pb.stat().st_size and pa.read_bytes() == pb.read_bytes():
+                c = 1.0
+            else:
+                la, lb = _line_set(pa), _line_set(pb)
+                c = len(la & lb) / max(1, len(la | lb))
+        except OSError:
+            continue
+        wsum += w; csum += w * c
+    content = csum / wsum if wsum else 0.0
+    # Files only in one tree dilute the content score in proportion to their share of the paths.
+    content *= paths ** 0.25
+    score = 0.4 * paths + 0.6 * content
+    return {"score": round(score, 4), "paths": round(paths, 4), "content": round(content, 4), "shared": len(shared),
+            "only_new": len(set(b) - set(a)), "only_current": len(set(a) - set(b))}
+
+
+NATIVE_SUFFIXES = (".so", ".dll", ".dylib", ".exe", ".bin", ".elf", ".ko", ".efi")
+
+
+def authenticity(root: Path, app_root: Path = APP_ROOT, signature: Optional[Dict] = None) -> Dict:
+    """Basic authenticity tests. Never blocks by itself: the UI shows the warnings and asks."""
+    root = Path(root); warnings: List[str] = []; checks: List[str] = []
+    sim = similarity(root, app_root)
+    if sim["score"] >= SIMILARITY_MIN:
+        checks.append(f"similar to this Groovebox: {sim['score']:.0%} (≥ {SIMILARITY_MIN:.0%})")
+    else:
+        warnings.append(f"only {sim['score']:.0%} similar to this Groovebox source (expected ≥ {SIMILARITY_MIN:.0%}): "
+                        f"{sim['shared']} shared files, {sim['only_new']} new, {sim['only_current']} would remain only here")
+    if (root / "CURRENT-RELEASE.txt").is_file():
+        checks.append("release header: " + version_of_tree(root))
+    else:
+        warnings.append("no CURRENT-RELEASE.txt (unknown version)")
+    links, natives, big = [], [], []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for f in filenames:
+            p = Path(dirpath) / f
+            rel = p.relative_to(root).as_posix()
+            try:
+                if p.is_symlink():
+                    links.append(rel); continue
+                if f.lower().endswith(NATIVE_SUFFIXES) and not rel.startswith(("BUILD_ISO/", "bin/", "native/")):
+                    natives.append(rel)
+                if p.stat().st_size > (128 << 20):
+                    big.append(rel)
+            except OSError:
+                pass
+    if links:
+        warnings.append(f"{len(links)} symbolic link(s) (not installed): " + ", ".join(links[:3]))
+    if natives:
+        warnings.append(f"{len(natives)} native program/library file(s) outside BUILD_ISO/bin: " + ", ".join(natives[:4]))
+    if big:
+        warnings.append(f"{len(big)} file(s) over 128 MB: " + ", ".join(big[:3]))
+    sig = signature or {}
+    if sig.get("state") == "unsigned":
+        warnings.append("unsigned archive while an update key is installed (allowed with your PIN)")
+    elif sig.get("state") == "valid":
+        checks.append("signature valid")
+    return {"ok": not warnings, "similarity": sim, "checks": checks, "warnings": warnings,
+            "severity": "high" if sim["score"] < 0.40 else ("medium" if warnings else "none")}
+
+
+def prepare(source, progress: Progress = None, allow_unsigned: bool = False, app_root: Path = APP_ROOT) -> Dict:
+    """Stage → basic tests → authenticity report. Nothing is installed. Staging is kept for install()."""
+    root = stage(source, progress, allow_unsigned=allow_unsigned)
+    try:
+        base = updates_dir() / Path(root).resolve().relative_to(updates_dir().resolve()).parts[0]
+        meta = json.loads((base / "SOURCE.json").read_text("utf-8"))
+    except Exception:
+        meta = {}
+    _say(progress, "basic tests", 0, 1)
+    v = verify_staged(root)
+    _say(progress, "authenticity", 0, 1)
+    a = authenticity(root, app_root, meta.get("signature"))
+    return {"ok": bool(v["ok"]), "root": str(root), "verify": v, "authenticity": a, "version": v["version"],
+            "problems": v["problems"], "signature": meta.get("signature", {})}
+
+
+def discard_staged() -> None:
+    for p in updates_dir().glob("staging-*"):
+        shutil.rmtree(p, ignore_errors=True)
+
+
+def install(prepared: Dict, progress: Progress = None, native: bool = True, app_root: Path = APP_ROOT) -> Dict:
+    """Install a prepare()d tree whose basic tests passed (warnings were confirmed by the user)."""
+    try:
+        if not prepared.get("ok"):
+            return {"ok": False, "stage": "verify", "problems": prepared.get("problems", []), "version": prepared.get("version")}
+        root = Path(prepared["root"])
+        res = apply(root, app_root, progress)
+        res["rebuild"] = rebuild(app_root, progress, native=native)
+        res.update(ok=True, verified_files=prepared["verify"]["files"], fingerprint=prepared["verify"]["fingerprint"],
+                   similarity=prepared["authenticity"]["similarity"]["score"])
+        return res
+    finally:
+        discard_staged()
 
 
 # --------------------------------------------------------------------------- apply / rollback
@@ -432,20 +612,17 @@ def rebuild(app_root: Path = APP_ROOT, progress: Progress = None, native: bool =
     return {"steps": steps}
 
 
-def update_from(source, progress: Progress = None, native: bool = True, app_root: Path = APP_ROOT) -> Dict:
-    root = stage(source, progress)
+def update_from(source, progress: Progress = None, native: bool = True, app_root: Path = APP_ROOT,
+                allow_unsigned: bool = False, accept_warnings: bool = False) -> Dict:
+    """Non-interactive path (CLI / scripts): refuses authenticity warnings unless accept_warnings."""
     try:
-        _say(progress, "verifying", 0, 1)
-        v = verify_staged(root)
-        if not v["ok"]:
-            return {"ok": False, "stage": "verify", "problems": v["problems"], "version": v["version"]}
-        res = apply(root, app_root, progress)
-        res["rebuild"] = rebuild(app_root, progress, native=native)
-        res.update(ok=True, verified_files=v["files"], fingerprint=v["fingerprint"])
-        return res
-    finally:
-        for p in updates_dir().glob("staging-*"):
-            shutil.rmtree(p, ignore_errors=True)
+        prep = prepare(source, progress, allow_unsigned=allow_unsigned, app_root=app_root)
+    except BaseException:
+        discard_staged(); raise
+    if prep["ok"] and prep["authenticity"]["warnings"] and not accept_warnings:
+        discard_staged()
+        return {"ok": False, "stage": "authenticity", "problems": prep["authenticity"]["warnings"], "version": prep["version"]}
+    return install(prep, progress, native=native, app_root=app_root)
 
 
 def restart_command() -> List[str]:

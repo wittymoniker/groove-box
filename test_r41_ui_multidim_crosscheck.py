@@ -90,7 +90,9 @@ def test_global_dj_and_patcher_are_mounted_once_in_color_matched_top_suites():
 
 def test_vector_rail_precedes_bouncing_ball():
     app = _class_src(GROOVE, "MathematiciansGrooveboxApp")
-    assert app.index("_arc_host.add_left_widget(self.master_vector_group)") < app.index("_arc_host.add_left_widget(self.ball_synth_group)")
+    # R123: the geometrics have their own row (Vector | Wavetable projector | Ball | Cellular).
+    row = app[app.index("geometrics_row = QHBoxLayout()"):app.index("master_container.addLayout(geometrics_row)")]
+    assert row.index("self.master_vector_group") < row.index("self.ball_synth_group")
 
 
 def test_multidim_engine_is_the_panel_geometry_third_leg_with_canonical_effects():

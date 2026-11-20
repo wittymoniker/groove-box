@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import time
+from functools import lru_cache
 
 import numpy as np
 
@@ -74,6 +75,7 @@ _HEX = re.compile(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
 _RGB = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(,\s*[\d.]+\s*)?\)")
 
 
+@lru_cache(maxsize=4096)
 def transform_stylesheet(ss, scheme):
     if not ss or scheme in (None, "", "normal"):
         return ss
@@ -105,7 +107,12 @@ class _A11y:
     def apply_scheme(self, scheme):
         from PyQt6.QtWidgets import QApplication, QWidget
         qa = QApplication.instance()
-        self.scheme = scheme if scheme in SCHEMES else "normal"
+        scheme = scheme if scheme in SCHEMES else "normal"
+        # Avoid re-walking every widget and re-transforming the global palette
+        # when the user selects the already-active scheme.
+        if scheme == self.scheme and self._orig_palette is not None:
+            return
+        self.scheme = scheme
         if self._orig_palette is None:
             from PyQt6.QtGui import QPalette
             self._orig_palette = QPalette(qa.palette())
@@ -113,9 +120,19 @@ class _A11y:
         o = qa.property("_a11y_orig_ss")
         if o is None:
             o = qa.styleSheet() or ""; qa.setProperty("_a11y_orig_ss", o)
-        qa.setStyleSheet(transform_stylesheet(o, self.scheme) + self._focus_css())
-        for w in qa.allWidgets():
-            self._apply_widget(w)
+        tops = [w for w in qa.topLevelWidgets() if w.isVisible()]
+        for t in tops:
+            t.setUpdatesEnabled(False)            # one repaint at the end instead of one per restyled widget
+        try:
+            qa.setStyleSheet(transform_stylesheet(o, self.scheme) + self._focus_css())
+            for w in qa.allWidgets():
+                self._apply_widget(w)
+        finally:
+            for t in tops:
+                try:
+                    t.setUpdatesEnabled(True)
+                except RuntimeError:
+                    pass
 
     def _palette(self, base):
         from PyQt6.QtGui import QPalette, QColor
@@ -142,7 +159,9 @@ class _A11y:
                 if not o:
                     return
                 w.setProperty("_a11y_orig_ss", o)
-            w.setStyleSheet(transform_stylesheet(o, self.scheme))
+            new = transform_stylesheet(o, self.scheme)
+            if w.styleSheet() != new:
+                w.setStyleSheet(new)
         except RuntimeError:
             pass
 
@@ -285,6 +304,11 @@ def _on_focus(old, new):
 
 # ---------------------------------------------------------------- command palette (no mouse) --
 def command_palette(app):
+    try:  # GROOVEBOX_R124_COMMAND_PALETTE: one palette (menus + buttons + live/heavy keys + windows, shortcuts shown)
+        import command_palette as _cp
+        return _cp.show(app)
+    except Exception:
+        pass
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QApplication,
                                  QAbstractButton)

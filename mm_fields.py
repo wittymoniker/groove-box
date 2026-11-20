@@ -106,7 +106,8 @@ def make_pads(app):
         def __init__(self):
             super().__init__(); self.setMinimumSize(220, 220); self.drag = None
             self.setToolTip("REROUTE FIELD: click adds a pole, drag moves it (angle = direction, distance from centre = "
-                            "intensity), right-click removes, wheel over a pole sets its spin. Rows are the ticks on the rim.")
+                            "intensity), right-click removes, right-drag on a pole sets its spin, right-drag on empty space turns the "
+                            "perspective view, wheel over a pole sets its spin (after a click). Rows are the ticks on the rim.")
 
         def _xy(self, pos):
             c = min(self.width(), self.height()) / 2.0
@@ -119,11 +120,21 @@ def make_pads(app):
                 return best
             return None
 
+        # GROOVEBOX_R123_MODPATH_RIGHT_DRAG_20261119: right-drag drives the other Mod Path features:
+        # on a pole = its spin (vertical), on empty space = the perspective view (az/el).
+        # A right-click without dragging still removes the pole under the cursor.
         def mousePressEvent(self, e):
             k = self._nearest(e.position())
-            if e.button() == Qt.MouseButton.RightButton:
-                if k is not None: s["points"].pop(k)
-            elif k is None:
+            if __import__("touch_compat").right_like(e):
+                self.rdrag = (e.position(), e.position(), k, False)
+                return
+            # touch fallbacks (touch_compat): sticky Alt-drag, or touch-and-hold, = right-drag
+            hold = self._hold()
+            if hold is not None and hold.press(e):
+                self.rdrag = (e.position(), e.position(), k, False)
+                return
+            self._new_pole = k is None
+            if k is None:
                 x, y = self._xy(e.position()); r = math.hypot(x, y)
                 if r > 1: x, y = x / r, y / r
                 s["points"].append([x, y, 0.0]); self.drag = len(s["points"]) - 1
@@ -131,21 +142,65 @@ def make_pads(app):
                 self.drag = k
             self.update()
 
+        def _hold(self):
+            h = getattr(self, "_hold_g", None)
+            if h is None:
+                try:
+                    import touch_compat
+                    def _on_alt(start):
+                        # the press became a hold: undo a just-added pole, then act as a right press
+                        if getattr(self, "_new_pole", False) and self.drag is not None and self.drag < len(s["points"]):
+                            s["points"].pop(self.drag)
+                        self.drag = None
+                        self.rdrag = (start, start, self._nearest(start), False); self.update()
+                    h = self._hold_g = touch_compat.HoldGesture(self, app, _on_alt)
+                except Exception:
+                    h = None
+            return h
+
         def mouseMoveEvent(self, e):
+            if getattr(self, "_hold_g", None) is not None:
+                self._hold_g.move(e)
+            rd = getattr(self, "rdrag", None)
+            if rd is not None:
+                start, last, k, moved = rd
+                d = e.position() - last
+                moved = moved or (e.position() - start).manhattanLength() > 4
+                if moved:
+                    if k is not None and k < len(s["points"]):
+                        p = s["points"][k]
+                        while len(p) < 3: p.append(0.0)
+                        p[2] = round(max(-1.0, min(1.0, p[2] - d.y() * 0.01)), 3)
+                    else:
+                        s["az"] = (float(s["az"]) + d.x() * 0.012) % (2 * math.pi)
+                        s["el"] = max(-1.5, min(1.5, float(s["el"]) - d.y() * 0.012))
+                self.rdrag = (start, e.position(), k, moved); self.update(); return
             if self.drag is not None and self.drag < len(s["points"]):
                 x, y = self._xy(e.position()); r = math.hypot(x, y)
                 if r > 1: x, y = x / r, y / r
                 s["points"][self.drag][:2] = [x, y]; self.update()
 
         def mouseReleaseEvent(self, _e):
-            self.drag = None
+            rd = getattr(self, "rdrag", None)
+            if rd is not None:
+                _start, _last, k, moved = rd
+                if not moved and k is not None and k < len(s["points"]):
+                    s["points"].pop(k)
+                self.rdrag = None; self.update()
+            if getattr(self, "_hold_g", None) is not None:
+                self._hold_g.release()
+            self.drag = None; self._new_pole = False
+
+        def contextMenuEvent(self, e):
+            e.accept()
 
         def wheelEvent(self, e):
             k = self._nearest(e.position())
-            if k is not None:
-                p = s["points"][k]
-                while len(p) < 3: p.append(0.0)
-                p[2] = max(-1.0, min(1.0, p[2] + (0.1 if e.angleDelta().y() > 0 else -0.1))); self.update()
+            if k is None:
+                e.ignore(); return
+            p = s["points"][k]
+            while len(p) < 3: p.append(0.0)
+            p[2] = max(-1.0, min(1.0, p[2] + (0.1 if e.angleDelta().y() > 0 else -0.1))); self.update()
 
         def paintEvent(self, _e):
             q = QPainter(self); q.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -175,19 +230,47 @@ def make_pads(app):
         def __init__(self):
             super().__init__(); self.setMinimumSize(220, 220); self.last = None
             self.setToolTip("PERSPECTIVE FIELD: drag to rotate the view (the complex angle), wheel for the magnitude "
-                            "(+ draws rows facing the view together toward the global mean, − pushes them apart).")
+                            "(+ draws rows facing the view together toward the global mean, − pushes them apart). Right-drag: up/down = "
+                            "magnitude, left/right = rotate all reroute poles.")
 
+        # GROOVEBOX_R123_MODPATH_RIGHT_DRAG_20261119: right-drag drives the other Mod Path features:
+        # vertical = magnitude (+ together / − apart), horizontal = rotate every reroute pole about the centre.
         def mousePressEvent(self, e):
             self.last = e.position()
+            self.right = __import__("touch_compat").right_like(e)
+            if not self.right:
+                try:
+                    import touch_compat
+                    if getattr(self, "_hold_g", None) is None:
+                        self._hold_g = touch_compat.HoldGesture(self, app, lambda _p: setattr(self, "right", True))
+                    if self._hold_g.press(e):
+                        self.right = True
+                except Exception:
+                    pass
 
         def mouseMoveEvent(self, e):
             if self.last is None: return
+            if getattr(self, "_hold_g", None) is not None:
+                self._hold_g.move(e)
             d = e.position() - self.last; self.last = e.position()
+            if getattr(self, "right", False):
+                s["mag"] = round(max(-1.0, min(1.0, float(s["mag"]) - d.y() * 0.005)), 3)
+                ang = d.x() * 0.012
+                if ang:
+                    ca, sa = math.cos(ang), math.sin(ang)
+                    for p in s["points"]:
+                        p[0], p[1] = p[0] * ca - p[1] * sa, p[0] * sa + p[1] * ca
+                self.update(); return
             s["az"] = (float(s["az"]) + d.x() * 0.012) % (2 * math.pi)
             s["el"] = max(-1.5, min(1.5, float(s["el"]) - d.y() * 0.012)); self.update()
 
         def mouseReleaseEvent(self, _e):
-            self.last = None
+            self.last = None; self.right = False
+            if getattr(self, "_hold_g", None) is not None:
+                self._hold_g.release()
+
+        def contextMenuEvent(self, e):
+            e.accept()
 
         def wheelEvent(self, e):
             s["mag"] = round(max(-1.0, min(1.0, float(s["mag"]) + (0.05 if e.angleDelta().y() > 0 else -0.05))), 3); self.update()

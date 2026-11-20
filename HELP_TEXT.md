@@ -1,12 +1,465 @@
-```text
-MATHEMATICIAN'S GROOVEBOX — README / HELP
-=========================================
+# Mathematician's Groovebox — Help
 
-CURRENT BUILD: FEATURES, CONTEXT AND PRACTICAL LIMITS
-----------------------------------------------------
-This supplements the detailed chapters below. It describes the preserved working
-V3 interface and selectively merged features, not the comparison main windows.
-Use the Help search box/Find next button, Enter, or Ctrl+F/Cmd+F to find a topic.
+This file mirrors the in-app Help window (❓ Help) exactly.
+
+```text
+STRONGLY SUPERDIMENSIONAL SYNTHESIZER SIMULATION
+Mathematician's Groovebox — README / HELP
+==========================================
+--------------------------------------------
+WHAT GROOVEBOX IS (THE SHORT VERSION)
+-------------------------------------
+Groovebox uses numerical seeds and editable context to make music, video and
+playable game worlds. Matching seeds and relevant inputs/settings are repeatable
+on supported deterministic paths; live inputs and true-random modes are different.
+
+You type a seed (any number). Groovebox's canonical engines read it and write
+a whole composition: 48 instruments with their own synths, sequences, a
+playlist (the song's arrangement), automation, effects, and a visualizer that
+is drawn from the very same data. Everything you change by hand is kept as
+yours; the engines fill in only what you have not touched.
+
+You can use it three ways, and mix them freely:
+
+  1. Generative — type a seed, press 🎲 Randomize Song, press ▶ PLAY.
+  2. Hands-on — draw waveforms, program steps, paint the playlist, play keys.
+  3. Mathematical — write seed scripts, domain equations and instrument
+     scripts that drive any parameter over musical time.
+
+You never need the math to make music with it.
+
+
+R123 (UNVERIFIED CANDIDATE) — WHAT IS NEW
+------------------------------------------
+  R124 (UNVERIFIED) — Science & Live menu:
+  • Measurement: peak, true peak (4x), RMS, LUFS (BS.1770 gated), phase correlation, centroid, and
+    the same numbers before/after every master-chain stage.
+  • Master chain: one ordered chain eq → dynamics → spatial → limiter → dither; Live (low latency) or
+    Final (look-ahead limiter + TPDF dither) quality. Signal bench: THD, latency, response, DC on
+    known test signals (sine, impulse, log sweep, noise).
+  • Every export writes <file>.stamp.json (code + kernel hashes, seed, parameters, audio hash);
+    Render stamp diff tells you whether two renders are identical and what changed.
+  • Constraint composer (scale / just ratios / density / entropy / range / max leap; deterministic per
+    seed, undoable) · Parameter lineage · Scene pads 1–8 in the LIVE DECK (click recall with morph,
+    Shift+click or right-click store).
+  • Audio-reactive AV scene export (JSON frames) · Game export check (headless run, missing assets).
+  • Connect: MIDI, OSC, audio devices, PipeWire / JACK, files, network, runtimes — each missing item
+    shows its one-line fix. MIDI learn (Ctrl+Alt+L): hold a control, move a knob.
+  • Ctrl+K command palette: every menu action, button, live / heavy key and window, shortcut shown.
+  • Device profiles (auto / desktop / laptop / tablet / small) · Safe mode after a crash (heavy
+    engines off, optional checkpoint restore).
+  Phase 8 (R123):
+  • Layout: the panel synth is a large square on the left half of its row; the instrument strip,
+    the four launcher cards and the other editor modes stretch over the right half. The Markov
+    Resampler sits to the right of the canonical control band and the PERFORM / sequencer /
+    automator trays.
+  • Mouse wheel scrolls the page everywhere (sliders, spin boxes, lists, 3-D views) unless you
+    clicked that control first; a clicked control takes the wheel. Ctrl+wheel always edits.
+  • Mod Path Bay right-drag: routing stage = rotate reroute poles (left/right) + perspective
+    magnitude (up/down); perspective stage = turn the view. Reroute pad: right-drag a pole = spin,
+    right-drag empty space = view; right-click = remove pole. Perspective pad: right-drag up/down =
+    magnitude, left/right = rotate all poles.
+  • Touchscreens: touch-and-hold ½ s then drag = right-drag; "⇄ Alt drag" makes a plain drag a
+    right-drag; one-finger flick scrolls the page.
+  • Tablet mode keyboard (Settings ▸ 📱 Tablet mode keyboard: Auto / On / Off): fixed at the bottom,
+    never disappears. Standard keys, latching Shift/Ctrl/Alt, ☰ Menu (= right-click), ABC and
+    F1–F12 pages, eight custom keys (✎ Keys assigns any standard key sequence). Drag the top bar
+    or use the wheel over it to resize; 🔒 Size locks the size so the wheel passes through.
+  • Live keys (Ctrl+/ shows the sheet): Alt+Space / F8 / Media Play play-pause · Alt+. / Pause /
+    Media Stop PANIC · Alt+Return play sequence · Alt+I / Alt+Shift+I instrument / pattern ·
+    Alt+Left/Right previous / next sequence · Alt+A auto · Alt+L loop · Alt+T tap · Alt+R take ·
+    Alt+Q/W/E cue add / play / pop · Alt+H hold · Alt+Shift+H hold global · Alt+G / Alt+Shift+G
+    random local / global · Alt+P random patch · Alt+F freeze bend · Alt+M Markov · Alt+Up/Down
+    BPM ±1 (Shift ±10) · Alt+1–3 recall state A–C (Shift = store).
+  • Heavy commands (debounced): Ctrl+Shift+E mixdown · Ctrl+Shift+V video · Ctrl+Shift+B all
+    formats · Ctrl+Shift+Q render queue · Ctrl+Shift+R Randomize ALL · Ctrl+Shift+A all automation
+    · Ctrl+Shift+J build hybrid C/Go kernels · Ctrl+Shift+M Smooth mode (CPU relief) ·
+    Ctrl+Shift+H system health.
+  • LIVE DECK (under GLOBAL SEED): a pad for every live key, heavy-command buttons (debounced),
+    CPU / RAM meters, BPM + transport state, which language each sCode kernel runs in now, and the
+    routes landing on the selected instrument.
+  • PANEL SYNTH: a square that fits the screen (left), launchers and modes (right). Its overview is a
+    2×2 grid of the four editors — click one to open it inside the square.
+  • MOD PATH: stays on the ring view's side rails beside the Multidim sphere (Reroute left,
+    Perspective right); no duplicate copy in the panel.
+  • Other devices: macOS Ctrl+click and the stylus eraser count as right-click on the Mod Path
+    surfaces; touchpad pinch resizes the tablet keyboard; small screens start with smaller keys;
+    F8 / media keys mirror play and panic where the window manager owns Alt+Space.
+  • Autopilot HANDLES: per-group counts and locks, "Seed every unlocked handle now" (undoable);
+    the composer drives every unlocked handle and route after composing.
+  • Clear Memory now also resets sidechain, patch motion, Markov spec, mod matrix and automation
+    stores (they leaked between Autopilot projects). Base frequency range is 20–20000 Hz (values
+    outside crashed the Fractal Seed engine).
+  • Hybrid languages on the sCode pool: C, Go, LuaJIT, Rust, C++ and Julia kernels are each
+    parity-checked against NumPy before use; Julia's ccall uses a cached pointer (fixes the ISO
+    smoke-test error) and JuliaCall only pairs EXE + PROJECT with a project that holds PythonCall.
+  Phase 7D (R123):
+    Global Convolve now spreads over the full Meum geometric lattice: equal
+    ratio steps from about 160 Hz to 20 kHz (flat within about 3 dB; the older
+    kernel only passed 320–640 Hz). Multidim voices take equidistant ensemble
+    slots, and voice harmonics beyond 48 fold back into the 6-octave window, so
+    no two voices share a ratio. Same seed → same spectrum.
+    ⛓ MARKOV RESAMPLER (main window, beside the Canonical Morph Bridge) opens
+    an editor with model states, transition weights (locality p, advance,
+    self weight, power or Meum decay, Euclidean and fractal bonuses), a
+    polynomial curve, seed control, live preview, a before/after comparison,
+    a transition heatmap, a decision trace and an explanation of every choice.
+    With "follow canonicals" on, SEEDED/RAND set the seed, LOCK raises
+    locality, EUCLIDEAN/FRACTAL add bonuses and GOAVA picks Meum decay.
+    Apply is undoable (Undo last apply). Autopilot Markov keeps working and is
+    about 10× faster.
+    Layout: the Canonical Morph Bridge is split in two halves (morph | canonical
+    levels) and sits in the middle of the row [Geometric Mixer | Bridge |
+    Markov]. Long sliders were shortened. Every pane, including the deck, takes
+    the chosen pane colour (default lighter gray-blue).
+    Fix: a sequence you edit while canonicals are active (randomize, clear,
+    Markov, undo) is no longer wiped by the next canonical rebuild.
+
+  The whole tool is one scientific fractal: Seed → canonical composition →
+  instruments → sequences → playlist → post-processing → exports → external
+  apps. Every step is deterministic for the same project and inputs.
+
+  Any signal → any context (Carrier Bridge, R118 reconstructed):
+    Signals: audio · control curve · video · number · text (seed) · events · file.
+    Contexts: global carrier, instrument carrier, carrier layer, Global Seed,
+    tempo, a sequencer lane, video carrier, exports, Live Player.
+    Missing steps are converted automatically by the shortest route, e.g.
+    seed text → audio (Spectral Canonical), curve → seed program (reverse
+    engineer's Fourier fit), curve → number (book graph number, isn⁻¹ angles).
+    It always tries; it is GUARANTEED for a Seed-only composition (no hand-owned
+    steps or imported carriers) with all canonicals on and default settings.
+    Draw Signal Lab / Layered Signal Lab "Send as Global Carrier" now really
+    changes the carrier that Play and exports use.
+    Plugins ask through the same protected door: {"op": "send_signal",
+    "path": file-in-plugin-folder, "context": "..."} (validated, one undo step).
+
+  Meum irrational spectrum (meum_spectrum): X'k = Xk·e^(−iθk),
+    θk = 2πα{Mφ²k}. Exact inverse, magnitudes kept, α = 0 = ordinary FFT.
+    Use OT ON: twiddles from the book series (isx = cos, isy = sin) and the
+    book radix-2 route; OFF: NumPy/libm. Same result either way (≈1e-15).
+
+  Task Bar: every window button is checked against the installed program; a
+    missing one is greyed out with the reason, a failed launch says why.
+  Mouse tracer (Settings ▸ Compatibility ▸ Mouse tracer, default ON).
+  Scroll window panels (Compatibility): windows / windows + main / off.
+  Console: doctor, abi, threads, toolchains, env; ↑/↓ history, Tab completes.
+  Julia/Mesa/Z3: the system C++ runtime is loaded first (fixes CXXABI_1.3.15).
+  Go sidecars build only with a valid Go root; telemetry is off and private.
+  File Manager ▸ 🗜 Compress… / 📂 Extract…: .zip, .tar.gz, .7z and .MCC
+    (Groovebox package, sha256-verified). Extraction goes to a new folder beside
+    the archive and can never write outside it; a project .MCC is opened with
+    Open Project instead. .7z uses the bundled 7-Zip (or py7zr on desktops).
+  Panel ◀ ▶ Geometric balance now always applies (it was being overridden).
+  System ▸ Update Groovebox Source from a .zip or .tar.gz no longer needs a
+    signing key: enter your PIN (if one is set), the tree must pass basic tests,
+    and you are warned if it is less than 75% similar to the current source
+    (below 40% you must type INSTALL). A broken signature is always refused.
+  File Manager: double-click a .zip / .tar.gz / .7z / .MCC to preview it and
+    Extract here.
+  Selected-instrument dropdown: every row is painted in that instrument's
+    assigned colour (set with ■ Playlist colour); the selector frame follows it.
+  Monitor Center ▸ Self-test rows: signal bridge, guarantee and Meum FFT checks.
+  Console: signals (kinds, converters, contexts, guarantee) and signals test.
+  First ISO (LIMINE-SCODE-v33c) is now complete: FAT/VFAT + nls_ascii/cp437/utf8
+    (Install to SSD), Dell SOF audio, Realtek microSD, GUI recovery.
+  Secure Boot (build answer y): signed copies are built first. Default chain:
+    Microsoft-signed shim -> Groovebox-signed Limine -> pinned kernel/initramfs.
+    First boot: MokManager -> Enroll key from disk -> EFI/sOS/groovebox-mok.cer.
+    Dell alternative: BIOS ▸ Secure Boot ▸ Expert Key Management ▸ Custom Mode ▸
+    db ▸ Append from File ▸ GROOVEBOX-MOK.CER. GROOVEBOX_SECURE_BOOT_MODE=direct
+    signs Limine only (enroll the key in firmware).
+  Runtime defaults: every compute runtime shares one thread budget (BLAS/OpenMP,
+    Numba, Rust/Rayon, Julia N+1 interactive, Go sidecars on the lane width);
+    idle threads never spin on the audio core. sOS appliance only: turbo/boost
+    on, firmware platform profile "performance" on AC (balanced on battery or
+    above 90 C), huge pages on request, steady 64/256 MB disk writeback, NVMe
+    scheduler none / SD+SATA mq-deadline. Firmware clock, voltage and power
+    limits are never raised. GROOVEBOX_FLUX=0 turns these extras off.
+
+SYNTHESIZER ARCHITECTURE — HOW A NOTE BECOMES SOUND
+---------------------------------------------------
+R32 SYNTHESIZER ARCHITECTURE (short reference)
+  CANONICAL GENERATION LAYER: the seed and the active canonicals (SEEDED, RAND,
+    LOCK, EUCLIDEAN, GOAVA) decide notes, rhythm and parameters, once, for all media.
+  FOUR PER-INSTRUMENT GEOMETRIC SYNTH ENGINES: geometric carrier, geometric
+    rhythm plan, bouncing ball and cellular automaton sources feed each instrument.
+    Each instrument is one complete operator voice (oscillators, envelope, filter).
+  SEQUENCE PROGRAMS, MORPH AND AUTOMATION: SEQUENCE-LEVEL SYNTH STATE (Edit Synth
+    Per Seq) is morphed in by each playlist row's vote; automation lanes follow.
+  MODULATION AND ROUTING ORDER: canonical value -> per-sequence state -> automation
+    -> mod oscillators -> FX/EQ -> mixer -> master.
+  NOTE / VOICE RENDER AND MIX: each note renders its voice, voices are summed per
+    instrument, instruments are mixed and mastered.
+  AUDIO, VISUAL AND GAME ARE THREE VIEWS of the same canonical state.
+  EXECUTION AND PERFORMANCE BOUNDARIES: sCode work lanes are bounded; the sCode
+    buffer pool honours GROOVEBOX_SCODE_RAM_BUDGET (bytes, default 256 MB).
+  Shift + wheel scrolls any panel horizontally.
+  Defaults: EQR: **0.4014**; Playlist Rows defaults to 32; sequence length 12.
+
+FULL GRAPH SCRIPT CONTEXT
+-------------------------
+  Graph and domain scripts receive the whole point context: graph_x/y/z,
+  graph_radius, graph_angle, graph_energy, graph_curvature, graph_phase,
+  graph_u/v/w, graph_index/count, sequence_index, step_index, domain_value and
+  domain_weight, plus graph (a read-only view) and graph_vector.
+
+LIVE KEYBOARD — APPLICATION-WIDE
+--------------------------------
+  Tab / Shift+Tab instrument switching and Ctrl+Caps work in every Groovebox
+  window; the key chart plays notes while a Groovebox window has focus (not in
+  text fields). Realtime limit: heavy scenes (1080p/3D) may add display latency;
+  audio keeps priority.
+
+QUICK START (2 MINUTES)
+-----------------------
+  1. Type any number in the SEED box (try 1.1975807343, 3.14159, 134964356).
+  2. Press 🎲 Randomize Song.
+  3. Press ▶ PLAY Audio Track.  Press ⏹ Stop to stop.
+  4. Change the seed and play again — a new piece, always the same for that seed.
+  5. Switch the engine buttons (SEEDED · RAND · LOCK · EUCLIDEAN · GOAVA ·
+     FRACTAL SEED) on and off and listen to how the piece is written.
+  6. Pick an instrument in the instrument selector and press EDIT SYNTH, or
+     draw its wave in the WAVETABLE SYNTH · DRAW panel.
+  7. Press ▶ PLAY Audiovisual Track to see the music.
+  8. 💾 Save Project.  📻 Export Master WAV Audio, or export MP4 video.
+
+If you hear nothing, see "NO SOUND?" near the end...
+UNIVERSAL SEEDS (Export ▸ 🧬 Spectral & Pixel Seeds…, also ⚡ Actions)
+  Audio tab: Analyse any audio file into a literal seed (MGLS1:…) that rebuilds
+  the exact signal; or type any text of any length as a generative seed — every
+  character changes the result. Generate, Verify (round-trip error), Save/Load
+  .gbseed, export 32-bit float WAV, or Use as carrier. Video tab: the same for
+  frames (MGLV1:… holds every frame's DCT; generative seeds decide palette,
+  structure, motion and texture), exported as lossless FFV1 .mkv or MP4.
+
+SHARED CANONICAL DECISIONS
+  Modules ask one decision layer: when a canonical engine is active its
+  time-invariant value × activation level is used and the module's default is
+  ignored; otherwise the default × the Morph Bridge mix applies (with an optional
+  time-variant fallback). The multidim stochastic responses use it.
+
+AUTOMATION MORPH SPAN (Sequencer automation bar, MORPH SPAN %)
+  100% (new projects): an automation point's Morph 0–100% reaches all the way
+  from state A to state B — at 100% B replaces the composition step and the
+  instrument's own panel patch. At 50% the reach is 0–50% of the way to B;
+  older projects keep the reach they were saved with.
+
+NO HARD OUTPUT LIMITS (Audio export options)
+  Bit depth "32-bit float" writes IEEE float WAV without quantization.
+  "Bypass master hardclip" keeps master volume but skips the clip; with float
+  the overshoots above 0 dBFS are preserved. Render rates go to 192 kHz.
+  Rows, sequence lengths and automation points go to 65 536; synth count to 512.
+
+EXPORTS WHILE YOU KEEP WORKING (EXPORT JOBS)
+  Every export button (audio, video, stems, Bake & Compare, Render Queue, state
+  slots) freezes the project exactly as it is at that moment and queues a
+  job. The job renders in a separate worker process, so the main window, playback
+  and editing stay responsive. Change the project and press export again to queue
+  another state; each job keeps its own snapshot.
+  Export ▸ "📋 Export Jobs" lists every job: state, progress, elapsed time,
+  Cancel selected, Clear finished, Open folder. "Run at once" sets how many jobs
+  render in parallel (default from CPU cores and free RAM; each worker gets its
+  own share of the math threads and runs at lower priority than the window).
+  Audio exports apply the DJ bake once and Master Volume × Clip/Gain + hard clip
+  once, exactly like playback.
+  Limits: FLAC/MP3/OGG/OPUS/video need the Groovebox-local FFmpeg; a failed job
+  shows its reason in the Export Jobs window. Bake & Compare opens its report
+  when its job finishes.
+
+PIN LOCK, RESET, SESSION NAME, STARTUP CHIME (⚙ Compatibility)
+  PIN lock: "Set / change PIN…" chooses a 4-8 digit PIN (PIN length control).
+  Only a salted hash is stored. Options: ask at startup, lock when idle N
+  minutes, "Lock now". While locked, audio, playback and exports keep running;
+  five wrong tries start a growing pause. A PIN keeps hands off the session; it
+  does not encrypt files.
+  Forgot PIN: on the lock screen, "Forgot PIN — reset Groovebox…" starts a
+  1 h 15 min countdown. The device must stay on: sleep, suspend or closing
+  Groovebox restarts the countdown; entering the PIN or "Cancel reset" stops it.
+  At zero it erases the Groovebox data folder (projects, recordings, exports,
+  samples, settings, PIN) and closes. Operating-system files are never touched.
+  Session name: "Ask for a session name at every startup" sets the window title
+  and prefixes automatic export file names.
+  Startup chime: every key-chart note over 5 s at a random Global Convolve %
+  (your Global Convolve value is restored afterwards). Untick to silence it.
+  Turning Smart Process Mode off is remembered.
+
+PERFORM BAR ▸ LIVE TOOLS (above the sequencer)
+  ⏮ ⏭      previous / next sequence of the selected instrument; "▶auto" plays it.
+  🔁 Loop   repeats This Sequence until ■ Stop.
+  🎼 Cue    click adds the selected instrument + sequence to a cue; the menu plays
+            the cue in order (loops when 🔁 is on), removes the last or clears it.
+  👆 Tap    tap 3+ times to set the BPM.
+  ⏺ Take    while armed, key-chart notes are written into the selected sequence
+            at the step under the running clock (one bar = the sequence). Undo
+            reverts the whole take.
+  📸 A B C  state slots: click an empty slot to store the whole project state,
+            click a stored slot to recall it (Undo returns). Slot menu: store,
+            "Queue WAV export" of that state, clear.
+
+CANONICAL MORPH BRIDGE ▸ MULTIDIM MAX NET MODULATION
+  A 0-1 ceiling on the summed cross-modulation routes into each multidimensional
+  synth target. Each target scales it further: pitch ±14% × ceiling (about
+  ±2.3 semitones at 1.0, ±1.2 at 0.5), phase ±0.1π, domain ±0.12, resonance Q
+  ±25%, synth level ±16%, spectrum/harmonic tilt ±25%. 0 = routes have no effect.
+  Default 0.5 for new projects: half range keeps several stacked routes from
+  pinning every target at its limit and keeps pitch movement within about a
+  semitone. A project keeps the depth it was saved with. "0.5" resets.
+
+LIVE PLAYER
+  📡 Broadcast to HDMI: a clean full-screen live view (no cursor or window
+  frame) on the HDMI / external display. With no external display it waits and
+  starts when one is connected; if the cable is pulled it waits again instead of
+  covering your control screen. Esc or double-click on it ends the broadcast.
+  4K stream renders in separate worker processes (one per spare core), so it
+  uses every core. It needs a few seconds to start them.
+  4K: FULL CPU LIVE PLAY ▸ "4K stream (adaptive, all cores)" (or Full video rig
+  size 3840×2160) outputs 4K. Several rig workers render alternate frames and the
+  render resolution adapts to hold about 30 fps; the rig label shows the fps, the
+  4K target and the current render size. Faster CPUs get closer to native 4K.
+  Broadcast source (next to the button): "Live view" shows this player's view;
+  "Export look" shows the scenograph drawn by the same engine as video exports,
+  driven by the live audio.
+  🖥 Show on display still opens views on any chosen screen.
+  ⛶ Fullscreen (F11; Esc leaves). F10 or double-click on the view hides every
+  control row (visual-only); repeat to bring them back. Letters play notes, so
+  these shortcuts use function keys.
+  🎛 Visual presets panel (button shows / hides it): 57 presets (8 motion
+  styles × 6 palettes, the originals and broadcast looks). Choosing one applies
+  it; next ▶ or Ctrl+→ / Ctrl+← step through, 🎲 picks one, "save as…" stores
+  your own. Untick "Live update to UI" to edit sliders and presets without
+  re-rendering; tick it again to apply every pending edit at once.
+  🧅 Layers: each layer of the live view has its own checkbox.
+  Recording: the REC badge shows elapsed time, frames written and frames held.
+  Audio and video of a take stay in sync: if the disk is briefly too slow, a
+  dropped audio block is written as the same length of silence and a dropped
+  frame repeats the previous frame, in place; at the end the shorter stream is
+  padded so neither the picture nor the sound is cut off.
+  3D Studio (Quick Rack): wrap an image or video onto an OBJ, tint the mesh,
+  render mono or true dual-camera stereo (side-by-side / top-bottom), and process
+  rendered 3D clips for layout, frame rate, resolution, time trim and soundtrack.
+  Existing SBS and top-bottom clips can be converted by resizing the two eye views
+  independently; stereo-to-mono selects the left eye. Mono-to-stereo duplication
+  is not depth reconstruction. The current renderer animates the selected OBJ;
+  multi-object scene-timeline compositing remains future work. Song as 3D opens a
+  project OBJ if one has been exported.
+  Finish take (on by default): after the WAV is written, trim silence, remove DC,
+  peak-normalize, apply a short fade, and report before/after RMS. The finished
+  file is saved next to the take as *-finished.wav.
+  Stop and Close release the audio device and camera in the background (no
+  freeze); a new Play waits until the previous stream is released.
+
+LOOPER, MUSIC ANALOGIES, BUILD STAMP, MATHEMATICS
+  Enter looper: hold Enter to record a loop of the notes you play; release to
+  commit it. Press and release Enter without playing any note to clear the
+  looper segmentator ("Loop cleared"). Auto-repeat is ignored.
+  Music analogies: video and games read the same seven channels of the track
+  (energy, pulse, phase, altitude, order, weight, sparkle). The seed sets each
+  channel's gain (0.5–1), which element the key's fifth maps to, and the hue
+  origin (hue = origin + 30° × position on the circle of fifths), so one song
+  looks different under different seeds and the same seed always looks the
+  same. In a game, /music shows the table; Game settings ▸ "Music drives world"
+  (0–1, default 0.8) sets how much the track drives energy, pulses and phase.
+  Build stamp: release_info.py is the single identity source. scripts/stamp_release.py
+  writes RELEASE-STAMP.json, CURRENT-RELEASE.txt and BUILD_ISO/RELEASE-STAMP.env
+  and runs before every archive and ISO sync; "+local" in About means the code
+  differs from the stamp.
+  Mathematics (math_invariants.py, checked at startup; python3 math_invariants.py):
+    Meum M = 1.19758…, golden ratio, Parseval, energy partition, circle of fifths,
+    EWMA, Little's law (lane width = arrival rate × cost), Party opacity = i²,
+    convex morph (weighted means stay inside the sources), loop quantize.
+    M is the spatial propagation constant of the voice: the master synth always
+    sits at exactly M × the panel+geometric peak P (a constant linear relation),
+    so the largest excursion is known in closed form:
+        |voice| ≤ P · (1 + mix · (M − 1))      (max sway, guarded in triad)
+    lead-input gain stays in [0, 1 + M], and the Meum flux index {k/M} averages
+    to the set depth (Weyl equidistribution; slow but certain).
+    The voice is linear in scale: triad(c·main, c·geo) = c·triad(main, geo) for
+    c > 0, so the master's level is known before it renders (master_peak) and a
+    cached unit shape gives the exact closed form while the render resolves
+    (virtual_voice). How long to keep modulating that virtual state is
+    probabilistic: thread_budget.resolve_horizon uses Cantelli's inequality
+    P(T ≥ μ + kσ) ≤ 1/(1 + k²) on each job's measured run times (finishes
+    within the horizon with probability ≥ q for any distribution), and
+    virtual_blocks = ceil(horizon / block).
+  Video CPU: the projection scale 2·tan(fov/2) is computed once per field
+  of view, not once per vertex (identical pixels).
+
+Laptop lid & display power
+  Closing the lid blanks the built-in display (saves power). Opening the lid
+  turns it back on. Ctrl+Caps Lock toggles the same blank/unblank at any time,
+  in every window and text field (works even if the ACPI lid switch is not visible).
+  Tab picks another instrument; Shift+Tab walks back. Both work in every window
+  and text field, except while a list popup is open.
+
+MULTITRACK CLIP STUDIO
+  🎞 Timeline tab: the strip above the table draws every clip on its track; click
+  a clip to select it. "Selected clip" edits start / source in / source out,
+  track, gain, pan, width, opacity, blend and mute with real controls, plus
+  ◀ 0.1 s / 0.1 s ▶ nudge, ▲ ▼ layer, "⇥ After previous clip", Delete key.
+  🎛 Performance tab: every clip is a pad (keys 1-0, then Q-L). Pads play the
+  clip's region in the preview. ⏺ Record performance writes each pad hit as a new
+  timeline clip at the time you played it (to "rec → track N", optional quantize
+  grid, Choke = a new hit shortens the previous clip). Originals are not changed.
+  Draw/Record ▸ Render / Mix Video Clip renders in the background; the window
+  stays usable and "Bind All Layers" continues when the render is done.
+
+MASTER MULTIDIM SYNTH 3D SCENE
+  The scene also shows the main window's state: the VECTOR tripod (X red,
+  Y green, Z blue) with the master vector arrow (length = drive); the orange
+  PANEL ring, shaped by one cycle of the selected instrument's panel voice
+  (refreshed every 1.5 s); and three orbits: violet FRACTAL (wobble depth =
+  Fractalizer), cyan EQR (tilt = EQR) and orange PKP beads (pulse rate = PKP
+  envelope). Values are listed top-left. Drag to orbit; scroll turns the view.
+  Floating tags (with leader lines and live mini-plots) name each element and
+  show its numbers: VECTOR, PANEL, FRACTAL, EQR, PKP, BALL, SPECTRUM, CELLULAR,
+  RESONATORS, OPTICS. The scene draws on its own background thread, so it never
+  slows the window; synth changes appear within a frame or two.
+
+EXPORT WORKERS
+  Every job shows progress and an estimated time left. Cancelling any piece of
+  a split video export cancels the whole export; finished parts are kept so a
+  later export of the same file resumes from them.
+  A video export with 2 or more parts is spread over the export workers: each
+  renders some of the parts at the same time, then a last job adds the audio and
+  stitches. Raise "Run at once" in Export Jobs to use more cores.
+  Exporting a video right after an audio export of the same project state reuses
+  the audio already rendered by that worker. Video export has "Resume unfinished
+  .part segments" (on by default; off renders fresh).
+  Export workers stay warm: after the first job, later jobs skip the start-up
+  cost. A worker serves 8 jobs before it is replaced and exits after 2 idle
+  minutes, so memory stays bounded.
+
+MULTIDIM STOCHASTIC RESPONSES
+  With a canonical active, the multidimensional synth's stochastic responses use
+  that canonical's probability scaled by its activation level, decided per moment
+  of the timeline from the seed (time-invariant: the same moment always responds
+  the same way). With no canonical active it falls back to an internal default
+  probability of 1 (no cap), mixed by Morph Bridge ▸ "Multidim Stochastic Default",
+  and the pattern evolves with time. The mix is ignored while a canonical is on.
+
+WINDOW BAR
+  "⬇ Exports" shows running export progress; its menu lists jobs, finished
+  files (Open folder / Open file) and the export folders. "⚡ Actions" has Lock
+  now, Live Player, Export Jobs, Render Queue and Save. If the window freezes,
+  the bar afterwards shows how long and in what ("⚠ UI was busy …").
+
+ONE MEDIA PLAYER
+  MCC videos play inside the media player window, in the same deck, playlist
+  and transport as every other file type (no separate MCC player window).
+
+LOW MEMORY NOTICE
+  Low-memory warnings use one window that updates (time and count) instead of
+  opening a new popup each time.
+
+MEDIA PLAYER VISUALIZER
+  Right-click the waveform/scope/spectrum display for 16 styles (bars, mirror,
+  line, dots; palettes; band counts; decay). The choice is remembered.
+
+WINDOWS
+  Every window and dialog shows the animated ParametricMathBackground (set
+  GROOVEBOX_NO_WINDOW_BG=1 to turn it off). The Vector, Wavetable, Ball and
+  Cellular geometric synth panels are 1.3× taller beside the multidim panel.
+
 
 NAVIGATION AND EDITING ROOM
   Composition and playback/export have separate horizontal AND vertical scroll
@@ -111,22 +564,6 @@ VISUALS, CLIP STUDIO, GAMES AND LAN
   Compatible peers, local connectivity and firewall permissions still apply;
   automatic Internet reachability or confidentiality is not implied.
 
-UI / ENGINE WORKER OWNERSHIP
-  The shared CPU/memory budget keeps the GUI and audio callback on their owning
-  threads and reserves a separate canonical-engine worker when hardware headroom
-  permits. Linux worker priority is best-effort: engine workers default to nice +2,
-  interactive workers +4, and bulk workers +6. The main GUI thread and PortAudio
-  callback are not reprioritized. Adaptive bulk sizing cannot take the reserved
-  engine or interactive slots.
-
-  Hiding or closing a tool window cancels queued work and invalidates late results;
-  a running engine task is allowed to finish rather than being force-killed. Qt
-  widget updates are delivered through the GUI-thread queue. Generic process exit
-  cleanup does not sweep persistent app, game, media, render or engine children; the owning
-  subsystem is responsible for their normal stop/release path. This reduces the
-  chance that background cleanup tears down another live session, but it is not a
-  real-time performance or hardware-stability guarantee.
-
 POOLING, PREDICTION AND "MINIMAL" EXECUTION
   Implemented background paths use copied snapshots/private results and latest-only
   requests. Stale plans must not replace newer edits; Qt/document commits stay on
@@ -190,45 +627,6 @@ BUILDS, STORAGE SAFETY AND DIAGNOSTICS
   the editor is not permission to erase storage.
   Keep session logs, the LATEST_CRASH_LOG.txt pointer, first traceback and first
   painter-warning stack when reporting a failure. Preserve recovery directories.
-  This launcher/Help revision was not exercised in app/build/hardware tests.
-
-
-WHAT GROOVEBOX IS (THE SHORT VERSION)
--------------------------------------
-Groovebox uses numerical seeds and editable context to make music, video and
-playable game worlds. Matching seeds and relevant inputs/settings are repeatable
-on supported deterministic paths; live inputs and true-random modes are different.
-
-You type a seed (any number). Groovebox's canonical engines read it and write
-a whole composition: 48 instruments with their own synths, sequences, a
-playlist (the song's arrangement), automation, effects, and a visualizer that
-is drawn from the very same data. Everything you change by hand is kept as
-yours; the engines fill in only what you have not touched.
-
-You can use it three ways, and mix them freely:
-
-  1. Generative — type a seed, press 🎲 Randomize Song, press ▶ PLAY.
-  2. Hands-on — draw waveforms, program steps, paint the playlist, play keys.
-  3. Mathematical — write seed scripts, domain equations and instrument
-     scripts that drive any parameter over musical time.
-
-You never need the math to make music with it.
-
-
-QUICK START (2 MINUTES)
------------------------
-  1. Type any number in the SEED box (try 1.1975807343, 3.14159, 134964356).
-  2. Press 🎲 Randomize Song.
-  3. Press ▶ PLAY Audio Track.  Press ⏹ Stop to stop.
-  4. Change the seed and play again — a new piece, always the same for that seed.
-  5. Switch the engine buttons (SEEDED · RAND · LOCK · EUCLIDEAN · GOAVA ·
-     FRACTAL SEED) on and off and listen to how the piece is written.
-  6. Pick an instrument in the instrument selector and press EDIT SYNTH, or
-     draw its wave in the WAVETABLE SYNTH · DRAW panel.
-  7. Press ▶ PLAY Audiovisual Track to see the music.
-  8. 💾 Save Project.  📻 Export Master WAV Audio, or export MP4 video.
-
-If you hear nothing, see "NO SOUND?" near the end.
 
 
 THE IDEA THAT RUNS EVERYTHING: CANONICAL vs YOUR DATA
@@ -282,7 +680,7 @@ Engines (the canonical writers)
   Each engine has a contribution level in the CANONICAL MORPH BRIDGE.
   Full Unison: with SEEDED + RAND + LOCK + EUCLIDEAN on (GOAVA optional),
   every canonical voice resolves to one parameter set, so the instrument
-  count no longer changes the result.
+  count does not change the result.
 
 Instrument selector
   Picks the instrument (operator) that every instrument panel edits:
@@ -546,7 +944,8 @@ PLAYERS, WINDOWS & TOOLS (2026-11-03)
   * Quit Groovebox → "Back to startup chooser" restarts the session view.
   * Under EXPORT: Batch Export, Player, File Manager, Exports Folder,
     Save/Load, Recover Autosave, Reconvert, Recordings, Game, Notes, Audio check.
-  * Boost Beats (LIVE DJ): Mod, PROB and PKP Env (pluck → solid → swell).
+  * Boost Beats (LIVE DJ): Mod, PROB and PKP Env (pluck → solid → swell). PROB is a 0–2 responsiveness coefficient: 0 = no response, 1 = native response, 2 = doubled response; it is not a statistical probability and every scheduled beat still advances/fires.
+  * GOAVA Radio status reports ON AIR/OFF AIR, active stream listeners and the current media/tone while the radio panel is open.
   * Canonical sequences sculpt every lane (phase, probability, envelope,
     automation) from one smooth seed contour; your own edits always win.
 
@@ -1105,130 +1504,7 @@ independently established theorem of mathematics or physics.
 PUBLIC CONSTANTS
 
 The canonical Meum value is:
-    M = 
-# -----------------------------------------------------------------------------
-# Author-series trigonometry kernels (radians)
-# Direct summation/recurrence implementations: no math/NumPy circular or inverse
-# trig calls.  These are the canonical Groovebox kernels for scalar/array use.
-# -----------------------------------------------------------------------------
-SERIES_PI = 3.14159265358979323846264338327950288419716939937510
-SERIES_TAU = 2.0 * SERIES_PI
-
-def _series_arr(x):
-    return np.asarray(x, dtype=np.float64)
-
-def _series_out(v):
-    a=np.asarray(v)
-    return a.item() if a.ndim==0 else a
-
-def _series_reduce(x):
-    a=_series_arr(x)
-    with np.errstate(invalid='ignore'):
-        return np.remainder(a + SERIES_PI, SERIES_TAU) - SERIES_PI
-
-def series_sin(x):
-    a=_series_reduce(x)
-    a=np.where(a>SERIES_PI/2, SERIES_PI-a, np.where(a<-SERIES_PI/2, -SERIES_PI-a, a))
-    term=a.copy(); total=a.copy()
-    for n in range(1, 19):
-        term *= -(a*a)/((2.0*n)*(2.0*n+1.0)); total += term
-    return _series_out(total)
-
-def series_cos(x):
-    a=_series_reduce(x); sign=np.ones_like(a)
-    hi=a>SERIES_PI/2; lo=a<-SERIES_PI/2
-    sign=np.where(hi|lo,-1.0,1.0)
-    a=np.where(hi,SERIES_PI-a,np.where(lo,-SERIES_PI-a,a))
-    term=np.ones_like(a); total=term.copy()
-    for n in range(1,19):
-        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
-    return _series_out(sign*total)
-
-def series_asin(x):
-    z=_series_arr(x); a=np.abs(z); bad=a>1.0; reduce=a>0.5
-    with np.errstate(invalid='ignore'):
-        w=np.where(reduce,np.sqrt((1.0-a)/2.0),a)
-    term=w.copy(); total=w.copy()
-    for n in range(1,33):
-        term *= (w*w*(2.0*n-1.0)**2)/((2.0*n)*(2.0*n+1.0)); total += term
-    total=np.where(reduce,SERIES_PI/2.0-2.0*total,total)
-    total=np.copysign(total,z); total=np.where(bad,np.nan,total)
-    return _series_out(total)
-
-def series_acos(x):
-    z=_series_arr(x); bad=np.abs(z)>1.0
-    with np.errstate(invalid='ignore'):
-        q=2.0*np.asarray(series_asin(np.sqrt((1.0-np.abs(z))/2.0)))
-    out=np.where(z>=0.0,q,SERIES_PI-q); out=np.where(bad,np.nan,out)
-    return _series_out(out)
-
-def series_atan(x):
-    z=_series_arr(x); a=np.abs(z); inv=a>1.0
-    with np.errstate(divide='ignore',invalid='ignore'):
-        a=np.where(inv,1.0/a,a)
-        a=a/(1.0+np.sqrt(1.0+a*a))
-    term=a.copy(); total=a.copy()
-    for n in range(1,33):
-        term *= -(a*a); total += term/(2.0*n+1.0)
-    total*=2.0; total=np.where(inv,SERIES_PI/2.0-total,total)
-    return _series_out(np.copysign(total,z))
-
-def series_atan2(y,x):
-    y,x=np.broadcast_arrays(_series_arr(y),_series_arr(x))
-    with np.errstate(divide='ignore',invalid='ignore'):
-        out=np.asarray(series_atan(y/x))
-    out=np.where(x<0.0,out+np.copysign(SERIES_PI,y),out)
-    out=np.where(x==0.0,np.copysign(SERIES_PI/2.0,y),out)
-    out=np.where(y==0.0,np.where(np.signbit(x),np.copysign(SERIES_PI,y),y),out)
-    return _series_out(out)
-
-def series_tan(x):
-    with np.errstate(divide='ignore',invalid='ignore'):
-        return _series_out(np.asarray(series_sin(x))/np.asarray(series_cos(x)))
-
-def series_sinh(x):
-    z=_series_arr(x); a=np.abs(z); scale=np.zeros(a.shape,dtype=np.int32)
-    a=np.where(np.isfinite(a),np.minimum(a,710.0),0.0)
-    for _ in range(11):
-        m=a>0.5; a=np.where(m,a*0.5,a); scale += m
-    term=a.copy(); total=a.copy()
-    for n in range(1,19):
-        term *= (a*a)/((2.0*n)*(2.0*n+1.0)); total += term
-    with np.errstate(over='ignore',invalid='ignore'):
-        for k in range(11): total=np.where(scale>k,2.0*total*np.sqrt(1.0+total*total),total)
-    total=np.where(np.abs(z)>710.0,np.inf,total); total=np.where(np.isnan(z),np.nan,total)
-    return _series_out(np.copysign(total,z))
-
-def series_cosh(x):
-    q=np.asarray(series_sinh(_series_arr(x)/2.0)); return _series_out(1.0+2.0*q*q)
-
-def series_tanh(x):
-    z=_series_arr(x); q=np.clip(z,-20.0,20.0)
-    with np.errstate(divide='ignore',invalid='ignore'):
-        out=np.asarray(series_sinh(q))/np.asarray(series_cosh(q))
-    return _series_out(np.where(np.abs(z)>20.0,np.copysign(1.0,z),out))
-
-def series_sinc(x):
-    z=_series_arr(x)
-    with np.errstate(divide='ignore',invalid='ignore'):
-        out=np.where(z==0.0,1.0,np.asarray(series_sin(SERIES_PI*z))/(SERIES_PI*z))
-    return _series_out(out)
-
-def series_book_isn(x):
-    # sum (-1)^n*x^(2n+1)/(2^(2n)*(2n+1)!)
-    return _series_out(2.0*np.asarray(series_sin(_series_arr(x)/2.0)))
-
-def series_book_isn_inverse(x):
-    return _series_out(2.0*np.asarray(series_asin(np.clip(_series_arr(x)/2.0,-1.0,1.0))))
-
-def series_cyclic_isn(x):
-    # author's even-power series: x^2/2! - x^4/4! + x^6/6! - ...
-    a=_series_reduce(x); term=a*a/2.0; total=term.copy()
-    for n in range(2,25):
-        term *= -(a*a)/((2.0*n-1.0)*(2.0*n)); total += term
-    return _series_out(total)
-
-MEUM = 1.1975807343385265188
+    M = MEUM = 1.1975807343385265188
 
 Public reference inverse:
     M⁻¹ = MEUM_INV = 0.83501677283773394333148276154833054143874793150691
@@ -1569,8 +1845,9 @@ the canonical authority layer.
 31. OFFICIAL PROJECT TERMINOLOGY
 --------------------------------------------------------------------------------
 Official software names:
-    Groovebox
-    Mathematicians Groovebox
+    SSSS — Superdimensional Seed-driven Self-composing Synthesizer
+    Mathematician's Groovebox
+    Groovebox (short application name)
 
 Primary mathematical framework:
     Meum Calculus
@@ -1724,7 +2001,7 @@ that uses it.
   3–6 are bit-identical. Run `python benchmark_multidim_fi.py` to reproduce on
   your own machine — numbers vary with the CPU, the ratios stay similar.
 
-(Older per-release notes are kept in docs/HELP_HISTORY.md.)
+(Project engineering notes remain in the source documentation; this Help view covers current workflows.)
 
 --------------------------------------------------------------------------------
 36. CANON LEAD — PRIMARY WAVE CARRIER MODE  (R23R · 2026-11-03)
@@ -2020,49 +2297,131 @@ that uses it.
                          a blank patch, all engines on, 120 BPM default.
     ⚡ Quick Jam       — opens with a randomized seed, Randomize All pre-fired,
                          and the sequencer looped on the first four bars.
-```
 
-## R7u notes — looper, music analogies, release stamp, mathematics
+41. WORKSPACE TOOLS GUIDE
+-------------------------
+41.1 Toolbars that do not fit
+  The Quick Rack, Cloud Command Center and window bar each scroll sideways when the
+  window is narrower than their buttons: use the wheel over the strip, Shift+wheel,
+  or its thin scrollbar. The main window always fits the screen.
 
-```text
-R7u NOTES — LOOPER, MUSIC ANALOGIES, RELEASE STAMP, MATHEMATICS
-  Enter looper: hold Enter to record a loop of the notes you play; release to
-  commit it. Press and release Enter without playing any note to clear the
-  looper segmentator ("Loop cleared"). Auto-repeat is ignored.
-  Music analogies: video and games read the same seven channels of the track
-  (energy, pulse, phase, altitude, order, weight, sparkle). The seed sets each
-  channel's gain (0.5–1), which element the key's fifth maps to, and the hue
-  origin (hue = origin + 30° × position on the circle of fifths), so one song
-  looks different under different seeds and the same seed always looks the
-  same. In a game, /music shows the table; Game settings ▸ "Music drives world"
-  (0–1, default 0.8) sets how much the track drives energy, pulses and phase.
-  Version: release_info.py is the single version source. scripts/stamp_release.py
-  writes RELEASE-STAMP.json, CURRENT-RELEASE.txt and BUILD_ISO/RELEASE-STAMP.env
-  and runs before every archive and ISO sync; "+local" in About means the code
-  differs from the stamp.
-  Mathematics (math_invariants.py, checked at startup; python3 math_invariants.py):
-    Meum M = 1.19758…, golden ratio, Parseval, energy partition, circle of fifths,
-    EWMA, Little's law (lane width = arrival rate × cost), Party opacity = i²,
-    convex morph (weighted means stay inside the sources), loop quantize.
-    M is the spatial propagation constant of the voice: the master synth always
-    sits at exactly M × the panel+geometric peak P (a constant linear relation),
-    so the largest excursion is known in closed form:
-        |voice| ≤ P · (1 + mix · (M − 1))      (max sway, guarded in triad)
-    lead-input gain stays in [0, 1 + M], and the Meum flux index {k/M} averages
-    to the set depth (Weyl equidistribution; slow but certain).
-    The voice is linear in scale: triad(c·main, c·geo) = c·triad(main, geo) for
-    c > 0, so the master's level is known before it renders (master_peak) and a
-    cached unit shape gives the exact closed form while the render resolves
-    (virtual_voice). How long to keep modulating that virtual state is
-    probabilistic: thread_budget.resolve_horizon uses Cantelli's inequality
-    P(T ≥ μ + kσ) ≤ 1/(1 + k²) on each job's measured run times (finishes
-    within the horizon with probability ≥ q for any distribution), and
-    virtual_blocks = ceil(horizon / block).
-  Video CPU: the projection scale 2·tan(fov/2) is now computed once per field
-  of view instead of once per vertex (identical pixels).
-```
+41.2 🎯 Canonical (Quick Rack)
+  Canonical engines change values at render time; the controls keep showing your
+  value, so they never jump. This window lists, for every canonical-governed value,
+  what the control shows and what the render actually uses, and which engines are on.
 
-R32 SYNTHESIZER ARCHITECTURE
+41.3 Per-Seq Vote (playlist column)
+  0-1 per playlist row: how far that row morphs the global workspace variables toward
+  the local variables of the sequences it plays. Blank = the global morph amount.
+  Every playlist column you type into is kept, including Attack, Release and Pitch.
+
+41.4 🧊 OBJ (Quick Rack · Export menu · Export window · All formats · Batch Export)
+  Project → OBJ writes the song as a 3D model (a vase whose rings follow the loudness)
+  that also carries the exact audio and the project. OBJ → audio / project brings
+  them back; any other OBJ is turned into sound. "Use this project as the video OBJ"
+  puts the song's vase in the centre of the video, where it plays along with the
+  song. Small meshes built from the audio, a glowing wireframe layer, GOAVA shapes
+  and L-system shaping are on in the video by default; each can be switched off in
+  the 🧊 OBJ window. The full-song OBJ only appears when you choose it.
+
+41.5 Save to: (Export window · Batch Export · Live Player)
+  Pick a USB stick or SD card, or "Choose a folder…", before exporting or recording.
+  A stick that is plugged in but not mounted is listed with "click to mount". Every
+  Save / Open dialog lists /media, /mnt (and /Volumes) in its sidebar.
+
+41.6 📶 Wi-Fi (Network Hub)
+  Host this Groovebox's own Wi-Fi network (Groovebox Direct, WPA2), find Groovebox
+  networks in range and join one, or open the router-free ad hoc cell. While hosting,
+  the network name, password and browser address are shown for phones and laptops.
+
+41.7 Party Mode (System Settings)
+  On by default and a separate option from window backgrounds. It keeps its own share
+  of the interface's time small (it slows its frame rate when the machine is busy)
+  and, while you are idle, it warms the worker pools and audio routes so the next
+  export or playback starts sooner.
+
+41.8 More reading
+  MATHEMATICS.md — the mathematics, what is proven, and the author's Meum identities.
+  THIRD_PARTY_AND_NASA_NOTES.md — credits. resources/ — the author's book.
+
+42. MORE WORKSPACE TOOLS
+------------------------
+42.1 Window backgrounds
+  Every window has a background by default: the seeded mathematical field, painted
+  on a background thread (the interface only shows finished frames). System
+  Settings ▸ Window background: "Image / GIF…" uses any picture or animated GIF for
+  every window, "Make a GIF…" turns a video, image or folder of frames into a looping
+  GIF (File Converter), "Math field" goes back. Party Mode is a separate option.
+
+42.2 Deck placement
+  The Groovebox deck sits at the top of the main window. Right-click it to put it at
+  the Top, Left, Right or Bottom; the choice is remembered.
+
+42.3 Instrument names
+  Voices are named from the name pool rotated by the seed and the Global Convolve
+  setting, so the first voice is not always the same; resizing or reconvolving
+  renames free voices the same deterministic way. When you edit a voice's synth or
+  script it becomes "User Synth #n". A name you type yourself always stays.
+
+42.4 Noise mixer (Instrument Mixer)
+  Each strip has an N fader: coloured noise (violet, blue, white, pink, brown =
+  1/f^α with α −2 … 2) that follows that instrument's own envelope. White is the
+  default colour. "master" scales every strip and is an automation target;
+  "Canonical noise" lets the active canonicals set the amount. 0 changes nothing.
+
+42.5 Theremin · sensors · raw-signal projection (Workstation ▸ Theremin)
+  Move the pointer over the pad (left–right = pitch, up–down = volume), or choose a
+  sensor: tilt, magnet (field strength), compass, light, proximity, rotation. The
+  window lists the machine's gravity, magnetic field, gyroscope and light readings.
+  "Project raw signal" sends the tone as raw samples over the Wi-Fi / LAN (broadcast
+  or one address); "Receive + play" on another Groovebox plays it.
+
+42.6 Playlist rule
+  A new project starts with an empty playlist. A canonical engine writes playlist
+  rows only while it is active; switching engines off never fills a blank playlist.
+
+42.7 Live Player
+  Every effect starts off except the main "FX on" switch. "🎨 Visuals follow
+  canonicals" (canonical bar) lets the active engines change the overlay's
+  transparency, movement, spin and size. A loaded OBJ is the centrepiece: it drifts
+  slowly around the centre and breathes with the music. GOAVA and L-system shapes
+  are always applied.
+
+42.8 Seed tools
+  🧬 Seed shows and copies the seed's SHA-256, its numeric value and the project
+  fingerprint. The seed language also has gcd, lcm, factorial, comb, fib, prime,
+  gamma, erf, sinc, cbrt, tri, sqr, saw, pulse, euclid(k, n, i), mtof, ftom, db2amp,
+  cents, tempo_lock, mean, median, std, logistic, mandel, noise1, and the workspace
+  variables beat, bar, beat_frac, bar_frac, beat_hz0 and base_freq. 🎲 uses all of them.
+
+42.9 Drives (File Studio ▸ 💽 Drives)
+  Format a USB stick, SD card or USB disk as FAT32, exFAT, ext4, NTFS, Btrfs or F2FS,
+  whole drive or one partition. Type the device name to confirm. The computer's own
+  disk and the drive this system booted from are never listed.
+
+42.10 Audio devices
+  The output that last worked is kept by name, so the choice does not jump when
+  other devices appear or disappear. A USB audio device (interface, DAC, USB audio
+  cable) is used as soon as it is plugged in.
+
+42.11 Recovery · Explain · Self-test (Workstation tools)
+  🛟 Recovery: whole-project checkpoints every 10 minutes (newest 20 kept) and
+  restore (the current state is checkpointed first). ❓ Explain: search the Help or
+  click any control to see what it does. 🧪 Self-test: local checks of the runtime
+  services, seed language, mathematics, drive guard and audio devices.
+
+42.12 Sharing an app overlay (Performance ▸ 🧪 Dev Overlay)
+  📤 Share packs your overlay (src and append, with a SHA-256 manifest) into a
+  .mgoverlay file; 📥 Import checks every path, type, size and digest, backs up your
+  overlay, and installs it. Nothing runs until it is compiled and enabled.
+
+42.13 Tabs and windows
+  A tab bar that does not fit gets a ▾ button listing every tab. A window never
+  opens larger than the screen's free area.
+
+43. ARCHITECTURE NOTES
+----------------------
+SYNTHESIZER ARCHITECTURE
   A voice is one complete operator voice: its oscillator/source, envelope,
   modulation inputs, filter/shape stages and output gain are evaluated as one
   instrument state. Sequence rows select and parameterize voices; they do not
@@ -2092,15 +2451,15 @@ SCROLL CONTROLS
   nearest vertical scroll range. Ctrl + wheel remains reserved for controls that
   explicitly implement a Ctrl-wheel edit gesture.
 
-GROOVEBOX_SCODE_RAM_BUDGET
+sCode RAM BUDGET (GROOVEBOX_SCODE_RAM_BUDGET)
   The sCode workspace pool is bounded by its configured RAM budget and entry
   limit. Borrowed arrays are private to each caller; the pool does not expose a
   mutable shared buffer. When the budget is reached, least-recently-used slabs
   are evicted before new retained storage is admitted. Audio/UI headroom takes
   priority over background optimization work.
 
-R64 IMPORT FABRIC — CORE, USER APPS AND DEVELOPER APPS
-----------------------------------------------------
+IMPORT FABRIC — CORE, USER APPS AND DEVELOPER APPS
+---------------------------------------------------
 Groovebox maintains one versioned import map for the installed core and the
 configured user/developer application roots. The map is metadata-only: it
 records module paths and import relationships without importing every module.
@@ -2126,7 +2485,7 @@ third-party dependency is installed or compatible. Frozen builds must still
 include their declared runtime dependencies; native extensions remain bound to
 the selected interpreter/ABI.
 
-R64 IMPORT OPTIMIZATION — APPLICATION MODULE MAP
+IMPORT MAP — APPLICATION MODULE MAP
   Groovebox builds a cached map of installed core modules and configured user
   and developer application roots before loading the main UI. It maps imports
   without importing every module, and refreshes the cache when Python sources
@@ -2137,4 +2496,176 @@ R64 IMPORT OPTIMIZATION — APPLICATION MODULE MAP
   through the child-process dispatch with their own scoped import path.
   A module map is not a security sandbox: keep untrusted apps in the isolated
   worker/process and permission model. Native modules must match the active
-  Python ABI. Cold/warm startup performance still requires R64 benchmarking.
+  Python ABI.
+
+
+44. TASK PAD, MASTERING, LIVE BUFFER
+------------------------------------
+44.1 Task pad (main window, under Project Notes · Radio · Status Frame)
+  One click for the important jobs: Make (random seed, configure project, seed ID,
+  Script Studio, Autopilot, Multidim), Play (play / stop, Live Player, Theremin,
+  Mixer + noise, 3D Studio, Network), Export (Export window, music video, mixdown,
+  project OBJ, all formats, export jobs) and Tools (files, drives, recovery, explain,
+  self-test, settings), plus Party Mode, window backgrounds, Save / Restore session
+  and 💾 Save RAW.
+
+44.2 Live Play: master the whole track
+  Tick "🎚 Master full Live Play track" at the top of Live Play. When you stop
+  recording a take, everything that played (composition, live keys, imported media,
+  FX) is mastered: the audio is levelled and peak-limited into a 24-bit master, and
+  the video is remastered — held frames are rebuilt so every frame is filled in,
+  scaled to the chosen size and frame rate — into one full-length MP4. Choose
+  "re-render offline" to render the picture again from the mastered audio instead.
+  Focus (top row) shows only audio, video or performance controls.
+
+44.3 Live buffer and RAW files
+  While you work, the project's mixdown is rendered in the background at medium
+  priority and kept as a RAW Groovebox file. An export, Play or the Live Player with
+  nothing changed uses it at once. 📼 Live buffer in Live Play plays it as the media
+  track. 💾 Save RAW writes the current mixdown as a RAW file immediately. The players
+  open RAW Groovebox audio (.mgr) and headerless raw PCM (.f32, .raw, .pcm).
+
+44.4 Noise: static and 🎲 heuristic (Instrument Mixer)
+  "static" is sample-and-hold crackle that masks rather than tints. 🎲 Noise gives
+  every instrument a noise amount and colour from the chosen source: seeded (seed
+  program), goava (GOAVA curve), rand (entropy captured once and saved, so it
+  replays) or hybrid (their mean).
+
+44.5 Studio session
+  Saves the seeds, Superseed, Starter Patch seed, session name, BPM, base frequency,
+  the open project and the window layout — automatically when Groovebox quits — and
+  restores them (Task pad ▸ Restore session).
+
+44.6 Any hardware as an instrument
+  Theremin ▸ 🔗 Map: a sensor (tilt, compass, magnet, light, proximity, rotation) or
+  the pointer drives any parameter of the project. USB MIDI controls are learned with
+  MIDI learn (Hardware Hub).
+
+44.7 Speed and memory
+  While an export renders or the song plays, the processor's own boost is used fully
+  (turbo, performance preference), and restored afterwards; it is skipped when the
+  CPU is hot. Export workers each get their own block of cores, keeping two cores
+  free for the interface and audio. Memory freed by exports, project loads and
+  canonical work is returned to the system. System Settings ▸ Hardware wait scales how
+  long hardware checks keep trying (each check ends as soon as the device is ready).
+
+44.8 Install media and undo
+  File Studio ▸ 💽 Drives ▸ 💿 Make install media writes a Groovebox ISO to a USB stick
+  (and can add a data partition). Configure Entire Project and the heuristic writers
+  can be undone in one step. Self-test ▸ Export check runs a real short export.
+
+
+44.9 Background playback, waveforms and Play view
+  When an export finishes, the main-window background plays it: a video at 50 %
+  over the field with its sound, an audio file with its waveform across the window
+  and a moving playhead. While a song plays, the background follows it — the
+  scenograph blended in at 50 % (video play) or the live waveform (audio play) — and
+  the window scrolls to the scenograph. The multidimensional editor is translucent
+  so Party Mode and the math field show through.
+
+44.10 Battery and clock
+  The status bar shows the battery and the time; click it to set the clock and the
+  battery protection (warn level, protect level, and notify / autosave /
+  autosave + export). At the protect level the project is saved — and with
+  autosave + export an export is queued — while there is still charge.
+
+44.11 Loudness, true peak, time-stretch (Task pad ▸ 📏 Loudness)
+  Integrated loudness (LUFS, EBU R128), short-term maximum, loudness range, true
+  peak (dBTP) and sample peak of any file or the live buffer; normalise to −14, −16
+  or −23 LUFS with a −1 dBTP ceiling; change tempo without changing pitch, or pitch
+  without changing tempo.
+
+44.12 Edit Synth Per Seq stores the panels too
+  While Edit Synth Per Seq is on, every FX, EQ, Mod Osc, mixer, geometric-panel and
+  synth-engine value you change is stored for the selected sequence and morphed in
+  by each playlist row's Per-Seq Vote at render, like the blue Edit Per-Sequence / Global
+  button.
+```
+
+45. STUDIO, NETWORK AND CODE TOOLS
+
+45.1 Checkpoints and recovery (Task pad ▸ Studio ▸ 🛟)
+  A full checkpoint is taken before Clear Memory, around Configure Entire Project, for
+  every Autopilot project and before any restore. If Groovebox did not close normally,
+  the Recovery window opens at the next start. Restoring uses the same loader as
+  File ▸ Open.
+
+45.2 Autopilot supervisor
+  Pause, Resume, Skip instrument, Skip project, Restart, a delay between projects (0 =
+  continuous), "Visit every instrument page", "Record each Autopilot play" and "Master
+  each recorded take" (both off by default). The status line shows the project, phase,
+  instrument, progress and a countdown to Live Player. The supervisor holds and keeps
+  the project when playback stops making progress or an export fails.
+
+45.3 Notices (🔔 in the status bar)
+  The newest notice, short; click for the full list: UI stalls, skipped canonical
+  updates, audio errors, export checks, resource warnings, network events.
+
+45.4 Mod Matrix and canonical distribution (🧬)
+  Any source (LFOs, the seed, canonical level, playhead, MIDI CC, patch bay, automation
+  targets, earlier rows, plugin controls) × any method (add, multiply, ring, min, max,
+  crossfade, FM, fold, sample-and-hold, gate, quantize) → any target, including the
+  global panel and the FX panels. Canonical distribution spreads the canonicals' effect
+  over many controls instead of one; you choose the scope, kernel, budget, cap and what
+  it reads, and it only replaces a distribution that scores better.
+
+45.5 Carrier layers (🎞)
+  Layers for the global carrier and each instrument carrier: start row, length, stretch,
+  pitch, gain, offset, fade, loop, reverse, mute, solo. The mix is the carrier.
+
+45.6 Seed Atlas (🌌)
+  A bounded tree of the ways a seed becomes sound, picture, game or 3D. Every node is
+  reproducible from its address; open a node to go one level down. A node can become an
+  instrument voice, a music video, a playable game, the window background, the video
+  OBJ, the Global Seed, or input for an external app.
+
+45.7 Experiences (🗺)
+  Every creation and its science (seed, canonicals, tempo, tuning, checks), with your
+  rating, tags and notes; search, compare, lineage, export as CSV / JSON.
+
+45.8 Plugins (🔌) and Randomize project (🎲)
+  70+ plugins in Python, Lua, C, C++, Rust, Go, Julia and shell: content makers,
+  informative tools, four games and four live tools. A plugin runs in its own process
+  (or in the Lua sandbox), may only ask for changes through validated requests (applied
+  as one undo step, rolled back on any error) and stays under the external share of CPU
+  and memory. Bind a plugin as an instrument's carrier, use its controls.json as Mod
+  Matrix sources, or run it on seed change, canonical commit, export or project load.
+  Share plugins on the LAN, install them from nearby Grooveboxes (they never run by
+  themselves) and rate them. Randomize project picks a seed, random plugins with their
+  own states and / or random samples, keeping a chosen percentage of the instruments on
+  the original synth.
+
+45.9 Lua workspace (🌙) and Program Builder (🛠)
+  Lua runs in a sandbox (no files, no system calls, an instruction budget) with the gb.*
+  API; Compile saves bytecode. The Program Builder compiles and runs C, C++, Rust, Go,
+  Julia, Lua, Python and shell programs with the Groovebox environment; their output
+  files come back into Groovebox.
+
+45.10 Hybrid kernels and the sCode tree (🌳)
+  Maths kernels run on NumPy, Rust, LuaJIT or Julia, whichever is fastest on this
+  machine and matches the NumPy reference. All work goes through sCode directions
+  (audio, UI offload, canonical, video, hybrid, scripts, export, programs, background);
+  the sCode tree shows the directions, lanes and child processes.
+
+45.11 External application limit
+  Apps launched from Groovebox, Seed Atlas sends and user programs stay strictly under
+  a share of the CPU and of memory (System setting external_app_share, 0.19758 by
+  default).
+
+45.12 Network (🌐)
+  Radio: name, logo, a running order you arrange, on air on the LAN, with a page on your
+  site, comments, messages to the host and ratings. Nearby radios pop up; Trusted and
+  Housemate stations can start playing on their own. Blog: a simple editor; posts appear
+  at /blog. Files: host any file with embed players (/hosted, /embed/<id>). Trust:
+  Housemate, Trusted, Friend, Public, Blacklist 1 (read only), 2 (no downloads), 3
+  (blocked). Host network: a network name and key; primary hosts and gig stations keep
+  the same posts, files, comments and notices and pull changes from each other; members
+  announce their libraries and get notices, failing over between hosts.
+
+45.13 More tools
+  Math Lab (🧮), Project tools (🩺: health, compare, batch browser, preview, templates,
+  sequence morph), Extras (🧰: find any control with Ctrl+Shift+F, project history,
+  stems, crash report bundle), Features (✨: piano roll, arrangement, clip launcher, MIDI
+  clock and learn, scale lock, groove, slicer, audio → sequence, video titles and grade,
+  camera path, game export, presets, templates, A/B morph, profiler, plugins, folder
+  sync, tour). Alt + right-click any control to see where its value comes from.

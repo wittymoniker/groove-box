@@ -56,7 +56,7 @@ if ($LASTEXITCODE -ne 0 -or -not $Selected) { throw "Groovebox Python/browser ru
 $Selected = ($Selected | Select-Object -Last 1).Trim()
 & $Selected "$ROOT\scripts\provision_first_launch.py"
 if ($LASTEXITCODE -ne 0) { throw "Local FFmpeg/ffprobe provisioning failed." }
-& $Selected -c "import numpy, scipy, cffi, sounddevice, PIL; import PyQt6.QtCore, PyQt6.QtMultimedia, PyQt6.QtMultimediaWidgets; print('Groovebox required Qt/Multimedia runtime OK')"
+& $Selected -c "import numpy, scipy, cffi, PIL; import PyQt6.QtCore, PyQt6.QtMultimedia, PyQt6.QtMultimediaWidgets; print('Groovebox required Qt/Multimedia runtime OK')"
 if ($LASTEXITCODE -ne 0) { throw "Groovebox complete Python/Qt runtime verification failed." }
 & $Selected -c "import subprocess, sys; subprocess.run([sys.executable, '-c', 'import PyQt6.QtWebEngineWidgets'], check=True, timeout=30)"
 if ($LASTEXITCODE -ne 0) { Write-Warning "Optional browser probe failed; main audio/editor runtime remains available." }

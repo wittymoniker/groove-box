@@ -6,7 +6,8 @@ export PYTHONUTF8="${PYTHONUTF8:-1}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$ROOT"
-mkdir -p "$ROOT/bin" "$ROOT/native"
+# R123: installed/read-only trees cannot create these; that must not abort the launch.
+mkdir -p "$ROOT/bin" "$ROOT/native" 2>/dev/null || echo "[Groovebox] note: $ROOT is read-only; native builds use the bundled libraries." >&2
 unset PYTHONHOME PYTHONPATH PYTHONPYCACHEPREFIX || true
 
 # V35.22e_FEDORA_QT_ABI_ISOLATION: Fedora's RPM PyQt6/WebEngine must not
@@ -54,13 +55,13 @@ if ! command -v "$PYTHON_BOOT" >/dev/null 2>&1; then
     exit 2
   fi
   echo "[Groovebox] Python missing; provisioning platform dependencies..." >&2
-  bash "$INSTALLER" "${INSTALL_ARGS[@]}"
+  bash "$INSTALLER" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
   PYTHON_BOOT="python3"
 fi
 
 if ! SELECTED="$("$PYTHON_BOOT" "$ROOT/scripts/ensure_runtime_dependencies.py")"; then
   echo "[Groovebox] Runtime import check needs platform dependency repair..." >&2
-  bash "$INSTALLER" "${INSTALL_ARGS[@]}"
+  bash "$INSTALLER" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}
   SELECTED="$("$PYTHON_BOOT" "$ROOT/scripts/ensure_runtime_dependencies.py")"
 fi
 [[ -n "$SELECTED" && -x "$SELECTED" ]] || {
@@ -69,8 +70,10 @@ fi
 }
 PYTHON_BIN="$SELECTED"
 
-"$PYTHON_BIN" "$ROOT/scripts/provision_first_launch.py"
-"$PYTHON_BIN" "$ROOT/scripts/ensure_native_scode_stage0.py"
+# R123: first-launch provisioning and the sCode stage-0 check are best effort; a failure
+# (offline, read-only tree, no compiler) is reported but never stops the application.
+"$PYTHON_BIN" "$ROOT/scripts/provision_first_launch.py" || echo "[Groovebox] WARNING: first-launch provisioning incomplete; continuing." >&2
+"$PYTHON_BIN" "$ROOT/scripts/ensure_native_scode_stage0.py" || echo "[Groovebox] WARNING: native sCode stage-0 unavailable; Python sCode path remains." >&2
 if [[ ! -s "$RUST_LIBRARY" || "${GROOVEBOX_REBUILD_NATIVE:-0}" == 1 ]]; then
   "$PYTHON_BIN" "$ROOT/scripts/ensure_rust_toolchain.py" --install || echo "[Groovebox] WARNING: Rust setup failed; C++/NumPy fallback remains available." >&2
   "$PYTHON_BIN" "$ROOT/scripts/build_rust_accel.py" || echo "[Groovebox] WARNING: optional Rust build failed; continuing." >&2
@@ -79,4 +82,11 @@ if [[ ! -s "$NATIVE_LIBRARY" || "${GROOVEBOX_REBUILD_NATIVE:-0}" == 1 ]]; then
   bash "$NATIVE_BUILDER" || echo "[Groovebox] WARNING: optional C++ build failed; Python fallback remains available." >&2
 fi
 export GROOVEBOX_RUNTIME_VERIFIED_PYTHON="$PYTHON_BIN"
-exec "$PYTHON_BIN" "$ROOT/launch_groovebox.py" "${APP_ARGS[@]}"
+# R123 (GROOVEBOX_R123_NATIVE_ABI_LAUNCH_20261119): one C++ runtime for Julia, Mesa, Z3 and
+# Qt. LD_PRELOAD is the only mechanism that beats ELF RUNPATH and already-loaded copies.
+if [[ "$(uname -s)" == Linux ]]; then
+  if _GB_ABI_ENV="$("$PYTHON_BIN" "$ROOT/native_abi_guard.py" --shell-env 2>/dev/null)"; then
+    eval "$_GB_ABI_ENV"
+  fi
+fi
+exec "$PYTHON_BIN" "$ROOT/launch_groovebox.py" ${APP_ARGS[@]+"${APP_ARGS[@]}"}

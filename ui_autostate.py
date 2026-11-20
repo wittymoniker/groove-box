@@ -112,11 +112,35 @@ def _set(w, v):
     return False
 
 
-def restore(app, state, qa=None):
-    """Set every saved control that exists and differs. Returns (restored, skipped)."""
+def current_values(app):
+    """Path -> current value for every persisted control (used to detect explicit restores)."""
+    try:
+        return {p: value(w) for p, w in _controls(app).items()}
+    except Exception:
+        return {}
+
+
+def changed_since(app, before):
+    """Paths whose value changed since *before* (a current_values() result)."""
+    if not isinstance(before, dict):
+        return set()
+    now = current_values(app)
+    return {p for p, v in now.items() if p in before and before[p] != v}
+
+
+def restore(app, state, qa=None, protect=None):
+    """Set every saved control that exists and differs. Returns (restored, skipped).
+
+    GROOVEBOX_R123_EXPLICIT_STATE_WINS_20261119: *protect* is the set of control
+    paths the project's explicit fields already restored during this load (for
+    example Reverse Time, BPM, seed).  The catch-all widget map never overrides
+    them, so a merged / edited / Edit-Together snapshot cannot be silently undone
+    by a stale widget value captured alongside it.
+    """
     if not isinstance(state, dict) or not isinstance(state.get("controls"), dict):
         return 0, 0
-    saved = state["controls"]
+    protect = set(protect or ())
+    saved = {p: v for p, v in state["controls"].items() if p not in protect}
     done = skipped = 0
     for name in FIRST:                       # the instrument selector first (per-instrument panels follow it)
         w = getattr(app, name, None)

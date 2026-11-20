@@ -383,6 +383,44 @@ def _open_window(app=None, parent=None):
                        "check still ends the moment the device is ready; raise this only for slow or unusual hardware.")
     sp_wait.valueChanged.connect(lambda v: cs.update(wait_factor=float(v)))
     form.addRow("Hardware wait", sp_wait)
+    # GROOVEBOX_R123_MOUSE_TRACER_20261119: pointer trail (default ON) — saved immediately.
+    def _mt_upd(**kw):
+        cs.update(**kw)
+        try:
+            __import__("mouse_tracer").reload_settings()
+        except Exception:
+            pass
+    _mt_row = QWidget(body); _mt_l = QHBoxLayout(_mt_row); _mt_l.setContentsMargins(0, 0, 0, 0)
+    chk_mt = QCheckBox("Show"); chk_mt.setChecked(bool(st.get("mouse_tracer", True)))
+    chk_mt.setToolTip("A subtle fading trail behind the pointer inside Groovebox windows. Clicks pass through.")
+    cb_mt_mode = QComboBox(); cb_mt_mode.addItems(["trail", "ring", "trail+ring"])
+    cb_mt_mode.setCurrentText(str(st.get("mouse_tracer_mode", "trail")))
+    sp_mt_len = QSpinBox(); sp_mt_len.setRange(4, 256); sp_mt_len.setValue(int(st.get("mouse_tracer_length", 48))); sp_mt_len.setPrefix("len ")
+    sp_mt_fade = QSpinBox(); sp_mt_fade.setRange(100, 5000); sp_mt_fade.setSingleStep(50); sp_mt_fade.setValue(int(st.get("mouse_tracer_fade_ms", 600))); sp_mt_fade.setSuffix(" ms")
+    sp_mt_w = QSpinBox(); sp_mt_w.setRange(1, 24); sp_mt_w.setValue(int(st.get("mouse_tracer_width", 4))); sp_mt_w.setSuffix(" px")
+    b_mt_col = QPushButton("Colour…")
+    b_mt_col.setStyleSheet("background:%s; color:#000;" % st.get("mouse_tracer_color", "#4fd1ff"))
+    def _mt_col():
+        from PyQt6.QtWidgets import QColorDialog
+        from PyQt6.QtGui import QColor
+        c = QColorDialog.getColor(QColor(str(cs.load().get("mouse_tracer_color", "#4fd1ff"))), win, "Mouse tracer colour")
+        if c.isValid():
+            b_mt_col.setStyleSheet("background:%s; color:#000;" % c.name()); _mt_upd(mouse_tracer_color=c.name())
+    b_mt_col.clicked.connect(_mt_col)
+    chk_mt.toggled.connect(lambda v: _mt_upd(mouse_tracer=bool(v)))
+    cb_mt_mode.currentTextChanged.connect(lambda v: _mt_upd(mouse_tracer_mode=v))
+    sp_mt_len.valueChanged.connect(lambda v: _mt_upd(mouse_tracer_length=int(v)))
+    sp_mt_fade.valueChanged.connect(lambda v: _mt_upd(mouse_tracer_fade_ms=int(v)))
+    sp_mt_w.valueChanged.connect(lambda v: _mt_upd(mouse_tracer_width=int(v)))
+    for _w in (chk_mt, cb_mt_mode, sp_mt_len, sp_mt_fade, sp_mt_w, b_mt_col):
+        _mt_l.addWidget(_w)
+    form.addRow("Mouse tracer", _mt_row)
+    cb_scroll = QComboBox(); cb_scroll.addItems(["windows", "windows+main", "off"])
+    cb_scroll.setCurrentText(str(st.get("scroll_panels", "windows")))
+    cb_scroll.setToolTip("windows: tool windows scroll when their content does not fit · windows+main: compatibility mode, "
+                         "the main window also scrolls across all its panels (restart) · off: never wrap")
+    cb_scroll.currentTextChanged.connect(lambda v: __import__("window_scroll").set_mode(v))
+    form.addRow("Scroll panels", cb_scroll)
     # UI_PANES_R6: window pane formats (sizes, order, stacked / side by side, docks) for every window.
     try:
         import ui_panels_ui as _upu
