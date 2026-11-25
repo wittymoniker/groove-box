@@ -158,20 +158,104 @@ def _priv(cmd):
         __import__("accounts").require("install")    # R101: installs need an owner / member account
     except ImportError:
         pass
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return cmd
-    if __import__("sos_tools").which("pkexec"):
-        return ["pkexec"] + cmd
-    return ["sudo", "-n"] + cmd
+    return __import__("sos_tools").root_prefix() + list(cmd)   # R132: sudo first (sOS has no polkit session)
 
 
 def install_methods():
-    m = ["appimage"]
-    if __import__("sos_tools").which("apt-get"):
-        m += ["deb", "apt"]
-    if __import__("sos_tools").which("flatpak"):
+    w = __import__("sos_tools").which
+    m = ["auto", "appimage", "url", "tarball", "run"]          # R132.10: auto detects URL / file / package / Flatpak ID
+    if w("apt-get"):
+        m += ["deb", "apt", "flatpak-setup"]
+    if w("flatpak"):
         m += ["flatpak"]
+    if w("pipx") or w("pip3") or w("pip"):
+        m += ["pipx"]
+    if w("snap"):
+        m += ["snap"]
+    if w("rpm") or w("alien"):
+        m += ["rpm"]
     return m
+
+
+DOWNLOAD_DIR = os.path.expanduser("~/Downloads/groovebox-installs")
+_FLATPAK_ID = r"[A-Za-z][A-Za-z0-9_\-]*(\.[A-Za-z0-9_\-]+){2,}"
+
+
+def looks_like_url(t):
+    t = str(t).strip()
+    return t.startswith(("http://", "https://", "ftp://")) or (("/" in t) and not os.path.exists(os.path.expanduser(t))
+                                                               and "." in t.split("/")[0] and " " not in t)
+
+
+def download(url, log=None):
+    """R132.10: fetch a URL (bare host/path gets https://) into ~/Downloads/groovebox-installs; returns the file."""
+    import urllib.request, urllib.parse
+    url = str(url).strip()
+    if "://" not in url:
+        url = "https://" + url
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "groovebox-installer"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        name = os.path.basename(urllib.parse.urlparse(r.geturl()).path) or "download"
+        cd = r.headers.get("Content-Disposition") or ""
+        if "filename=" in cd:
+            name = cd.split("filename=")[-1].strip('"; ')
+        dst = os.path.join(DOWNLOAD_DIR, os.path.basename(name))
+        with open(dst, "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+    if log:
+        log("downloaded %s → %s" % (url, dst))
+    return dst
+
+
+def detect_method(target):
+    """auto: which installer handles this target."""
+    import re as _re
+    t = str(target).strip(); low = t.lower()
+    if looks_like_url(t) and not low.endswith((".flatpakref", ".flatpakrepo")):
+        return "url"
+    if low.endswith(".appimage"):
+        return "appimage"
+    if low.endswith(".deb"):
+        return "deb"
+    if low.endswith(".rpm"):
+        return "rpm"
+    if low.endswith((".flatpakref", ".flatpak", ".flatpakrepo")):
+        return "flatpak"
+    if low.endswith((".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar.zst", ".zip")):
+        return "tarball"
+    if low.endswith((".run", ".sh", ".bin")):
+        return "run"
+    if low.endswith(".whl") or low.startswith(("pip:", "pypi:")):
+        return "pipx"
+    if low.startswith("snap:"):
+        return "snap"
+    if _re.fullmatch(_FLATPAK_ID, t):
+        return "flatpak"
+    return "apt"
+
+
+def install_tarball(path):
+    """Unpack into ~/.local/opt/<name>; link executables found at the top / bin into ~/.local/bin."""
+    name = os.path.basename(path)
+    for ext in (".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar.zst", ".zip"):
+        if name.lower().endswith(ext):
+            name = name[: -len(ext)]
+    dst = os.path.expanduser("~/.local/opt/" + name)
+    os.makedirs(dst, exist_ok=True)
+    shutil.unpack_archive(path, dst)
+    bindir = os.path.expanduser("~/.local/bin"); os.makedirs(bindir, exist_ok=True)
+    linked = []
+    for root, _d, files in os.walk(dst):
+        if root.count(os.sep) - dst.count(os.sep) > 2:
+            continue
+        for f in files:
+            fp = os.path.join(root, f)
+            if os.access(fp, os.X_OK) and not f.endswith((".so", ".sh.in")) and ".so." not in f:
+                ln = os.path.join(bindir, f)
+                if not os.path.exists(ln):
+                    os.symlink(fp, ln); linked.append(ln)
+    return dst, linked
 
 
 def install_appimage(path):
@@ -197,7 +281,24 @@ def install_cmd(method, target):
             raise ValueError("not a valid package name: %r" % _pkg)
         return _priv(["apt-get", "install", "-y", _pkg])
     if method == "flatpak":
-        return ["flatpak", "install", "--user", "-y", str(target).strip()]
+        t = str(target).strip()
+        if os.path.isfile(t):
+            return ["flatpak", "install", "--user", "-y", ("--from" if t.endswith((".flatpakref", ".flatpakrepo")) else "--bundle"), t]
+        return ["flatpak", "install", "--user", "-y", "--noninteractive", "flathub", t]
+    if method == "flatpak-setup":          # flatpak + Flathub remote, so Flatpak IDs (e.g. net.agalwood.Motrix) work
+        return ["sh", "-c", " ".join(_priv(["apt-get", "install", "-y", "flatpak"])) +
+                " && flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"]
+    if method == "rpm":
+        return _priv(["sh", "-c", "cd /tmp && alien -i --scripts " + shlex.quote(os.path.abspath(target))])
+    if method == "pipx":
+        t = str(target).strip().split(":", 1)[-1] if str(target).lower().startswith(("pip:", "pypi:")) else str(target).strip()
+        w = __import__("sos_tools").which
+        return (["pipx", "install", t] if w("pipx") else [("pip3" if w("pip3") else "pip"), "install", "--user", "--break-system-packages", t])
+    if method == "snap":
+        return _priv(["snap", "install", str(target).strip().split(":", 1)[-1]])
+    if method == "run":
+        os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR)
+        return [os.path.abspath(target)]
     raise ValueError(method)
 
 
@@ -337,7 +438,7 @@ def open_window(app=None):
     ti = QWidget(); li = QVBoxLayout(ti); tabs.addTab(ti, "Install")
     li.addWidget(QLabel("Install other Linux software. Methods offered on this machine: " + ", ".join(install_methods())))
     ri = QHBoxLayout(); li.addLayout(ri)
-    meth = QComboBox(); meth.addItems(install_methods()); target = QLineEdit(); target.setPlaceholderText("file, package name or Flatpak ref")
+    meth = QComboBox(); meth.addItems(install_methods()); target = QLineEdit(); target.setPlaceholderText("auto: URL, file (.AppImage .deb .rpm .tar.gz .run .whl), apt package, Flatpak ID, pip:name, snap:name")
     b_pick, b_inst = QPushButton("File…"), QPushButton("Install")
     for x in (meth, target, b_pick, b_inst):
         ri.addWidget(x)
@@ -354,13 +455,35 @@ def open_window(app=None):
         m, t = meth.currentText(), target.text().strip()
         if not t:
             return
+        if m == "auto":
+            m = detect_method(t); ilog.appendPlainText("auto → %s" % m)
+        if m == "url" or (m in ("appimage", "deb", "tarball", "run", "rpm") and looks_like_url(t)):
+            try:
+                t = download(t, ilog.appendPlainText)
+            except Exception as exc:
+                ilog.appendPlainText("⚠ download failed: %s" % exc); return
+            m = detect_method(t); m = "appimage" if m in ("apt", "url") else m
+            target.setText(t)
+        if m == "flatpak" and not __import__("sos_tools").which("flatpak"):
+            ilog.appendPlainText("Flatpak is not installed — choose 'flatpak-setup' first (installs flatpak + Flathub)."); return
+        if m == "tarball":
+            try:
+                d, ln = install_tarball(t); ilog.appendPlainText("unpacked into %s; linked %s" % (d, ", ".join(ln) or "nothing")); fill()
+            except Exception as exc:
+                ilog.appendPlainText("⚠ %s" % exc)
+            return
         if m == "appimage":
             try:
                 ilog.appendPlainText("installed " + install_appimage(t)); fill()
             except Exception as exc:
                 ilog.appendPlainText("⚠ %s" % exc)
             return
-        cmd = install_cmd(m, t)
+        if m in ("deb", "apt", "rpm", "snap", "flatpak-setup") and not __import__("sos_tools").ensure_sudo(w, "Installing a system package needs administrator rights."):
+            ilog.appendPlainText("not installed (no administrator password)"); return
+        try:
+            cmd = install_cmd(m, t)
+        except Exception as exc:
+            ilog.appendPlainText("⚠ %s" % exc); return
         if QMessageBox.question(w, "Install", "Run:\n" + " ".join(cmd)) != QMessageBox.StandardButton.Yes:
             return
         pr = QProcess(w); pr.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)

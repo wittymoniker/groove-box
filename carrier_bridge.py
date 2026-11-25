@@ -57,9 +57,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-KINDS = ("audio", "control", "video", "number", "text", "events", "file")
+KINDS = ("audio", "control", "video", "number", "text", "events", "file", "image")   # R132.26: + image
 AUDIO_EXT = (".wav", ".flac", ".mp3", ".ogg", ".aif", ".aiff", ".m4a", ".opus")
 VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp")
+TEXT_EXT = (".txt", ".seed", ".mgs", ".md", ".scl")
 DEFAULT_SR = 48000
 CONTROL_RATE = 100.0
 
@@ -112,7 +114,7 @@ def _digest(sig: Signal) -> str:
         h.update(np.ascontiguousarray(d, dtype=np.float32).tobytes())
     elif isinstance(d, (bytes, bytearray)):
         h.update(bytes(d))
-    elif sig.kind in ("file", "video") and isinstance(d, str) and os.path.isfile(d):
+    elif sig.kind in ("file", "video", "image") and isinstance(d, str) and os.path.isfile(d):
         with open(d, "rb") as fh:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(chunk)
@@ -137,7 +139,16 @@ def converter(src: str, dst: str, name: str):
 @converter("file", "audio", "decode audio (WAV native, others via FFmpeg)")
 def _file_to_audio(sig, app):
     path = str(sig.data)
-    if app is not None and hasattr(app, "_decode_media_audio"):
+    a = sr = None
+    if path.lower().endswith((".wav", ".flac", ".ogg", ".aif", ".aiff")):
+        try:                                            # R132.26: read directly (no FFmpeg): float / 24-bit WAV, FLAC, OGG
+            import soundfile as sf
+            a, sr = sf.read(path, dtype="float32", always_2d=False)
+        except Exception:
+            a = sr = None
+    if a is not None:
+        pass
+    elif app is not None and hasattr(app, "_decode_media_audio"):
         a, sr = app._decode_media_audio(path)
     else:
         import wave
@@ -304,6 +315,101 @@ def _control_to_file(sig, app):
     return Signal("file", path, None, dict(sig.meta))
 
 
+# R132.26: the missing edges — nothing reached `events`, and there was no image kind although media_transmuter has
+# image ↔ sound ↔ video. Each is one edge; multi-step routes still come from the shortest path.
+@converter("control", "events", "peaks: each local maximum in the upper half of the curve → (t, value)")
+def _control_to_events(sig, app):
+    c = np.asarray(sig.data, np.float64).ravel()
+    rate = float(sig.rate or CONTROL_RATE)
+    if c.size < 3:
+        return Signal("events", [(0.0, float(c[0]) if c.size else 0.0)], None, dict(sig.meta))
+    lo, hi = float(c.min()), float(c.max())
+    thr = lo + 0.5 * (hi - lo)
+    idx = np.flatnonzero((c[1:-1] > c[:-2]) & (c[1:-1] >= c[2:]) & (c[1:-1] >= thr)) + 1
+    if idx.size == 0:
+        idx = np.array([int(np.argmax(c))])
+    return Signal("events", [(round(float(i) / rate, 4), float(c[i])) for i in idx[:4096]], None, dict(sig.meta))
+
+
+@converter("number", "control", "constant curve: one second at 100 Hz")
+def _number_to_control(sig, app):
+    return Signal("control", np.full(int(CONTROL_RATE), float(sig.data), np.float32), CONTROL_RATE, dict(sig.meta))
+
+
+@converter("audio", "image", "media_transmuter: log-frequency spectrogram PNG (image → audio reads it back)")
+def _audio_to_image(sig, app):
+    import media_transmuter as mt
+    wav = _audio_to_file(sig, app).data
+    dst = os.path.splitext(wav)[0] + ".png"
+    if not os.path.isfile(dst):
+        mt.sound_to_image(wav, dst)
+    return Signal("image", dst, None, dict(sig.meta))
+
+
+@converter("image", "audio", "media_transmuter: the picture read as a spectrogram (exact for Groovebox spectrograms)")
+def _image_to_audio(sig, app):
+    import media_transmuter as mt
+    dst = os.path.join(_out_dir(app), "bridge_image_%s.wav" % _digest(sig)[:12])
+    if not os.path.isfile(dst):
+        mt.image_to_sound(str(sig.data), dst)
+    return _file_to_audio(Signal("file", dst, None, dict(sig.meta)), app)
+
+
+@converter("image", "video", "media_transmuter: pan / zoom video of the picture, its sonification muxed in")
+def _image_to_video(sig, app):
+    import media_transmuter as mt
+    dst = os.path.join(_out_dir(app), "bridge_image_%s.mp4" % _digest(sig)[:12])
+    if not os.path.isfile(dst):
+        mt.image_to_video(str(sig.data), dst)
+    return Signal("video", dst, None, dict(sig.meta))
+
+
+@converter("video", "image", "media_transmuter: contact sheet of the video's frames")
+def _video_to_image(sig, app):
+    import media_transmuter as mt
+    dst = os.path.join(_out_dir(app), "bridge_video_%s.png" % hashlib.sha256(str(sig.data).encode()).hexdigest()[:12])
+    if not os.path.isfile(dst):
+        mt.video_to_image(str(sig.data), dst)
+    return Signal("image", dst, None, dict(sig.meta))
+
+
+@converter("image", "file", "image file path")
+def _image_to_file(sig, app):
+    return Signal("file", str(sig.data), None, dict(sig.meta))
+
+
+def sniff(sig: Signal) -> Signal:
+    """R132.26: a file signal re-typed by what it contains, so routing starts from the right kind (a PNG sent to a
+    lane used to be decoded as audio and fail). Audio files stay `file` (file → audio decodes them)."""
+    if sig.kind != "file":
+        return sig
+    p = str(sig.data)
+    low = p.lower()
+    meta = {**sig.meta, "path": p}
+    if low.endswith(VIDEO_EXT):
+        return Signal("video", p, None, meta)
+    if low.endswith(IMAGE_EXT):
+        return Signal("image", p, None, meta)
+    if low.endswith(".json") and os.path.isfile(p):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except Exception as exc:
+            raise BridgeError(f"{os.path.basename(p)}: unreadable JSON ({exc})")
+        if isinstance(doc, dict) and doc.get("format") == "GrooveboxControlCurve":
+            return Signal("control", np.asarray(doc.get("values") or [0.0], np.float32), float(doc.get("rate") or CONTROL_RATE), meta)
+        seed = doc.get("seed") if isinstance(doc, dict) else None           # .game.json / world spec → its seed
+        if not seed and isinstance(doc, dict):
+            seed = next((lv.get("seed") for lv in doc.get("levels") or [] if isinstance(lv, dict) and lv.get("seed")), None)
+        if seed:
+            return Signal("text", str(seed), None, meta)
+        raise BridgeError(f"{os.path.basename(p)}: JSON is neither a control curve nor a game / world spec")
+    if low.endswith(TEXT_EXT) and os.path.isfile(p):
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            return Signal("text", fh.read(1 << 20), None, meta)
+    return sig
+
+
 def _route(src: str, dst: str) -> List[Tuple[str, str]]:
     if src == dst:
         return []
@@ -326,6 +432,11 @@ def _route(src: str, dst: str) -> List[Tuple[str, str]]:
 def convert(sig: Signal, to_kind: str, app=None) -> Tuple[Signal, List[str]]:
     """Post-processing A→B: convert any signal to any reachable kind. Returns (signal, steps)."""
     steps = []
+    if sig.kind == "file" and to_kind != "file":
+        typed = sniff(sig)
+        if typed.kind != "file":
+            steps.append(f"file→{typed.kind}: read {os.path.splitext(str(sig.data))[1] or 'file'} as {typed.kind}")
+            sig = typed
     for a, b in _route(sig.kind, to_kind):
         name, fn = _EDGES[(a, b)]
         sig = fn(sig, app)
@@ -360,14 +471,15 @@ class Context:
     needs: str
     apply: Callable          # (app, signal, arg) -> undo callable or None
     doc: str
+    worker: bool = False     # R132.26: apply touches no Qt widget → the Signal Router runs it off the GUI thread
 
 
 _CONTEXTS: Dict[str, Context] = {}
 
 
-def context(name, needs, doc):
+def context(name, needs, doc, worker=False):
     def deco(fn):
-        _CONTEXTS[name] = Context(name, needs, fn, doc)
+        _CONTEXTS[name] = Context(name, needs, fn, doc, worker)
         return fn
     return deco
 
@@ -500,13 +612,17 @@ def _ctx_video(app, sig, _arg):
     return None
 
 
-@context("export", "file", "copy into the project exports folder")
+@context("export", "file", "copy into the project exports folder", worker=True)
 def _ctx_export(app, sig, _arg):
-    d = str(app._exports_dir()) if hasattr(app, "_exports_dir") else _out_dir(app)
+    d = str(app._exports_dir()) if hasattr(app, "_exports_dir") else os.path.join(_out_dir(app), "exports")
     os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, os.path.basename(str(sig.data)))
+    if os.path.realpath(dst) == os.path.realpath(str(sig.data)):
+        return None                                  # R132.26: already in the exports folder
+    existed = os.path.exists(dst)
     shutil.copy2(str(sig.data), dst)
-    return lambda: os.path.exists(dst) and os.remove(dst)
+    sig.meta["path"] = dst
+    return None if existed else (lambda: os.path.exists(dst) and os.remove(dst))
 
 
 @context("live_player", "file", "open in the Live Player")
@@ -514,6 +630,196 @@ def _ctx_live(app, sig, _arg):
     import app_hub
     app_hub.send_back(app, str(sig.data))
     return None
+
+
+# ----------------------------------------------------------------------------- R132.26 contexts
+# Every place a signal can usefully land now has exactly one context. Each still uses the engine's own path.
+def _curve(sig, n=512):
+    c = np.nan_to_num(np.asarray(sig.data, np.float64).ravel())
+    if c.size == 0:
+        c = np.array([0.5])
+    if c.size > n:
+        c = np.interp(np.linspace(0, c.size - 1, n), np.arange(c.size), c)
+    lo, hi = float(c.min()), float(c.max())
+    return ((c - lo) / (hi - lo) if hi > lo else np.clip(c, 0.0, 1.0)).tolist()
+
+
+@context("mod", "control", "Master Mod Path row: the curve loops every `rate` beats into any automation / widget target")
+def _ctx_mod(app, sig, target):
+    import any_signal_context as asc
+    import mod_matrix as mm
+    target = target or ("widget:" + mm.GLOBAL_WIDGETS[0])
+    rs = mm.rows(app)
+    prev = [dict(r) for r in rs]
+    src = "signal:" + str(sig.meta.get("source") or sig.meta.get("name") or "bridge")[:40]
+    curve = _curve(sig)
+    res = asc.route(app, signal=float(np.mean(curve)), target=target, source_name=src,
+                    amount=float(sig.meta.get("amount", 0.25)), rate=float(sig.meta.get("beats", 4.0)))
+    if not res.get("ok"):
+        raise BridgeError("mod route refused: " + str(res.get("reason")))
+    for r in rs:
+        if str(r.get("target")) == target and str(r.get("source")) == src:
+            r["_signal_curve"] = curve                      # mod_matrix._src reads it (signal:* sources)
+    sig.meta["mod"] = {k: v for k, v in res.items() if k != "row"}
+
+    def undo():
+        rs[:] = prev
+    return undo
+
+
+@context("automation", "control", "automation lane on any numeric project parameter (user lane, one pass = `beats`)")
+def _ctx_automation(app, sig, path):
+    import automation_bus as ab
+    path = path or next(iter(ab.targets(app)), "")
+    if not path:
+        raise BridgeError("no automation target exists in this project")
+    lane = ab.add_lane(app, path, amount=float(sig.meta.get("amount", 0.5)), owner="user")
+    if lane is None:
+        raise BridgeError(f"automation target not found: {path}")
+    beats = float(sig.meta.get("beats", 16.0))
+    c = _curve(sig, 256)
+    lane["points"] = [(beats * i / max(1, len(c) - 1), float(v)) for i, v in enumerate(c)]
+
+    def undo():
+        try:
+            ab.lanes(app).remove(lane)
+            d, k = ab._resolve(app, path)
+            if d is not None:
+                d[k] = lane["base"]
+        except Exception:
+            pass
+    return undo
+
+
+def _engines(app):
+    try:
+        import canonical_matrix as cm
+        return tuple(cm.context(app)[1])
+    except Exception:
+        return ()
+
+
+@context("lens", "text", "🔭 Lenses: the seed → audio + image + game through one lens (arg: lens name)", worker=True)
+def _ctx_lens(app, sig, lens):
+    import lenses
+    lens = lens if lens in lenses.LENSES else "spectral"
+    r = lenses.render_all(str(sig.data), _engines(app), lens=lens)
+    sig.meta["path"] = r.get("audio", {}).get("path", "")
+    sig.meta["outputs"] = {k: (v.get("path") if isinstance(v, dict) else v) for k, v in r.items() if k in ("audio", "image", "game")}
+    return None
+
+
+@context("world", "text", "🌍 enter the open world of this seed (arg: lens bias)")
+def _ctx_world(app, sig, lens):
+    from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
+    import open_world
+    d = QDialog(app if hasattr(app, "isWindow") else None)
+    d.setWindowTitle("🌍 " + str(sig.data)[:48]); d.resize(900, 640)
+    lay = QVBoxLayout(d); info = QLabel(""); info.setWordWrap(True)
+    wv = open_world.WorldView(str(sig.data), _engines(app), lens or None, info.setText)
+    lay.addWidget(wv, 1); lay.addWidget(info)
+    d.show(); wv.setFocus()
+    return d.close
+
+
+@context("postfx", "file", "✨ Post-processing chain (arg: post seed) → a processed copy in exports/postfx", worker=True)
+def _ctx_postfx(app, sig, post_seed):
+    import postfx
+    try:
+        seed = post_seed or str(app._seed_text() or "")
+    except Exception:
+        seed = post_seed or "postfx"
+    d = os.path.join(str(app._exports_dir()) if hasattr(app, "_exports_dir") else _out_dir(app), "postfx")
+    out = postfx.process_file(str(sig.data), postfx.settings_from_seed(seed, _engines(app)), out_dir=d)
+    sig.meta["path"] = out
+    return lambda: os.path.exists(out) and os.remove(out)
+
+
+def _performance(app):
+    for name in ("_perf_panel", "_open_performance"):
+        f = getattr(app, name, None)
+        if callable(f):
+            try:
+                p = f()
+                if p is not None and hasattr(p, "_playlist"):
+                    return p
+            except Exception:
+                pass
+    p = getattr(app, "_performance_panel", None)
+    return p if p is not None and hasattr(p, "_playlist") else None
+
+
+@context("playlist", "file", "add to the Performance playlist")
+def _ctx_playlist(app, sig, _arg):
+    p = _performance(app)
+    if p is None:
+        raise BridgeError("the Performance playlist is not available")
+    path = str(sig.data)
+    if not any(it.get("path") == path for it in p._playlist):
+        low = path.lower()
+        p._playlist.append({"path": path, "volume": 100, "mix": False, "kind": "image" if low.endswith(IMAGE_EXT) else "media",
+                            "time_s": float(len(p._playlist) * 5.0), "duration_s": 5.0 if low.endswith(IMAGE_EXT) else 0.0})
+        for fn in ("_refresh_playlist_widget", "_sync_project_state"):
+            try:
+                getattr(p, fn)()
+            except Exception:
+                pass
+
+    def undo():
+        p._playlist[:] = [it for it in p._playlist if it.get("path") != path]
+        try:
+            p._refresh_playlist_widget()
+        except Exception:
+            pass
+    return undo
+
+
+@context("editor", "file", "open in the matching editor (audio → Audio Editor · image → Image Editor · video → Clip Editor)")
+def _ctx_editor(app, sig, _arg):
+    path = str(sig.data); low = path.lower()
+    if low.endswith(IMAGE_EXT):
+        import image_editor
+        w = image_editor.open_window(app)
+        w.open_path(path)
+    elif low.endswith(VIDEO_EXT):
+        f = getattr(app, "_r32_open_clip_editor", None)
+        if not callable(f):
+            raise BridgeError("the Clip Editor is not in this build")
+        w = f()
+        for m in ("import_media", "add_clip", "load_media", "_import_path"):
+            if w is not None and callable(getattr(w, m, None)):
+                getattr(w, m)(path); break
+    else:
+        import audio_editor
+        audio_editor.open_window(app, path)
+    return None
+
+
+@context("share", "file", "publish on this Groovebox's LAN site (Network Hub ▸ hosted files)", worker=True)
+def _ctx_share(app, sig, title):
+    import net_hub
+    item = net_hub.host_file(str(sig.data), title=title or os.path.basename(str(sig.data)), note="sent by the Signal Router")
+    sig.meta["shared"] = item.get("sha") if isinstance(item, dict) else str(item)
+    return None
+
+
+@context("background", "image", "the desktop / window background picture")
+def _ctx_background(app, sig, _arg):
+    import compat_settings as cs
+    prev = {k: cs.load().get(k) for k in ("window_background_image", "math_background_enabled")}
+    cs.update(window_background_image=str(sig.data), math_background_enabled=True)
+
+    def refresh():
+        try:
+            import groovebox as gb
+            gb.refresh_window_backgrounds(app)
+        except Exception:
+            pass
+    refresh()
+
+    def undo():
+        cs.update(**prev); refresh()
+    return undo
 
 
 def contexts() -> Dict[str, str]:
@@ -632,33 +938,61 @@ _HISTORY = collections.deque(maxlen=256)
 _LOCK = threading.Lock()
 
 
-def send(app, value, ctx: str, *, source: str = "", kind: Optional[str] = None, **meta) -> dict:
-    """Deliver any value/signal into a context. Must be called on the GUI thread for UI contexts.
-
-    Returns a receipt; ``receipt['undo']`` (callable or None) reverts the change."""
+def prepare(app, value, ctx: str, *, source: str = "", kind: Optional[str] = None, **meta) -> dict:
+    """R132.26: the conversion half of :func:`send` (decode, transmute, render). Safe on a worker thread; hand the
+    result to :func:`deliver` on the GUI thread (or on the worker when ``plan['worker']`` is True)."""
     sig = from_value(value, kind, **meta)
     if source:
         sig.meta["source"] = source
     c, arg = _split(ctx)
-    prof = profile(app) if app is not None else {"guaranteed": False, "why": ["no project"]}
+    plan = {"ctx": ctx, "sig_kind": sig.kind, "c": c, "arg": arg, "worker": c.worker, "source": sig.meta.get("source", "")}
     try:
-        out, steps = convert(sig, c.needs, app)
+        plan["out"], plan["steps"] = convert(sig, c.needs, app)
+    except Exception as exc:
+        plan["error"] = exc
+    return plan
+
+
+def route_steps(src_kind: str, ctx: str) -> List[str]:
+    """The conversion steps a send would take (for previews); raises BridgeError when there is no route."""
+    c, _arg = _split(ctx)
+    return [f"{a}→{b}: {_EDGES[(a, b)][0]}" for a, b in _route(src_kind, c.needs)]
+
+
+def send(app, value, ctx: str, *, source: str = "", kind: Optional[str] = None, **meta) -> dict:
+    """Deliver any value/signal into a context. Must be called on the GUI thread for UI contexts.
+
+    Returns a receipt; ``receipt['undo']`` (callable or None) reverts the change."""
+    return deliver(app, prepare(app, value, ctx, source=source, kind=kind, **meta))
+
+
+def deliver(app, plan: dict) -> dict:
+    """Apply a :func:`prepare` result to its context; same receipt / guarantee handling as :func:`send`."""
+    ctx, c, arg = plan["ctx"], plan["c"], plan["arg"]
+    src_kind, source = plan.get("sig_kind", "?"), plan.get("source", "")
+    # profile / provenance read widgets: a worker-side deliver passes them in, computed on the GUI thread
+    prof = plan.get("profile") or (profile(app) if app is not None else {"guaranteed": False, "why": ["no project"]})
+    try:
+        if plan.get("error") is not None:
+            raise plan["error"]
+        out, steps = plan["out"], plan["steps"]
         undo = c.apply(app, out, arg)
     except Exception as exc:
         if prof.get("guaranteed"):
-            msg = f"GUARANTEE VIOLATION: {sig.kind} → {ctx} failed in the Seed-only / all-canonicals / defaults profile: {exc}"
+            msg = f"GUARANTEE VIOLATION: {src_kind} → {ctx} failed in the Seed-only / all-canonicals / defaults profile: {exc}"
             with _LOCK:
-                _HISTORY.append({"t": time.time(), "context": ctx, "from": sig.kind, "error": msg, "guaranteed": True})
+                _HISTORY.append({"t": time.time(), "context": ctx, "from": src_kind, "error": msg, "guaranteed": True})
             try:
                 __import__("notify_center").notify(app, msg, "error", key="bridge:violation:" + ctx, every_s=5)
             except Exception:
                 pass
             raise BridgeError(msg) from exc
         raise
-    rec = {"t": time.time(), "context": ctx, "path": getattr(out, "meta", {}).get("path", ""), "source": sig.meta.get("source", ""), "from": sig.kind,
+    rec = {"t": time.time(), "context": ctx, "path": getattr(out, "meta", {}).get("path", ""), "source": source, "from": src_kind,
            "route": steps, "sha256": _digest(out),
            "samples": int(np.asarray(out.data).size) if isinstance(out.data, np.ndarray) else None,
-           "rate": out.rate, "guaranteed": bool(prof.get("guaranteed")), **_provenance(app)}
+           "rate": out.rate, "guaranteed": bool(prof.get("guaranteed")), **(plan.get("provenance") or _provenance(app)),
+           **({"outputs": out.meta["outputs"]} if "outputs" in out.meta else {})}
     with _LOCK:
         _HISTORY.append(dict(rec))
     rec["undo"] = undo
@@ -685,16 +1019,12 @@ def validate() -> List[str]:
     for c in _CONTEXTS.values():
         if c.needs not in KINDS:
             problems.append(f"context {c.name} needs unknown kind {c.needs}")
-    reach = {k: set() for k in KINDS}
-    for k in KINDS:
+    for k in KINDS:                       # R132.26: the full matrix — every kind reaches every kind and every context
         for d in KINDS:
             try:
-                _route(k, d); reach[k].add(d)
+                _route(k, d)
             except BridgeError:
-                pass
-    for need in ("audio", "file", "control"):
-        if need not in reach["file"] and need != "file":
-            problems.append(f"file cannot reach {need}")
+                problems.append(f"{k} cannot reach {d}")
     return problems
 
 
@@ -716,13 +1046,13 @@ def verify_guarantee(app=None) -> List[str]:
     probe["control"] = convert(probe["number"], "control")[0]
     probe["events"] = Signal("events", [(0.0, 0.0), (0.5, 1.0)])
     probe["audio"] = convert(probe["control"], "audio")[0]
-    for k, sig in probe.items():
+    for k, sig in probe.items():                 # image / video / file are paths: covered by the audio / control hashes
         for c in _CONTEXTS.values():
             try:
                 r = _route(k, c.needs)
             except BridgeError as exc:
                 problems.append(f"{k} → {c.name}: {exc}"); continue
-            if c.needs in ("file", "video") and k != c.needs:
+            if c.needs in ("file", "video", "image") and k != c.needs:
                 continue          # file writes are content-addressed; covered by the audio/control hashes
             a = _digest(convert(sig, c.needs)[0]); b = _digest(convert(sig, c.needs)[0])
             if a != b:

@@ -1,1 +1,2 @@
-Groovebox sOS appliance v35.22; BUILD_ISO revision v35.22g active-bootstrap enforcement.
+Groovebox sOS appliance runtime v35.22; current BUILD_ISO revision v35.22v.
+Recovery-verifier synchronization + final initramfs stamp-path fix on top of the v35.22u strict Wayland session.

@@ -25,3 +25,8 @@ def open_window(app, parent=None):
     lay.addStretch(1)
     w.show(); w.raise_()
     return w
+
+
+# WINDOW_KEEPER_20261112: parentless windows used to be garbage-collected the moment they opened.
+import window_keeper as _window_keeper  # noqa: E402
+open_window = _window_keeper.kept(open_window)

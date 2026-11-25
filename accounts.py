@@ -109,6 +109,32 @@ def current():
     return acc
 
 
+
+def workspacing(acc=None):
+    """Per-account workspacing: local scripted env, overlay sessions, shortcut procedures.
+
+    Returns a summary dict for the active workspace. See account_workspacing for the
+    full API (create, activate, save_session, run_shortcut, …).
+    """
+    import account_workspacing as aw
+    return aw.workspacing(acc or current())
+
+
+def save_workspace_session(app, acc=None):
+    """Shortcut: save overlay + session into the account's active workspace."""
+    import account_workspacing as aw
+    a = acc or current()
+    aw.ensure(a)
+    return aw.save_session(a, app)
+
+
+def run_workspace_shortcut(key, app=None, acc=None):
+    """Run a named workspace procedure (see account_workspacing.list_shortcuts)."""
+    import account_workspacing as aw
+    a = acc or current()
+    aw.ensure(a)
+    return aw.run_shortcut(a, key, app=app)
+
 def allowed(action):
     try:
         return current().get("role", "owner") in PERMS.get(action, {"owner"})

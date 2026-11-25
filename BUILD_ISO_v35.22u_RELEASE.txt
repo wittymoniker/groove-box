@@ -1,0 +1,18 @@
+Mathematician's Groovebox / sOS BUILD_ISO v35.22u — 2026-09-22
+
+Primary fix:
+The active boot path no longer cycles the historical Qt backend/input probes.
+It now uses one root-owned device bootstrap, one Labwc Wayland compositor, and
+one unprivileged Groovebox Wayland client.
+
+The photographed failures addressed by this release are:
+- /dev/null permission denied from unprivileged bootstrap re-entry
+- /dev/tty1 permission denied from unprivileged recovery takeover
+- QT-KEYBOARD False / QT-POINTER False followed by false evdev-explicit success
+- silent Groovebox GUI exit after probe cycling
+
+Build with:
+  sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+Expected ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22u.iso

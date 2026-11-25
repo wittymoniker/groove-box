@@ -113,6 +113,48 @@ _DEVICE_CACHE = []
 _DEVICE_CACHE_ERROR = None
 _DEVICE_CACHE_TTL = 4.0
 _BAD_OUTPUT_TOKENS = ("dummy", "null", "monitor of", "auto_null", "groovebox_all_outputs")
+# STICKY_DEVICE: PortAudio indices shift whenever a device appears or disappears (the Latitude's HDA / HDMI / SOF
+# endpoints come and go with power states), so a device is remembered by NAME once a stream opened on it; it stays
+# the choice while it exists. A newly plugged USB audio device (interface, DAC, USB-C / USB audio cable) is taken
+# once, when it appears, so plugging one in "just works".
+_STICKY = {"out": None, "in": None, "seen_usb": set()}
+_USB_TOKENS = ("usb", "usb audio", "usb-audio", "dac", "audio adapter", "c-media", "focusrite", "scarlett",
+               "behringer", "umc", "ugreen", "apple usb-c", "type-c")
+
+
+def _is_usb_name(name):
+    n = str(name or "").casefold()
+    return any(t in n for t in _USB_TOKENS)
+
+
+def sticky_output_name():
+    return _STICKY["out"]
+
+
+def _note_good_output(rows, dev):
+    try:
+        if 0 <= int(dev) < len(rows):
+            _STICKY["out"] = str(rows[int(dev)].get("name", "")) or None
+    except Exception:
+        pass
+
+
+def _sticky_or_new_usb(rows, ok):
+    """(index, reason) for a newly plugged USB output or the remembered device; (None, '') otherwise."""
+    usb_now = {str(d.get("name", "")) for i, d in enumerate(rows) if ok(i) and _is_usb_name(d.get("name", ""))}
+    new_usb = sorted(usb_now - _STICKY["seen_usb"])
+    _STICKY["seen_usb"] = usb_now
+    if new_usb and os.environ.get("GROOVEBOX_USB_AUDIO_AUTO", "1") != "0":
+        for i, d in enumerate(rows):
+            if ok(i) and str(d.get("name", "")) == new_usb[0]:
+                _STICKY["out"] = new_usb[0]
+                return i, "usb-plugged"
+    want = _STICKY["out"]
+    if want:
+        for i, d in enumerate(rows):
+            if ok(i) and str(d.get("name", "")) == want:
+                return i, "sticky"
+    return None, ""
 _BAD_INPUT_TOKENS = ("dummy", "null", "auto_null", "monitor", "loopback", "dmix", "groovebox_all_outputs")
 
 # Last successful capture device (name, index). Prefer it on the next open.
@@ -125,6 +167,13 @@ def note_successful_input(name, index):
 
 def last_good_input():
     return _LAST_GOOD_INPUT
+
+
+def _last_good_input_name():
+    try:
+        return str(_LAST_GOOD_INPUT[0]) if _LAST_GOOD_INPUT else None
+    except Exception:
+        return None
 
 def last_open_error():
     return _LAST_OPEN_ERROR
@@ -253,6 +302,15 @@ def resolve_input_device_index(preferred_name=None, force=False):
             elif pref in name or name in pref: partial.append(i)
         if exact: return exact[0]
         if partial: return partial[0]
+    # STICKY_DEVICE (input): the last capture device that worked, or a USB input (USB mic / audio cable) — by name.
+    for want in (_STICKY.get("in"), _last_good_input_name()):
+        if want:
+            for i,d in enumerate(rows):
+                if ok(i) and str(d.get('name',''))==want:
+                    return i
+    for i,d in enumerate(rows):
+        if ok(i) and _is_usb_name(d.get('name','')) and os.environ.get("GROOVEBOX_USB_AUDIO_AUTO", "1") != "0":
+            return i
     try:
         default=sd.default.device
         in_idx=int(default[0] if isinstance(default,(tuple,list)) else default)
@@ -550,6 +608,13 @@ def resolve_output_device_index(preferred_name=None, force=False):
         if not (0 <= int(i) < len(rows)): return False
         d=rows[int(i)]; name=str(d.get('name','')).casefold()
         return int(d.get('max_output_channels',0) or 0)>0 and not any(t in name for t in _BAD_OUTPUT_TOKENS)
+    if not pref:
+        try:
+            _si, _why = _sticky_or_new_usb(rows, ok)
+            if _si is not None:
+                return _si
+        except Exception:
+            pass
     # Always play on every detected output at once when a sound server can combine them.
     try:
         _all_idx=_all_outputs_portaudio_index(rows, ok)
@@ -613,13 +678,13 @@ def resolve_output_device_index(preferred_name=None, force=False):
             # sOS has no desktop policy daemon we can trust to choose the
             # internal speaker. Prefer a physical analog/SOF/HDA PortAudio PCM;
             # PipeWire/Pulse stays available but cannot outrank it by default.
-            for token,pts in (("speaker",220),("analog",210),("sof",180),("hda",170),("pch",160),
+            for token,pts in (("usb",230),("speaker",220),("analog",210),("sof",180),("hda",170),("pch",160),
                               ("hw:",150),("pipewire",55),("pulse",45),("default",35)):
                 if token in name: score+=pts
             if "hdmi" in name or "displayport" in name: score -= 40
             if "headphone" in name: score-=40
         else:
-            for token,pts in (("pipewire",90),("pulse",80),("default",70),("speaker",60),("sof",45),("analog",40),("hda",35),("pch",30)):
+            for token,pts in (("pipewire",90),("pulse",80),("default",70),("usb",65),("speaker",60),("sof",45),("analog",40),("hda",35),("pch",30)):
                 if token in name: score+=pts
             if "hdmi" in name or "displayport" in name: score -= 5
             if "headphone" in name: score-=10
@@ -1231,6 +1296,7 @@ def _open_output_stream_strict(*, samplerate, channels=1, dtype='float32', callb
             try:
                 st = sd.OutputStream(**p2)
                 _hardware_volume_post_open_sync()
+                _note_good_output(rows, dev)
                 return st
             except Exception as _exc:
                 last=_exc

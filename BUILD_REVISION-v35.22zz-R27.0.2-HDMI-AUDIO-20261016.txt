@@ -1,0 +1,13 @@
+Mathematician's Groovebox / sOS
+Version: v35.22zz-R27.0.2
+Release label: HDMI-AUDIO
+Date: 2026-10-16
+Lineage: R27.0.1 media playback patch on recovered R23r source lineage
+
+- Detects HDMI/DisplayPort ALSA playback PCMs directly from `aplay -l` when `aplay -L` does not publish friendly HDMI aliases.
+- Exposes discovered endpoints in the existing explicit audio-output selector as HDMI / DisplayPort targets.
+- Explicit HDMI/DisplayPort playback uses the selected ALSA PCM and avoids running internal-speaker UCM/mixer activation against the digital route.
+- Keeps internal speaker/default routing conservative; HDMI is selectable, not forced as the default.
+- Keeps root media_output_router.py and the v35.22zz ISO-overlay copy byte-identical.
+- Preserves R27.0.1 media playback and R27.0.0 transactional export/game-asset install changes.
+- HDMI discovery/routing regression tests pass; physical HDMI sink playback and bootable ISO are not verified in this environment.

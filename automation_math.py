@@ -5,6 +5,10 @@ music-theory vocabulary or assumptions: users choose the mathematical mapping.
 """
 from __future__ import annotations
 import math
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import cos as _tcos
+except Exception:  # standalone use outside the app
+    from math import cos as _tcos
 
 TRANSFORMS = ("linear", "quadratic", "cubic", "exponential", "polynomial", "sqrt", "log", "power", "x^x", "smoothstep", "sine", "inverse", "xth-root",
               "inverse-root", "reciprocal", "sigmoid", "absolute", "modulo", "fold")
@@ -35,7 +39,7 @@ def transform(value, mode="linear", *, exponent=2.0, coefficients=None):
     elif mode == "smoothstep":
         y = x*x*(3.0-2.0*x)
     elif mode == "sine":
-        y = 0.5-0.5*math.cos(math.pi*x)
+        y = 0.5-0.5*_tcos(math.pi*x)
     elif mode == "inverse":
         y = 1.0-x
     elif mode == "inverse-root":

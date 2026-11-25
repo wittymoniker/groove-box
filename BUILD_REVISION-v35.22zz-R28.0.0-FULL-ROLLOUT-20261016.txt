@@ -1,0 +1,6 @@
+Release: v35.22zz-R28.0.0-FULL-ROLLOUT-20261016
+Base: recovered v35.22zz-R23r source plus preserved local patches
+Date: 2026-10-16
+Source package: groovebox-v35.22zz-R28.0.0-FULL-ROLLOUT-20261016.zip
+ISO builder: BUILD_ISO-v35.22zz-R28.0.0-FULL-ROLLOUT-20261016.zip
+Wasmer: updated Eski MAIN-LITE-FLAT deploy package embeds both current payloads.

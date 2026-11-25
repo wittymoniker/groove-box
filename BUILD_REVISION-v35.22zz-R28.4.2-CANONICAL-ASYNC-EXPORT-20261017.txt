@@ -1,0 +1,6 @@
+BUILD REVISION: v35.22zz-R28.4.2-CANONICAL-ASYNC-EXPORT
+Date: 2026-10-17
+Base lineage: R28.4.1 exact-length anti-aliased output resampling, with R23b playback source sync retained.
+Feature delta: frozen export snapshot; dedicated single-worker Qt export lane; worker-side canonical hardclip, resampling, PCM quantization, part write/stitch, codec encode and integrity check; progress/cancel signals; atomic final artifact publication; R28.4.2 zero-state source contract added to RUN_ME_ZERO_STATE.sh.
+Verification: seven structural tests, resampling/anti-alias smoke test, Python compilation, R23b/R23/R12/R12a/R28.3/R28.4 targeted verifiers and shell syntax pass.
+Limitations: `_render_mixdown_buffer()` and optional `_bake_dj_write()` remain synchronous; GUI runtime, full ISO build/boot, real output encode under Qt, timing benchmark and hardware matrix are not verified in this environment.

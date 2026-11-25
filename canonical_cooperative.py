@@ -6,6 +6,8 @@ from PyQt6.QtWidgets import QApplication, QWidget, QScrollBar, QAbstractScrollAr
 
 
 class CanonicalCommit(QObject):
+    SLICE_S = 0.014        # work per slice: input and paint get the UI thread at least every ~14 ms
+
     def __init__(self, host):
         super().__init__(host)
         self.host = host
@@ -13,7 +15,7 @@ class CanonicalCommit(QObject):
         self.restart_requested = False
         self._bindings_ready = False
         self.timer = QTimer(self)
-        self.timer.setInterval(2)
+        self.timer.setInterval(0)          # run again as soon as pending input / paint events are handled
         self.timer.timeout.connect(self.advance)
 
     @property
@@ -40,7 +42,15 @@ class CanonicalCommit(QObject):
         self._bind()
         self.restart_requested = False
         self.host._composition_generation_guard = True
-        self.generator = self.host._cooperative__ensure_perfect_unison()
+        # Sliced versions generated from the real engine functions (canonical_autoyield) — identical results to the
+        # synchronous path; the hand-copied kernels remain only as a fallback.
+        try:
+            import canonical_autoyield as _cay
+            _auto = _cay.ensure_built(self.host)
+        except Exception:
+            _cay, _auto = None, False
+        self.generator = (getattr(self.host, _cay.ENTRY)() if _auto
+                          else self.host._cooperative__ensure_perfect_unison())
         QApplication.instance().installEventFilter(self)
         action = getattr(self.host, "_cancel_canonical_action", None)
         if action is not None:
@@ -61,10 +71,10 @@ class CanonicalCommit(QObject):
         kinds = (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
                  QEvent.Type.KeyPress, QEvent.Type.Wheel)
         if event.type() in kinds and isinstance(target, QWidget):
-            if target is getattr(self.host, "_cancel_canonical_button", None):
-                return False
-            if target is self.host or self.host.isAncestorOf(target):
-                return True  # No unrelated edits during a partial ordered commit.
+            # Input is never swallowed (it used to be: every button looked dead for the seconds a commit ran). An edit
+            # that changes the composition reaches _on_live_source_changed, which requests a restart of this commit,
+            # so the finished result still reflects the final state.
+            return False
         return False
 
     def request_restart(self):
@@ -85,7 +95,7 @@ class CanonicalCommit(QObject):
         if self.restart_requested:
             self.cancel(restart=True)
             return
-        deadline = time.monotonic() + 0.006
+        deadline = time.monotonic() + self.SLICE_S
         try:
             while time.monotonic() < deadline:
                 next(self.generator)

@@ -42,7 +42,7 @@ def _phy_for(iface: str) -> str:
         return ""
 
 
-def _wireless_ifaces() -> List[str]:
+def _wireless_ifaces(nm_wifi=None) -> List[str]:
     out = set()
     root = Path("/sys/class/net")
     if root.exists():
@@ -56,7 +56,14 @@ def _wireless_ifaces() -> List[str]:
                 line = line.strip()
                 if line.startswith("Interface "):
                     out.add(line.split(None, 1)[1].strip())
-    return sorted(out)
+    # NetworkManager is an independent source of device type.  Include only
+    # rows it explicitly identifies as Wi-Fi; never infer wireless from the
+    # default route, the first device, or an Ethernet connection.
+    try:
+        out.update((nm_wifi if nm_wifi is not None else _nm_states()).keys())
+    except Exception:
+        pass
+    return sorted(name for name in out if name and name.lower() not in {"lo", "loopback"})
 
 
 def _nm_states() -> Dict[str, str]:
@@ -64,15 +71,33 @@ def _nm_states() -> Dict[str, str]:
     if not __import__("sos_tools").which("nmcli"):
         return states
     rc, text = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
-    if rc == 0:
-        for line in text.splitlines():
-            parts = line.replace(r"\:", "\0").split(":")
-            if len(parts) >= 3:
-                dev = parts[0].replace("\0", ":")
-                typ = parts[1].replace("\0", ":")
-                state = ":".join(parts[2:]).replace("\0", ":")
-                if typ == "wifi":
-                    states[dev] = state
+    if rc != 0:
+        return states
+    # Prefer the shared escaped-terse parser when available; fall back locally.
+    try:
+        split = __import__("network_manager_utils").split_terse_record
+    except Exception:
+        def split(line: str):
+            fields, current, escaped = [], [], False
+            for char in str(line):
+                if escaped:
+                    current.append(char); escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == ":":
+                    fields.append("".join(current)); current = []
+                else:
+                    current.append(char)
+            if escaped:
+                current.append("\\")
+            fields.append("".join(current))
+            return fields
+    for line in text.splitlines():
+        fields = split(line)
+        if len(fields) >= 3 and fields[1].strip().lower() in {"wifi", "802-11-wireless"}:
+            device = fields[0].strip()
+            if device and device.lower() not in {"lo", "loopback"}:
+                states[device] = fields[2]
     return states
 
 
@@ -108,10 +133,11 @@ def _hardware_fingerprint(rows: List[dict]) -> str:
 def inventory() -> dict:
     states = _nm_states()
     rows = []
-    for iface in _wireless_ifaces():
+    for iface in _wireless_ifaces(states):
         state = states.get(iface, "unknown")
         rows.append({
             "iface": iface,
+            "type": "wifi",
             "driver": _driver_for(iface),
             "phy": _phy_for(iface),
             "state": state,
@@ -122,34 +148,55 @@ def inventory() -> dict:
             "fingerprint": _hardware_fingerprint(rows)}
 
 
+def _state_usable(state: str) -> bool:
+    """NetworkManager states that can accept a connection activation request."""
+    value = str(state or "unknown").strip().lower()
+    return value not in {"unknown", "unavailable", "unmanaged", "unavailable (firmware missing)"}
+
+
 def choose_interfaces(info: Optional[dict] = None) -> dict:
+    """Choose only radios NetworkManager can currently manage.
+
+    A sysfs/iw-visible interface is not necessarily an activatable NM device.
+    In particular, selecting an `unavailable` radio and exporting it as a fixed
+    GROOVEBOX_WIFI_IFACE makes both hotspot and IBSS activation fail before NM
+    can try another usable adapter.
+    """
     info = info or inventory()
     rows = list(info.get("interfaces") or [])
-    connected = [r for r in rows if r.get("connected")]
+    # Inventory is Wi-Fi-only, but keep this boundary defensive: injected,
+    # cached, or older inventory rows marked Ethernet must never be selected.
+    rows = [r for r in rows
+            if str(r.get("type", r.get("nm_type", "wifi"))).strip().lower()
+            in {"wifi", "802-11-wireless"}
+            and str(r.get("iface", "")).strip().lower() not in {"", "lo", "loopback"}]
+    usable = [r for r in rows if _state_usable(r.get("state", "unknown"))]
+    connected = [r for r in usable if r.get("connected")]
 
     def client_score(r):
-        return (100 if r.get("connected") else 0) + (10 if r.get("state") not in ("unavailable", "unmanaged") else -100)
+        return (100 if r.get("connected") else 0) + (10 if r.get("state") != "unknown" else 0)
 
     def direct_score(r):
-        # Prefer a spare AP-capable adapter so Direct mode need not disturb the
-        # user's ordinary Wi-Fi.  If there is only one radio, use it only after
-        # the explicit Start Direct Wi-Fi action in the UI.
         spare = bool(connected) and not r.get("connected")
         return (300 if spare and r.get("ap_capable") else 0) + \
                (200 if r.get("ap_capable") else 0) + \
                (20 if not r.get("connected") else 0) + \
-               (5 if r.get("state") not in ("unavailable", "unmanaged") else -100)
+               (5 if r.get("state") != "unknown" else 0)
 
-    client = max(rows, key=client_score)["iface"] if rows else ""
-    direct = max(rows, key=direct_score)["iface"] if rows else ""
-    selected = next((r for r in rows if r["iface"] == direct), {})
+    client = max(usable, key=client_score)["iface"] if usable else ""
+    direct = max(usable, key=direct_score)["iface"] if usable else ""
+    selected = next((r for r in usable if r["iface"] == direct), {})
     return {
         **info,
         "preferred_client_iface": client,
         "preferred_direct_iface": direct,
         "direct_ap_capable": bool(selected.get("ap_capable")),
-        "single_radio": len(rows) == 1,
+        "single_radio": len(usable) == 1,
         "dedicated_direct_radio": bool(direct and client and direct != client),
+        "unusable_interfaces": [
+            {"iface": r.get("iface", ""), "state": r.get("state", "unknown")}
+            for r in rows if not _state_usable(r.get("state", "unknown"))
+        ],
     }
 
 
@@ -176,10 +223,41 @@ def _enable_linux_network_stack(rows: List[dict]) -> List[str]:
     return notes
 
 
-def configure_appliance(force: bool = False) -> dict:
-    info = choose_interfaces()
-    notes = _enable_linux_network_stack(info.get("interfaces") or [])
-    info["notes"] = notes
+def refresh_inventory(enable_stack: bool = True) -> dict:
+    """Refresh NetworkManager/radio state after bringing Wi-Fi online."""
+    notes = []
+    initial = inventory()
+    if enable_stack:
+        notes.extend(_enable_linux_network_stack(initial.get("interfaces") or []))
+        # Deep recovery: pull radios out of unavailable/unmanaged before selection.
+        try:
+            from network_manager_utils import prepare_wifi_for_activation
+            iface, diag, prep_notes = prepare_wifi_for_activation(timeout=10.0)
+            notes.extend(prep_notes or [])
+            if iface:
+                notes.append(f"prepared {iface}")
+            elif diag:
+                notes.append(diag)
+        except Exception as exc:
+            notes.append(f"prepare_wifi_for_activation: {exc}")
+        # NM can take a short moment to publish devices after radio enable/unblock.
+        for delay in (0.25, 0.5, 0.75, 1.0):
+            time.sleep(delay)
+            latest = inventory()
+            if any(_state_usable(r.get("state")) for r in latest.get("interfaces", [])):
+                initial = latest
+                break
+            initial = latest
+    selected = choose_interfaces(initial)
+    selected["notes"] = notes
+    return selected
+
+
+def configure_appliance(force: bool = False, enable_stack: bool = True) -> dict:
+    # Enable/unblock first, then inventory again.  The previous order selected
+    # an interface while NM still reported it unavailable and pinned that stale
+    # choice into GROOVEBOX_WIFI_IFACE for the whole application session.
+    info = refresh_inventory(enable_stack=bool(enable_stack))
     info["configured_at"] = int(time.time())
     p = _state_path()
     try:
@@ -190,6 +268,9 @@ def configure_appliance(force: bool = False) -> dict:
     iface = info.get("preferred_direct_iface") or info.get("preferred_client_iface") or ""
     if iface:
         os.environ["GROOVEBOX_WIFI_IFACE"] = iface
+    else:
+        # Never retain a stale device choice when all radios are unavailable.
+        os.environ.pop("GROOVEBOX_WIFI_IFACE", None)
     return info
 
 
@@ -200,10 +281,13 @@ def is_appliance_profile() -> bool:
            Path("/etc/groovebox-appliance").exists()
 
 
-def prepare_if_appliance() -> dict:
+def prepare_if_appliance(enable_stack: bool = False) -> dict:
+    # R137: boot default is read-only (no rfkill / radio cycle / disconnect).
     if not is_appliance_profile() or platform.system().lower() != "linux":
         return {}
-    return configure_appliance()
+    if os.environ.get("GROOVEBOX_NETWORK_AUTOSTART", "") == "1":
+        enable_stack = True
+    return configure_appliance(enable_stack=enable_stack)
 
 
 if __name__ == "__main__":

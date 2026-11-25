@@ -442,6 +442,20 @@ def install(app):
     qa.focusChanged.connect(_on_focus)
     sc = QShortcut(QKeySequence("Ctrl+K"), app); sc.setContext(__import__("PyQt6.QtCore", fromlist=["Qt"]).Qt.ShortcutContext.ApplicationShortcut)
     sc.activated.connect(lambda: command_palette(app)); app._a11y_palette_shortcut = sc
+    try:                                   # R132: tool windows reopen where and how big you left them
+        __import__("window_memory").install(app)
+        __import__("ui_zoom").install(app)   # R132: Ctrl+PgUp / Ctrl+PgDn / Ctrl+0 UI scale
+        __import__("time_sync").install_auto(app)   # R132: correct clock → HTTPS certificates validate
+    except Exception as _wm_exc:
+        print("[window memory] unavailable:", _wm_exc)
+    try:                                   # R132.20: audio watchdog (restarts a stalled device stream)
+        __import__("fractal_engine_core").install(app)
+    except Exception as _wd_exc:
+        print("[audio watchdog] unavailable:", _wd_exc)
+    try:                                   # R132.21: session hardware recovery (audio, displays, links, drives, resume)
+        __import__("hw_session_recovery").install(app)
+    except Exception as _hw_exc:
+        print("[hw recovery] unavailable:", _hw_exc)
     t = QTimer(app); t.setInterval(5000); t.timeout.connect(_wellbeing_tick); t.start(); app._a11y_timer = t
     # outputs: the same colour transform on generated video (exports + live rig)
     orig = getattr(app, "_apply_video_plan_to_frame", None)

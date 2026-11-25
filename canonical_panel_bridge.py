@@ -17,6 +17,10 @@ Authority law matches the synth path:
 from __future__ import annotations
 
 import math
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import sin as _tsin
+except Exception:  # standalone use outside the app
+    from math import sin as _tsin
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -149,7 +153,7 @@ def target_from_context(key: str, ctx: float, index: int = 0) -> float:
     """Deterministic canonical target in ~0..1 (or domain-ish) from numerology context."""
     c = float(ctx) if math.isfinite(ctx) else 0.5
     # stable hash-ish without RNG
-    x = math.sin((c + 0.17 * (index + 1)) * (1.0 + 0.03 * len(key))) * 0.5 + 0.5
+    x = _tsin((c + 0.17 * (index + 1)) * (1.0 + 0.03 * len(key))) * 0.5 + 0.5
     x = _clamp(x, 0.0, 1.0)
     # mild key bias
     if "pkp" in key:

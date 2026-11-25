@@ -221,7 +221,7 @@ class AuthorNumericFontLibrary:
         variable_letter = str(getattr(glyph, "variable_letter", "") or "")
         if variable_letter:
             painter.setPen(self._pen(color, 1.1))
-            painter.setFont(QFont("Sans Serif", max(6, int(size*.15)), QFont.Weight.Bold))
+            painter.setFont(QFont("Arial", max(6, int(size*.15)), QFont.Weight.Bold))
             painter.drawText(QRectF(x+2,y+2,size*.22,size*.20), Qt.AlignmentFlag.AlignCenter, variable_letter[:1])
         if int(getattr(glyph, "multiplicity", 1) or 1) > 1:
             painter.setPen(self._pen(color, 1.2))
@@ -295,7 +295,7 @@ class AuthorNumericFontLibrary:
         if continued:
             painter.setPen(self._pen(color, 1.0, dotted=True)); painter.drawRect(QRectF(x-3,y-3,size+6,size+6))
         if variable_letter:
-            painter.setFont(QFont("Sans Serif", max(6,int(size*.15)), QFont.Weight.Bold))
+            painter.setFont(QFont("Arial", max(6,int(size*.15)), QFont.Weight.Bold))
             painter.drawText(QRectF(x+2,y+2,size*.22,size*.20), Qt.AlignmentFlag.AlignCenter, str(variable_letter)[:1])
         if int(multiplicity) > 1:
             painter.drawRect(QRectF(x+size*.82,y+size*.05,size*.12,size*.12))

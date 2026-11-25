@@ -26,16 +26,31 @@ ROOTS = ("r32_fx_state", "r32_time_fx", "r32_synth_engine", "r32_predictive", "r
          "global_mod_state", "global_algo_state", "sidechain_state", "global_eq_state", "patch_motion_state",
          "hyperdrive_state", "master_vector_state", "sample_morph_state", "r32_perseq",
          # R101 Mod Path Bay: every instrument's synth parameters and Multidim macros (md_clones)
-         "instrument_param_state")
+         "instrument_param_state",
+         # R138 engine surface: canonical contribution levels + phase-lock characteristics
+         # so they can be automated, Mod-Path routed, and seen by Autopilot / randomizers.
+         "canonical_engine_levels", "phase_lock_characteristics")
 SPANS = {"hz": (0.01, 20000.0), "ms": (0.0, 2000.0), "unison": (1, 7), "echoes": (1, 8), "rule": (0, 255),
          "gravity": (-4.0, 4.0), "tilt": (-1.0, 1.0), "low": (-18, 18), "mid": (-18, 18), "high": (-18, 18),
          # R101 Multidim macros (MDCloneRack ranges)
          "morph": (0.01, 10.0), "harmonic_freq": (20.0, 20000.0), "chaos": (0.0, 1.0), "fold_depth": (0.01, 16.0),
-         "harmonic_lattice": (0.0, 1.0)}
+         "harmonic_lattice": (0.0, 1.0),
+         # Canonical engine levels and lock characteristics are unit-interval
+         "seeded": (0.0, 1.0), "randomizer": (0.0, 1.0), "phase_lock": (0.0, 1.0),
+         "euclidean": (0.0, 1.0), "goava": (0.0, 1.0), "fractal_seed": (0.0, 1.0),
+         "coupling": (0.0, 1.0), "timing_pull": (0.0, 1.0), "detune_link": (0.0, 1.0),
+         "velocity_link": (0.0, 1.0), "phase_spread": (0.0, 1.0)}
 
 
 def targets(app):
     out = []
+    # R138: make sure engine-level dicts exist before the walk so Autopilot /
+    # randomizers / Mod Matrix always see the full routing surface.
+    try:
+        import fractal_engine_core as fec
+        fec.ensure_engine_level_roots(app)
+    except Exception:
+        pass
 
     def walk(prefix, d, depth=0):
         if depth > 4 or not isinstance(d, dict):
@@ -78,6 +93,52 @@ def _span(key, base):
     if b < 0.0:                       # R123: negative bases (dB, offsets) used to give a reversed span → never automated
         return (b * 4.0 - 1.0, b * 0.25)
     return (b * 0.25, b * 4.0 + 1.0)
+
+
+def _sync_canonical_level_ui(app, key, value):
+    """Best-effort: push an automated canonical level back onto the deck slider/label.
+
+    key is the engine id (seeded, randomizer, phase_lock, euclidean, goava, fractal_seed).
+    value is the unit-interval level written into app.canonical_engine_levels.
+    Never raises; never creates widgets.
+    """
+    pct = int(round(max(0.0, min(1.0, float(value))) * 100.0))
+    # Historical attribute names used by the Canonical Mixer level deck
+    sattr = {
+        "seeded": "slider_level_seeded",
+        "randomizer": "slider_level_rand",
+        "phase_lock": "slider_level_lock",
+        "euclidean": "slider_level_euclidean",
+        "goava": "slider_level_goava",
+        "fractal_seed": "slider_level_fractal_seed",
+    }.get(str(key))
+    lattr = {
+        "seeded": "lbl_level_seeded",
+        "randomizer": "lbl_level_rand",
+        "phase_lock": "lbl_level_lock",
+        "euclidean": "lbl_level_euclidean",
+        "goava": "lbl_level_goava",
+        "fractal_seed": "lbl_level_fractal_seed",
+    }.get(str(key))
+    if sattr:
+        sl = getattr(app, sattr, None)
+        if sl is not None and hasattr(sl, "setValue"):
+            try:
+                sl.blockSignals(True)
+                sl.setValue(pct)
+                sl.blockSignals(False)
+            except Exception:
+                try:
+                    sl.blockSignals(False)
+                except Exception:
+                    pass
+    if lattr:
+        lab = getattr(app, lattr, None)
+        if lab is not None and hasattr(lab, "setText"):
+            try:
+                lab.setText("%d%%" % pct)
+            except Exception:
+                pass
 
 
 def lanes(app):
@@ -147,6 +208,13 @@ def tick(app, beat):
         v = lane["base"] + lane["amount"] * (c - 0.5) * (hi - lo)
         v = max(lo, min(hi, v))
         d[k] = int(round(v)) if isinstance(d.get(k), int) and not isinstance(d.get(k), bool) else v
+        # R138: keep Canonical Mixer level sliders / labels in sync when a lane
+        # drives canonical_engine_levels/* (best-effort; never raises).
+        if str(lane.get("path") or "").startswith("canonical_engine_levels/"):
+            try:
+                _sync_canonical_level_ui(app, k, float(v))
+            except Exception:
+                pass
     if _after is not None:
         try:
             _after(app, beat)

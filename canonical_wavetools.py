@@ -16,6 +16,10 @@ Pure NumPy; deterministic; outputs are new files beside the source (originals un
 from __future__ import annotations
 
 import math
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import nsin as _tnsin
+except Exception:  # standalone use outside the app
+    from numpy import sin as _tnsin
 import os
 
 import numpy as np
@@ -81,7 +85,7 @@ def ola_stretch(x, factor, sr, grain_s=0.06):
         return np.stack([ola_stretch(x[:, c], factor, sr, grain_s) for c in range(x.shape[1])], axis=1)
     g = max(64, int(grain_s * sr)); hop_out = g // 2; hop_in = hop_out / float(factor)
     n_out = int(round(x.size * factor)); out = np.zeros(n_out + g); norm = np.zeros(n_out + g)
-    w = np.sin(np.linspace(0, math.pi, g)) ** 2
+    w = _tnsin(np.linspace(0, math.pi, g)) ** 2
     i = 0
     while i * hop_out < n_out:
         a = int(round(i * hop_in))
@@ -104,7 +108,7 @@ def wavefold(x, folds=2.0, symmetry=0.0, drift=0.0, seed=1, sr=48000):
         th = 1.0 + drift * np.interp(np.linspace(0, 15, x.shape[0]), np.arange(16), knots)
         if x.ndim == 2:
             th = th[:, None]
-    y = np.sin((x + float(symmetry)) * k * math.pi / 2.0 / th)
+    y = _tnsin((x + float(symmetry)) * k * math.pi / 2.0 / th)
     return y / max(1.0, float(np.max(np.abs(y))) or 1.0)
 
 

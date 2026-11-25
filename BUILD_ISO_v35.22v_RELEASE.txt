@@ -1,0 +1,18 @@
+Mathematician's Groovebox / sOS BUILD_ISO v35.22v — 2026-09-22
+
+Fixes the v35.22u build-stop where the legacy v32w verifier rejected the current
+root-owned v35.22u recovery menu because its display title was newer than v32w.
+The verifier now checks the actual no-job-control/root/command-loop contract.
+
+Also fixes the final initramfs stamp helper's script-directory binding so the
+final remaster does not depend on an inherited HERE variable.
+
+Runtime/session behavior remains the strict v35.22u design: one root bootstrap,
+one Labwc compositor, one Qt Wayland Groovebox client, real keyboard/pointer
+node validation, coherent Debian Qt/Mesa/i915/HDMI, and Limine Install to SSD.
+
+Build:
+  sudo ./BUILD_ISO/RUN_ME_ZERO_STATE.sh
+
+Expected final ISO:
+  BUILD_ISO/dist/Groovebox-sOS-x86_64-YYYYMMDD-GAME-READY-v35.22v.iso

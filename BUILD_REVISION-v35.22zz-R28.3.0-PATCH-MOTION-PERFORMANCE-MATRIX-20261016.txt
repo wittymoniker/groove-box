@@ -1,0 +1,5 @@
+BUILD REVISION: v35.22zz-R28.3.0-PATCH-MOTION-PERFORMANCE-MATRIX
+Date: 2026-10-16
+Base lineage: recovered R23r source plus preserved R8 installer/runtime and R27/R28 feature lineage.
+Feature delta: canonical patch motion rate/depth/direction/clock, 8x8 sequence-bank matrix, per-step MOD target/depth integration, project persistence, bounded mpv args, and ISO preflight contracts.
+The source and script checks pass. Full ISO build/boot/install remain unverified until run with the complete runtime-cache and kernel payload.

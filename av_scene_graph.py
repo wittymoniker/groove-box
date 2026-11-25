@@ -10,6 +10,10 @@ both play back deterministically.
 from __future__ import annotations
 
 import json
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import cos as _tcos
+except Exception:  # standalone use outside the app
+    from math import cos as _tcos
 import math
 
 import numpy as np
@@ -24,7 +28,7 @@ NODES = {
     "color.hue": (0.0, 1.0), "color.brightness": (0.0, 1.0),
 }
 CURVES = {"linear": lambda v: v, "square": lambda v: v * v, "sqrt": lambda v: math.sqrt(max(0.0, v)),
-          "sine": lambda v: 0.5 - 0.5 * math.cos(math.pi * v)}
+          "sine": lambda v: 0.5 - 0.5 * _tcos(math.pi * v)}
 
 DEFAULT_GRAPH = {"edges": [
     {"src": "low", "dst": "ball.gravity", "gain": 1.0, "offset": 0.0, "curve": "linear"},

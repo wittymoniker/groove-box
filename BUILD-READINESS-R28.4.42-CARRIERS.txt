@@ -1,0 +1,11 @@
+R28.4.42 carrier policy build-readiness report
+
+Passed:
+- Python compile of shared_synth_context.py and spatial_synth_engines.py (root and v35.22zz ISO overlay).
+- 12 unit tests: shared peer scheduling, spatial mix bus, global singleton carrier metadata, half-sidechain ratio, user activity locks/reset, deterministic Ball gravity, and Cellular Automata determinism.
+- bash -n BUILD_ISO/RUN_ME_ZERO_STATE.sh.
+
+Not established by this report:
+- ISO build completion (builder requires the documented host/runtime prerequisites).
+- Live Wasmer deployment or remote publish.
+- Live GUI gestures calling activity-lock APIs, real audio callback sidechain application, physical audio hardware, or boot/install testing.
