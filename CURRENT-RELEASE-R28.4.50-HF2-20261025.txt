@@ -1,0 +1,5 @@
+Groovebox R28.4.50+HF2 — Fractal Seed + deterministic Composition Lab + 72% master default + corrected sOS volume verifier contracts — 2026-10-25
+Base archive: Groovebox-R28.4.50-GAME-MEDIA-OUTPUT-BRIDGE-20261024.2.zip
+Base archive SHA-256: f1e1d316e538646feae4b579c83e4cbf9ecf4d04da63d008b53ad6f83fa0d69f
+Source candidate status: patched source archive. The R23h/R23j checkers were corrected to test the current 72% initial-volume contract and actual Python mixer command syntax; the runtime audio code was not changed for this verifier-only hotfix.
+No fresh ISO build, physical sOS boot, SSD install, speaker audibility, or live microphone validation is claimed.

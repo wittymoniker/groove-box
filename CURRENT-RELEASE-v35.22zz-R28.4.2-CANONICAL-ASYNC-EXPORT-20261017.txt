@@ -1,0 +1,12 @@
+Groovebox / sOS v35.22zz-R28.4.2-CANONICAL-ASYNC-EXPORT-20261017
+
+Prepared current source archive: groovebox-v35.22zz-R28.4.2-CANONICAL-ASYNC-EXPORT-20261017.zip
+Prepared ISO-builder source: BUILD_ISO-v35.22zz-R28.4.2-CANONICAL-ASYNC-EXPORT-20261017.zip
+Rollout bundle: GROOVEBOX-R28.4.2-CANONICAL-ASYNC-EXPORT-ROLLOUT-20261017.zip
+Validation: VALIDATION-v35.22zz-R28.4.2-CANONICAL-ASYNC-EXPORT-20261017.txt
+
+R28.4.2 moves export post-processing, hardclip, anti-aliased resampling, quantization, part writing/stitching, encoding and available integrity verification into a dedicated single-worker Qt lane. The immutable snapshot has no widgets; progress/cancel callbacks and UI/index updates are handed back to the main thread. Final output publication is atomic after successful verification where available.
+
+Important limitation: `_render_mixdown_buffer()` remains synchronous because it still reads live Qt controls and mutates render state; `_bake_dj_write()` is also synchronous when active. Do not describe the full render path as non-blocking or fully optimized yet. No end-to-end timing benchmark, Qt GUI runtime test, full ISO build, boot or hardware validation has been completed in this environment.
+
+Preserve R8 installer lineage and R35.22zt/R28.3 audio/performance baseline as rollback points.

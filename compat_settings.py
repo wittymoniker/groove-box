@@ -57,6 +57,7 @@ DEFAULTS = {
     "makeup_generator": "drone",
     "mem_budget_pct": 0,            # R32.8 DYNAMIC_RAM: 0 = auto by tier, else 25-90 % of RAM
     "workspace_pane_color": "blue_gray", # shared background for all three primary workspace panes
+    "command_dock_position": "top",   # R132: the Canonical · Dissect · Blueprint … dock: top or bottom (right-click it)
     "color_scheme": "normal",       # R32.8 ACCESSIBILITY: normal | high contrast | protan/deutan/tritan-safe | grayscale | warm night | inverted
     "color_scheme_outputs": False,  # also transform generated video (exports + live rig)
     "touch_keyboard": "auto",       # auto (touchscreens only) | on | off
@@ -224,6 +225,8 @@ def _clean(raw):
         _schemes = ("normal",)
     pane_color = str(raw.get("workspace_pane_color", out.get("workspace_pane_color", "blue_gray"))).strip().lower()
     out["workspace_pane_color"] = pane_color if pane_color in ("blue_gray", "slate", "graphite", "midnight") else "blue_gray"
+    _dock = str(raw.get("command_dock_position", "top")).strip().lower()
+    out["command_dock_position"] = _dock if _dock in ("top", "bottom") else "top"
     cs_ = str(raw.get("color_scheme", out.get("color_scheme", "normal")))
     out["color_scheme"] = cs_ if cs_ in _schemes else "normal"
     tk = str(raw.get("touch_keyboard", out.get("touch_keyboard", "auto"))).lower()
@@ -395,16 +398,21 @@ def screen_pixels(drm_root="/sys/class/drm"):
     return best
 
 
+AUTO_SCALE_FACTOR = 0.66
+
+
 def auto_ui_scale(pixels=None):
     """UI scale percent for a screen of this size: small panels stay compact, 4K gets large text."""
     px = pixels if pixels is not None else screen_pixels()
-    if not px:
-        return 100
-    short = min(px)
-    for limit, pct in ((2000, 175), (1500, 140), (1200, 115), (700, 100), (560, 90)):
-        if short >= limit:
-            return pct
-    return 80
+    base = 100
+    if px:
+        short = min(px); base = 80
+        for limit, pct in ((2000, 175), (1500, 140), (1200, 115), (700, 100), (560, 90)):
+            if short >= limit:
+                base = pct; break
+    # R132: the default is 66 % of the earlier automatic size (user request), snapped to 5 % steps (fractional
+    # factors such as 0.66 broke some startup layouts) and never below 50 %. An explicit UI scale is untouched.
+    return max(50, int(round(base * AUTO_SCALE_FACTOR / 5.0)) * 5)
 
 
 _FILE_CACHE = {}
@@ -702,6 +710,49 @@ def apply_hardware_class(kind=None):
 
 
 def fit_dialog_to_screen(dlg, width_frac=0.55, height_frac=0.75, min_w=480, min_h=520):
+    """Clamp a tool/startup dialog to the active screen's usable geometry.
+
+    The previous implementation enforced 480x520 minimums even when the
+    Latitude's available logical screen area was smaller. That pushed dialogs
+    behind the panel and made their bottom controls appear missing. Minimums
+    are now advisory and are always clamped to the actual work area.
+
+    GROOVEBOX_UI_SCALE_FIT_20261102: the width_frac and height_frac are
+    applied after scaling by the saved UI scale, so the dialog stays fully
+    readable when UI scale is adjusted independently of window scale.
+    """
+    try:
+        from PyQt6.QtWidgets import QApplication
+        screen = None
+        try:
+            screen = dlg.screen() or QApplication.primaryScreen()
+        except Exception:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            w = max(320, int(dlg.width()))
+            h = max(240, int(dlg.height()))
+            dlg.resize(w, h)
+            return
+        ag = screen.availableGeometry()
+        max_w = max(240, int(ag.width()) - 24)
+        max_h = max(200, int(ag.height()) - 24)
+        min_w_fit = min(max(240, int(min_w)), max_w)
+        min_h_fit = min(max(200, int(min_h)), max_h)
+        import compat_settings as _cs_disp
+        ui_scale = max(1, int(_cs_disp.load().get("ui_scale", 100))) / 100.0
+        w = min(max_w, max(min_w_fit, int(ag.width() * float(width_frac) / ui_scale)))
+        h = min(max_h, max(min_h_fit, int(ag.height() * float(height_frac) / ui_scale)))
+        # On unusually small logical desktops, the work-area clamp always wins.
+        w = max(1, min(w, max_w))
+        h = max(1, min(h, max_h))
+        x = int(ag.x()) + max(0, (int(ag.width()) - w) // 2)
+        y = int(ag.y()) + max(0, (int(ag.height()) - h) // 2)
+        dlg.setMinimumSize(min(min_w_fit, w), min(min_h_fit, h))
+        dlg.setMaximumSize(max_w, max_h)
+        dlg.setGeometry(x, y, w, h)
+        dlg.raise_()
+    except Exception as exc:
+        print(f"[compat_settings] fit_dialog_to_screen error: {exc!r}")
     """Clamp a tool/startup dialog to the active screen's usable geometry.
 
     The previous implementation enforced 480×520 minimums even when the

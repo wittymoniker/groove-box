@@ -1,0 +1,3 @@
+Current release: R28.4.19 (20261023)
+Focus: HDMI + microSD audio route recovery
+See CHANGELOG-R28.4.19-20261023.txt and VALIDATION-R28.4.19-20261023.txt.

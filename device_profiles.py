@@ -38,7 +38,9 @@ def detect(app=None):
         return "desktop"
     if has_touch() and min(w, h) <= 1200:
         return "tablet"
-    if w < 1280 or h < 720:
+    # Compact 1366×768-class laptop panels (common on Latitude 3510 systems)
+    # need the compact profile before controls begin clipping at the bottom edge.
+    if w < 1440 or h < 800:
         return "small"
     if has_touch() or dpi >= 120 or w <= 1920:
         return "laptop"

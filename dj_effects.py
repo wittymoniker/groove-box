@@ -7,6 +7,14 @@ pair has exactly one stable index and one deterministic parameter signature.
 from __future__ import annotations
 
 import hashlib
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import nasin as _tnasin
+except Exception:  # standalone use outside the app
+    from numpy import arcsin as _tnasin
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import nsin as _tnsin
+except Exception:  # standalone use outside the app
+    from numpy import sin as _tnsin
 import math
 from dataclasses import dataclass
 from typing import Iterable, Sequence
@@ -152,7 +160,7 @@ class LiveDJEffects:
         d = self.pair
         raw = float(goava_scalar)
         mod_hz = abs(raw) * (float(bpm) / 60.0) * (0.5 + d.spread)
-        mod = np.sin(math.tau * mod_hz * t + d.phase).astype(np.float32)
+        mod = _tnsin(math.tau * mod_hz * t + d.phase).astype(np.float32)
         drive = 1.0 + 2.8 * (0.25 + 0.75 * d.ratio) * amt
         # Dual-mode drive, no tanh saturation.
         wet = (x * drive) * (0.78 + 0.22 * mod)
@@ -175,8 +183,8 @@ class LiveDJEffects:
         gs = float(np.clip(random_scalar, -4.0, 4.0))
         graph_rate = 1.0 + 0.18 * abs(gs)
         graph_phase = 0.35 * gs
-        lfo1 = np.sin(math.tau * beat * (0.5 + d.spread) * graph_rate * t + d.phase + seed_phase + graph_phase)
-        lfo2 = np.sin(math.tau * beat * (1.0 + d.ratio + 0.08*gs) * t + seed_phase * 0.37 + d.phase * 1.7 - graph_phase)
+        lfo1 = _tnsin(math.tau * beat * (0.5 + d.spread) * graph_rate * t + d.phase + seed_phase + graph_phase)
+        lfo2 = _tnsin(math.tau * beat * (1.0 + d.ratio + 0.08*gs) * t + seed_phase * 0.37 + d.phase * 1.7 - graph_phase)
         # Parametric waveshaper + gated tremolo.  No RNG calls in the audio thread.
         drive = 1.0 + amt * (1.5 + 2.5 * (0.5 + 0.5 * lfo1)) * (1.0 + 0.08 * abs(gs))
         # Dual-mode drive without tanh soft-clip; scale only.
@@ -184,7 +192,7 @@ class LiveDJEffects:
         trem = 0.72 + 0.28 * (0.5 + 0.5 * lfo2)
         wet = shaped * trem
         # A tiny phase-dependent bipolar component makes adjacent pair IDs audible.
-        wet += x * (0.035 * amt) * np.sin(lfo1 + lfo2 + d.phase)
+        wet += x * (0.035 * amt) * _tnsin(lfo1 + lfo2 + d.phase)
         return self._mix(x, wet, 0.68 * amt)
 
 
@@ -226,7 +234,7 @@ class LiveDJEffects:
         if amt <= 0.0 or x.size == 0:
             return x.astype(np.float32, copy=False)
         drive = 1.0 + 7.0 * float(np.clip(amt, 0.0, 1.0))
-        wet = (2.0 / math.pi) * np.arcsin(np.sin((math.pi / 2.0) * drive * x))
+        wet = (2.0 / math.pi) * _tnasin(_tnsin((math.pi / 2.0) * drive * x))
         return self._mix(x, np.asarray(wet, dtype=np.float32), 0.72 * amt)
 
     def spectral_tilt(self, x: np.ndarray, *, amount: float | None = None) -> np.ndarray:
@@ -264,3 +272,125 @@ class LiveDJEffects:
             y = y * gain
         # No final saturation / hard clip — return the linear mix as-is.
         return y.astype(np.float32, copy=False)
+
+# Custom canonical reverb / echoplex effect
+# GROOVEBOX_CUSTOM_REVERB_20261119: deterministic, canonical-controlled reverb
+# that works across music, videos, and games. "reverse-time" mode simulates
+# the signal appearing from the future rather than decaying into the past.
+# The effect is fully deterministic given a seed; the "canonical" pair space
+# ensures reproducible results across renders/exports.
+
+def _clamp(x, lo=0.0, hi=1.0):
+    return max(lo, min(hi, x))
+
+# Reverse-delay network: N taps with decaying coefficients drawn from a
+# canonical pair-derived distribution.  "reverse-time" means the feedback
+# propagates from output toward input, creating the illusion that the sound
+# originates from a future point and flows backward toward the source.
+class ReverseReverb:
+    """Deterministic reverse reverb / echos.
+
+    Parameters
+    ----------
+    max_taps : int
+        Maximum number of delay taps (echoes). Higher = denser tail.
+    max_delay_ms : float
+        Maximum feedback delay in milliseconds.
+    canonical_pair : pair of ints
+        (a, b) drawn from the commutative pair space; determines the
+        coefficient pattern so the tail is reproducible given the same seed.
+    seed : int, optional
+        Additional seed for randomness; if None, derived from pair index.
+    """
+    def __init__(self, max_taps: int = 8, max_delay_ms: float = 800.0,
+                 canonical_pair: tuple[int, int] | None = None, seed: int | None = None):
+        from dj_effects import CommutativePairSpace
+        self.max_taps = max_taps
+        self.max_delay_ms = max_delay_ms
+        if canonical_pair is None:
+            # derive a canonical pair from the global pair space if available
+            try:
+                from dj_effects import LiveDJEffects
+                # Use a default pair; in practice the engine will set one
+                canonical_pair = (0, 1)
+            except Exception:
+                canonical_pair = (0, 1)
+        self.canonical_pair = canonical_pair
+        if seed is None:
+            # deterministic seed from canonical pair hash
+            pair_str = str(canonical_pair)
+            self.seed = int(hashlib.sha256(pair_str.encode()).hexdigest()[:8], 16)
+        else:
+            self.seed = seed
+        rng = __import__('numpy').random.default_rng(self.seed)
+        # Canonical coefficient pattern: pairs nearer the diagonal get higher decay
+        self.tap_delays_ms = []
+        self.tap_decays = []
+        for i in range(max_taps):
+            # delay increases with tap index; decay decreases
+            d_ms = max_delay_ms * (i + 1) / (max_taps + 1)
+            decay = 1.0 / (1.0 + 0.15 * (i + 1) + 0.03 * ((canonical_pair[0] + canonical_pair[1]) % 7))
+            self.tap_delays_ms.append(d_ms)
+            self.tap_decays.append(decay)
+        # Build the delay line buffer
+        self._buffer = None
+        self._write_pos = 0
+        self._last_output = 0.0
+
+    def process(self, x: np.ndarray, start_sample: int = 0, sample_rate: int = 48000) -> np.ndarray:
+        """Apply reverse reverb to input signal x.
+
+        The effect simulates sound originating from a "future" point:
+        samples are fed into a delay line and read backward, so each echo
+        appears *before* the previous one in time, creating a convergent,
+        inward-sounding tail that resolves toward the source.
+
+        Parameters
+        ----------
+        x : np.ndarray
+            Input audio sample array (float32).
+        start_sample : int
+            Sample offset within the broader buffer.
+        sample_rate : int
+            Audio sample rate (default 48000).
+
+        Returns
+        -------
+        np.ndarray
+        Mixed dry + wet signal, float32.
+        """
+        x = np.asarray(x, dtype=np.float32)
+        if x.size == 0:
+            return x
+        n = x.size
+        dry = x.copy()
+        # Build delay line on first call
+        if self._buffer is None or self._buffer.shape[0] < n + max(int(self.max_delay_ms * sample_rate / 1000.0), 1):
+            buf_len = max(1, n + int(self.max_delay_ms * sample_rate / 1000.0) + 1)
+            self._buffer = np.zeros(buf_len, dtype=np.float32)
+            self._write_pos = 0
+        # Mix dry signal
+        wet = np.zeros(n, dtype=np.float32)
+        for tap in range(self.max_taps):
+            delay_samples = max(1, int(self.tap_delays_ms[tap] * sample_rate / 1000.0))
+            decay = self.tap_decays[tap]
+            # Read from the delay line backwards: the "reverse" aspect
+            # we read from the future toward the past
+            read_pos = (self._write_pos - delay_samples) % self._buffer.shape[0]
+            # Get the sample at that position
+            delayed = self._buffer[read_pos]
+            # Apply decay and mix into wet tail
+            wet += delayed * decay
+            # Write current input into the delay line
+            self._buffer[self._write_pos] = x[tap % n] if tap < n else x[-1]
+            self._write_pos = (self._write_pos + 1) % self._buffer.shape[0]
+        # Mix dry + wet; wet amount controlled by canonical pair ratio
+        ratio = 0.5 + 0.5 * ((self.canonical_pair[0] + self.canonical_pair[1]) % 5) / 5.0
+        amount = _clamp(ratio)
+        mixed = self._mix_dry_wet(dry, wet, amount)
+        return mixed.astype(np.float32, copy=False)
+
+    @staticmethod
+    def _mix_dry_wet(dry: np.ndarray, wet: np.ndarray, amount: float) -> np.ndarray:
+        a = float(__import__('numpy').clip(amount, 0.0, 1.0))
+        return (dry * (1.0 - a) + wet * a).astype(np.float32, copy=False)

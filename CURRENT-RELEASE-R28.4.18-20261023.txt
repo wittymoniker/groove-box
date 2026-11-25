@@ -1,0 +1,7 @@
+Current release: R28.4.18 (2026-10-23)
+
+Based on R28.4.17 root/overlay playback sync. Removes the GUI Mute button and adds stale-mute recovery at startup route sync and physical playback preparation, while preserving the selected hardware volume.
+
+The root groovebox.py and audio_os_backend.py remain byte-for-byte unchanged from R28.4.17. Dedicated audio-FX and audio-analysis worker lanes, the real-time sounddevice callback, and the non-blocking callback contract are retained in both active ISO overlays.
+
+Validation: 43 focused tests passed; Python and helper-shell syntax checks passed. No physical speaker test, full ISO boot, or live deployment was performed.

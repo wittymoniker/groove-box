@@ -1,0 +1,5 @@
+Mathematician's Groovebox R28.4.12 — 2026-10-22
+
+Release focus: video duration/audio muxing, persistent Trigger All Level, canonical STEP probability/EQ/sidechain lanes, Math Lab apply workflow, asynchronous HDMI/audio output refresh, and explicit SD-card mount failure status.
+
+See CHANGELOG-R28.4.12-20261022.txt and VALIDATION-R28.4.12-20261022.txt for scope and test limits. This is a source/build-tree update; no ISO was built/booted and no physical HDMI or microSD hardware acceptance is claimed.

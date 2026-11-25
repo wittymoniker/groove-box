@@ -1,0 +1,4 @@
+Mathematician's Groovebox / sOS — R130
+Cumulative from the user-supplied MATGROOVEBOX-R129.zip.
+Includes event-maintained window inventory, incremental taskbar updates, coalesced/cancellable Open Windows refresh, active-window indication, and the R129 bounded threading, sCode lease, and five-ISO/seven-partition installer work.
+See RELEASE-R130-WINDOW-RESPONSIVENESS-20261120.md.

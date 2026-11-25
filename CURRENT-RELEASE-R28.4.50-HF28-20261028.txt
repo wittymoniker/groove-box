@@ -1,0 +1,20 @@
+CURRENT: R28.4.50-HF28.1-QTIMER-SCOPE-FIX
+Date: 2026-10-28
+
+Base release: R28.4.50-HF28
+HF28.1 hotfix:
+- Fix UnboundLocalError for QTimer during MathematiciansGrooveboxApp construction.
+- Keep existing module-level QtCore QTimer import as the sole constructor binding.
+- Preserve HF26 early audio/hardware priming callbacks.
+- Synchronize BUILD_ISO/app-overlay-v35.22zz/groovebox.py with root source.
+- Add test_hf28_qtimer_constructor_scope.py for lexical-scope and overlay sync regression.
+
+Inherited HF28 features:
+- HF26 Dell Latitude 3510 hardware startup / Trigger All without Performance
+- HF27 MicroSD mount (NLS/vfat), HDMI audible path, memory_guard export abort
+- HF28 Canonical sequence/automation writes refresh live UI (coalesced)
+
+Active ISO overlay: BUILD_ISO/app-overlay-v35.22zz
+ISO builder: BUILD_ISO/master_final_iso_v35_22zz.sh (unchanged entry; consumes overlay)
+
+Wasmer site: updated to R28.4.50-HF28.1; standalone deploy bundle is shipped separately. Live publishing not claimed.

@@ -1,9 +1,14 @@
 MATGROOVEBOX R7v — SSSS · SUPERDIMENSIONAL SEED-DRIVEN SELF-COMPOSING SYNTHESIZER
 Date: 2026-11-13
 Series: v35.22zz
-Fingerprint: 33a60089ffd2733b6a9b2d540c93eda2e98b82b896226f91c352eebb3fc6805f
+Fingerprint: 0ca8927680178863f6e25e203075fab8d67ebb12e75a9ba00a2147cb15dbfc33
 # STAMP_RELEASE_R7 end
 
-MATGROOVEBOX R76 — AUTOPILOT VISIBLE MAIN-WINDOW OPERATOR · 2026-11-16
-Base: uploaded R75 multi-seed Autopilot archive.
-Status: source increment packaged; tests, GUI session, ISO build/boot, and hardware validation not run.
+MATGROOVEBOX R128v3 — BROWSER WI-FI AND CONTENT LIBRARY CATALOG AUDIT
+Date: 2026-11-20
+Series: v35.22zz
+Base: R128v2 Library ZIP archive
+Status: Browser Wi-Fi authorization/parsing/secret handling/connectivity reporting and asynchronous network operations implemented; Content Library catalog expanded. Focused suite 64 passed, 1 skipped. Full-suite run timed out; Qt and hardware validation remain pending.
+
+Primary release note: RELEASE-R128V3-WIFI-CONTENT-CATALOG-AUDIT-20261120.md
+Previous maintenance note: RELEASE-R128V2-CONTENT-IMPORT-EXPORT-20261120.md

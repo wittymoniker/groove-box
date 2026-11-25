@@ -1116,3 +1116,81 @@ class ScriptRun:
     def stop_all(cls, why: str):
         for r in list(cls._LIVE):
             r.stop(why)
+
+
+# ============================================================================ sharing (📤 / 📥 .mgoverlay)
+SHARE_EXT = ".mgoverlay"
+_SHARE_MAX_FILE = 4 * 1024 * 1024        # 4 MB per source file
+_SHARE_MAX_TOTAL = 64 * 1024 * 1024      # 64 MB per package
+
+
+def export_share(dest, name="My overlay", author="", notes=""):
+    """Pack src/ and append/ (never build/, scratch/ or anything outside the overlay) into a .mgoverlay zip with a
+    manifest of SHA-256 digests. Anyone can import it; it still loads only after Compile + Enable for this session."""
+    import json as _json
+    import zipfile
+    root = overlay_root()
+    dest = str(dest)
+    if not dest.endswith(SHARE_EXT):
+        dest += SHARE_EXT
+    entries = []
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for sub in ("src", "append"):
+            base = root / sub
+            if not base.is_dir():
+                continue
+            for p in sorted(base.rglob("*")):
+                if p.is_file() and p.suffix in LANGS + (".md", ".txt", ".json"):
+                    data = p.read_bytes()
+                    rel = sub + "/" + p.relative_to(base).as_posix()
+                    z.writestr(rel, data)
+                    entries.append({"path": rel, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
+        man = {"format": "mgoverlay/1", "name": str(name), "author": str(author), "notes": str(notes),
+               "created": time.strftime("%Y-%m-%dT%H:%M:%S"), "files": entries}
+        z.writestr("manifest.json", _json.dumps(man, indent=2))
+    return {"path": dest, "files": len(entries)}
+
+
+def inspect_share(path):
+    """Validate a package without writing anything: manifest, digests, paths, sizes, file types."""
+    import json as _json
+    import zipfile
+    with zipfile.ZipFile(str(path)) as z:
+        man = _json.loads(z.read("manifest.json").decode("utf-8"))
+        if man.get("format") != "mgoverlay/1":
+            raise ValueError("not a Groovebox overlay package")
+        total = 0
+        for e in man.get("files", []):
+            rel = str(e.get("path", ""))
+            parts = rel.split("/")
+            if parts[0] not in ("src", "append") or ".." in parts or rel.startswith("/") or "\\" in rel:
+                raise PermissionError("unsafe path in package: %s" % rel)
+            if os.path.splitext(rel)[1] not in LANGS + (".md", ".txt", ".json"):
+                raise PermissionError("file type not allowed: %s" % rel)
+            data = z.read(rel)
+            total += len(data)
+            if len(data) > _SHARE_MAX_FILE or total > _SHARE_MAX_TOTAL:
+                raise PermissionError("package too large")
+            if hashlib.sha256(data).hexdigest() != e.get("sha256"):
+                raise ValueError("digest mismatch: %s" % rel)
+    return man
+
+
+def import_share(path):
+    """Back up the current overlay (src + append) next to it, then install the package's files into the overlay.
+    Nothing is enabled: the imported overlay must be compiled and enabled for a session like any other."""
+    import zipfile
+    man = inspect_share(path)
+    root = overlay_root()
+    backup = root / ("backup-%s%s" % (time.strftime("%Y%m%d-%H%M%S"), SHARE_EXT))
+    try:
+        export_share(str(backup), name="backup before import")
+    except Exception:
+        pass
+    with zipfile.ZipFile(str(path)) as z:
+        for e in man.get("files", []):
+            rel = e["path"]
+            target = root / rel
+            _write(target, z.read(rel).decode("utf-8", "replace"))
+    log("imported overlay package %s (%d files)" % (man.get("name"), len(man.get("files", []))))
+    return {"name": man.get("name"), "files": len(man.get("files", [])), "backup": str(backup)}

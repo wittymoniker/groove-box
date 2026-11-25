@@ -1,0 +1,11 @@
+Mathematician's Groovebox R28.4.11 source/tool update — 2026-10-22
+
+Scope:
+- Shared STEP schema v2 for phase shift, EQ gain/frequency/Q, sidechain depth and phase modulation depth.
+- Mathematical Composition Lab exports the same versioned per-step lane shape.
+- Composition-state helper preserves unmentioned STEP lanes when an overlay replaces a sequence record.
+- Project snapshots reconcile the active sequencer buffer with its selected sequence-bank slot, then serialize consistent copies. Load rebinds that same relationship. Clear initializes neutral lanes and clears the Math Lab userdata artifact. Randomize retains userdata under the existing protection rule.
+- Performance Player retries other installed backends after an immediate nonzero exit; the fallback sequence is bounded to mpv/VLC/FFplay.
+- File Manager Rename refuses invalid names and collisions, and preserves MCC/MGPR extensions if omitted. Renaming the active project refreshes the active path/index.
+
+Validation: 16 targeted tests passed; changed Python modules compile. Full pytest collection is not clean in this environment because PyQt6 is not installed and one nested BUILD_ISO test imports a module absent from its isolated test path. No GUI run, audible WAV playback, video export/playback regression, HDMI hotplug, physical SD-card, or ISO boot test is claimed. Hardware changes remain pending device acceptance.

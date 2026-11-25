@@ -1,0 +1,5 @@
+Groovebox R28.4.50+HF1 — Fractal Seed + deterministic Composition Lab + 72% master default + sOS volume-route recovery — 2026-10-25
+Base archive: Groovebox-R28.4.50-GAME-MEDIA-OUTPUT-BRIDGE-20261024.2.zip
+Base archive SHA-256: f1e1d316e538646feae4b579c83e4cbf9ecf4d04da63d008b53ad6f83fa0d69f
+Source candidate status: exact R28.4.50 archive patched. Source-level tests/contract checks are run in this package. A fresh ISO build and physical boot/speaker/microphone validation are not claimed.
+Verification follow-up: corrected the stale R23f playback-mixer source-contract assertion to recognize the router’s current playback control and require capture/microphone/input exclusions. Runtime audio code is unchanged; the corrected verifier passes.

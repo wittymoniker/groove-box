@@ -1,0 +1,16 @@
+R28.4.38 EQ convolution default rule
+
+Default per-instrument EQ pole count = clamp(130 - active_instrument_count, 2, 128), with active instrument count clamped to 2..128.
+
+Examples:
+- 2 instruments -> 128 EQ poles per instrument
+- 3 instruments -> 127 EQ poles per instrument
+- 48 instruments -> 82 EQ poles per instrument
+- 128 instruments -> 2 EQ poles per instrument
+
+This is the default topology only. Saved custom EQ topologies remain intact; users can add/remove poles up to 128 per instrument. Default poles are linearly distributed in Hz from 10 Hz to 24 kHz, with equal frequency increments for a given pole count. Legacy 8-point shape curves are interpolated across the generated topology. No stochastic/probability behavior is involved.
+
+Verification:
+- test_r13_variable_eq_poles.py: 5 passed
+- python -m py_compile groovebox.py: passed
+- Full application, audio, hardware, ISO boot, and SSD installer are not certified by these focused checks.

@@ -7,7 +7,7 @@ camera reads it; GPT for ext4 / Btrfs / F2FS) with one partition; a single parti
 
 File systems (offered when the tool is installed): FAT32 (mkfs.vfat), exFAT (mkfs.exfat), ext4 (mkfs.ext4),
 NTFS (mkfs.ntfs), Btrfs (mkfs.btrfs), F2FS (mkfs.f2fs). Root is needed: when not running as root the commands go
-through pkexec (or sudo -n) if available. The work runs on a background thread; the window only shows progress.
+through sudo (password asked once, R132) or pkexec. The work runs on a background thread; the window only shows progress.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ FILESYSTEMS = (
     ("NTFS", "mkfs.ntfs", "msdos", "ntfs"),
     ("Btrfs", "mkfs.btrfs", "gpt", "btrfs"),
     ("F2FS", "mkfs.f2fs", "gpt", "ext4"),
+    ("XFS", "mkfs.xfs", "gpt", "xfs"),          # R132
 )
 
 
@@ -40,13 +41,7 @@ def _priv(cmd):
         __import__("accounts").require("format")     # R101: only an owner formats drives
     except ImportError:
         pass
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return cmd
-    if __import__("sos_tools").which("pkexec") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return ["pkexec"] + cmd
-    if __import__("sos_tools").which("sudo"):
-        return ["sudo", "-n"] + cmd
-    return cmd
+    return __import__("sos_tools").root_prefix() + list(cmd)   # R132: sudo first (sOS has no polkit session)
 
 
 def _run(cmd, timeout=600, input_text=None):
@@ -96,10 +91,25 @@ def _unmount_all(dev):
     for ln in out.splitlines():
         bits = ln.split(None, 1)
         if len(bits) == 2 and bits[1].strip():
+            mp = bits[1].strip()
+            if mp == "[SWAP]":                                   # R132.25: a stick used as swap blocks formatting
+                try:
+                    _run(["swapoff", bits[0]], timeout=60)
+                except Exception:
+                    pass
+                continue
             if __import__("sos_tools").which("udisksctl"):
                 subprocess.run(["udisksctl", "unmount", "-b", bits[0]], capture_output=True, timeout=30)
             if subprocess.run(["findmnt", "-n", bits[0]], capture_output=True).returncode == 0:
-                _run(["umount", bits[0]], timeout=60)
+                try:
+                    _run(["umount", bits[0]], timeout=60)
+                except Exception:
+                    # R132.25: a corrupted / busy file system refuses a normal unmount — detach it lazily
+                    # (the kernel drops it as soon as nothing uses it), then make sure nothing still holds it.
+                    _run(["umount", "-l", bits[0]], timeout=60)
+            if subprocess.run(["findmnt", "-n", bits[0]], capture_output=True).returncode == 0:
+                raise RuntimeError(f"{bits[0]} is still mounted at {mp} — close any window using it, then try again")
+    subprocess.run(["sync"], timeout=120)
 
 
 def _mkfs_cmd(fs_name, mkfs, part, label):
@@ -116,6 +126,8 @@ def _mkfs_cmd(fs_name, mkfs, part, label):
         return [mkfs, "-f", "-L", lab[:255], part]
     if fs_name == "F2FS":
         return [mkfs, "-f", "-l", lab[:512], part]
+    if fs_name == "XFS":
+        return [mkfs, "-f", "-L", lab[:12], part]
     raise ValueError("unknown file system %s" % fs_name)
 
 
@@ -234,6 +246,16 @@ def make_page(app=None):
     row.addStretch(1)
     status = QLabel(""); lay.addWidget(status)
     sig = _Sig(page); sig.msg.connect(status.setText)
+    try:   # R132.12: unified file-system support — mount / unmount / unlock / LVM / disk images, any file system
+        import unified_fs as _ufs
+
+        def _sel_dev():
+            it = tree.currentItem()
+            d = it.data(0, Qt.ItemDataRole.UserRole) if it is not None else None
+            return d[1] if isinstance(d, (tuple, list)) and len(d) > 1 else None
+        lay.addLayout(_ufs.make_page_buttons(page, _sel_dev, status))
+    except Exception as _ufs_exc:
+        lay.addWidget(QLabel(f"mount tools unavailable: {_ufs_exc}"))
 
     def refresh():
         tree.clear()
@@ -270,6 +292,8 @@ def make_page(app=None):
         if not ok or txt.strip() != target:
             status.setText("Not formatted (confirmation did not match).")
             return
+        if not __import__("sos_tools").ensure_sudo(page, "Formatting %s needs administrator rights." % target):
+            status.setText("Not formatted (no administrator password)."); return
         b_drive.setEnabled(False); b_part.setEnabled(False)
 
         def work():
@@ -285,7 +309,7 @@ def make_page(app=None):
         status.setText(msg); b_drive.setEnabled(True); b_part.setEnabled(True); refresh()
     sig.done.connect(_done)
     def _iso():
-        from PyQt6.QtWidgets import QFileDialog
+        from PyQt6.QtWidgets import QFileDialog, QApplication
         target = _selected("drive")
         if not target:
             status.setText("Select the USB drive first.")
@@ -297,9 +321,41 @@ def make_page(app=None):
             default = str(p) if p else ""
         except Exception:
             _ost = None
-        iso, _f = QFileDialog.getOpenFileName(page, "ISO to write", default or os.path.expanduser("~"), "ISO image (*.iso)")
+        try:   # R132.11: ISO parts sent from a phone (or downloaded) are offered first — newest set's .part00
+            import iso_parts as _ipt
+            _sets = _ipt.find_sets()
+            if _sets:
+                _base = max(_sets, key=lambda k: max(p.stat().st_mtime for p in _sets[k]))
+                default = str(_base) if os.path.isfile(_base) else str(_sets[_base][0])
+        except Exception:
+            pass
+        iso, _f = QFileDialog.getOpenFileName(page, "ISO to write", default or os.path.expanduser("~"),
+                                              "ISO image or its first part (*.iso *.part00 *.part0*)")
         if not iso or _ost is None:
             return
+        if __import__("re").search(r"\.part\d{2,3}(\.zip)?$", iso, __import__("re").I):   # split ISO → join first
+            import iso_parts
+            status.setText("joining the ISO parts (checking SHA-256)…")
+            b_iso.setEnabled(False)
+
+            def _joined(r, tgt=target):
+                b_iso.setEnabled(True)
+                if not r or not r.get("ok"):
+                    status.setText("⚠ " + ((r or {}).get("message") or "join failed")); return
+                status.setText("✔ %s — %s" % (os.path.basename(r["iso"]), r["message"]))
+                _write(r["iso"], tgt)
+            try:   # R132.16: join on the shared device_io pool; continue on the GUI thread
+                import thread_isolation_opt as _tio
+                if _tio.submit_then("device_io", iso_parts.join_newest, _joined, iso, job_id="iso-join",
+                                    on_error=lambda e: (b_iso.setEnabled(True), status.setText("⚠ %s" % e))) is not None:
+                    return
+            except Exception:
+                pass
+            _joined(iso_parts.join_newest(iso)); return
+        _write(iso, target)
+
+    def _write(iso, target):
+        _ost = __import__("operation_station_transfer")
         txt, ok = QInputDialog.getText(page, "Erase %s" % target, "Everything on %s is replaced by the bootable "
                                        "installer %s.\nType the device name to confirm (%s):" % (target, os.path.basename(iso), target))
         if not ok or txt.strip() != target:
@@ -307,6 +363,8 @@ def make_page(app=None):
             return
         data_part = QMessageBox.question(page, "Data partition", "Add a FAT32 data partition in the free space after "
                                          "the installer (for projects and exports)?") == QMessageBox.StandardButton.Yes
+        if not __import__("sos_tools").ensure_sudo(page, "Writing to %s needs administrator rights." % target):
+            status.setText("Not written (no administrator password)."); return
         b_iso.setEnabled(False)
 
         def work():

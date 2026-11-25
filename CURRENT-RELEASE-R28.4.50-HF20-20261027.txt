@@ -1,0 +1,10 @@
+Current focused hotfix: R28.4.50 HF20 — Scroll-safe controls
+Date: 2026-10-27
+
+- Prevents wheel/trackpad scrolling over value widgets from changing their values; scrolls the nearest parent scroll area instead.
+- Preserves HF19's Trigger All media-audition source change and synchronizes the ISO app overlay.
+- Performance synth Master Volume remains shared with the main app state; hardware/system speaker volume remains a separate control synchronized through the shared sOS state file.
+
+Validation: source compile and 12 focused contract/thread-lifecycle tests passed.
+Not runtime-certified: GUI/DPI behavior, real WAV/MP4 playback, physical audio hardware, fresh ISO build/boot.
+Other requested work (full UI redesign, objective synth loudness matching, Explorer expansion, additional measured threading optimization) remains open and is not represented as completed by this focused HF20 update.

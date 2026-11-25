@@ -24,6 +24,10 @@ This module fixes toggle leak:
 from __future__ import annotations
 
 import hashlib
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import sin as _tsin
+except Exception:  # standalone use outside the app
+    from math import sin as _tsin
 import math
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
@@ -350,7 +354,7 @@ class DeterministicTriggerSculptor:
                 # no external DSP grouping
                 r = meum_effect_residue(self.seed, f"trig::{inst}::{t}")
                 # use instrument's own envelope phase, not global
-                prob = density + 0.2 * math.sin(2*math.pi*(t/self.steps + phase))
+                prob = density + 0.2 * _tsin(2*math.pi*(t/self.steps + phase))
                 mask.append(r < prob)
             self.masks[inst] = mask
 
@@ -390,7 +394,7 @@ def compute_goava_params(seed: int, instrument_id: str, t: float, bpm: float) ->
 
     # Additional correction: if multiple toggles, ensure zero-mean over time
     # f(t) = sin(2π t * MEUM) * 0.1 modulation — symmetric
-    mod = math.sin(2*math.pi*t*MEUM/4.0) * 0.15 * residue_to_bipolar(r_pitch)
+    mod = _tsin(2*math.pi*t*MEUM/4.0) * 0.15 * residue_to_bipolar(r_pitch)
 
     return GoavaVoice(drive=drive+mod, pitch_shift_semitones=pitch, dc_offset=dc)
 
@@ -547,7 +551,7 @@ class MeumEffectChain:
     def effect(self, label: str, t: float, base: float = 1.0) -> float:
         r = meum_effect_residue(self.seed, label)
         # simplest math: base * (1 + bipolar(r) * sin(MEUM*t))
-        return base * (1.0 + residue_to_bipolar(r) * 0.5 * math.sin(MEUM * t))
+        return base * (1.0 + residue_to_bipolar(r) * 0.5 * _tsin(MEUM * t))
 
 class NonRedundantEuclidean:
     """

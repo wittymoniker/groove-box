@@ -7,6 +7,10 @@ uses the Groovebox-local FFmpeg resolver and publishes via a temporary file.
 """
 from __future__ import annotations
 import json, os, subprocess, tempfile
+try:  # R132.10: project trig route — book isy/isx series when the Trigonometry Engine is ON (gb_trig)
+    from gb_trig import cos as _tcos, sin as _tsin
+except Exception:  # standalone use outside the app
+    from math import cos as _tcos, sin as _tsin
 from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
@@ -32,7 +36,7 @@ def _clip_pan_width_filter(pan, width):
     import math
     w=max(0.0,min(1.0,float(width))); a=(1.0+w)/2.0; b=(1.0-w)/2.0
     th=(max(-1.0,min(1.0,float(pan)))+1.0)*math.pi/4.0
-    gl=math.cos(th)*math.sqrt(2.0); gr=math.sin(th)*math.sqrt(2.0)
+    gl=_tcos(th)*math.sqrt(2.0); gr=_tsin(th)*math.sqrt(2.0)
     return (f'aformat=channel_layouts=stereo,'
             f'pan=stereo|c0={gl*a:.6f}*c0+{gl*b:.6f}*c1|c1={gr*b:.6f}*c0+{gr*a:.6f}*c1')
 
@@ -340,6 +344,10 @@ class ClipTimelineStudio(QWidget):
         btxt.clicked.connect(self.add_text); actions.addWidget(btxt)
         bfx=QPushButton('🎨 Clip FX…'); bfx.setToolTip('Speed, colour, blur/sharpen, zoom, rotate, mirror/flip, invert, grayscale, edge glow, vignette, fades for the selected clip(s).')
         bfx.clicked.connect(self.edit_clip_fx); actions.addWidget(bfx)
+        try:   # R132: split · snap to beat · layer up / down
+            __import__('clip_edit_ops').install(self, actions)
+        except Exception as _ce_exc:
+            print(f'[ClipStudio] edit ops unavailable: {_ce_exc}')
         # R32.8: record a new camera / microphone clip straight onto the timeline
         from PyQt6.QtWidgets import QComboBox as _QCB
         self.rec_mode=_QCB(); self.rec_mode.addItems(['cam+mic','cam','mic'])
@@ -371,12 +379,12 @@ class ClipTimelineStudio(QWidget):
         opts=QGroupBox('Timeline / render settings'); grid=QGridLayout(opts)
         self.duration=QDoubleSpinBox(); self.duration.setRange(.1,86400); self.duration.setDecimals(3); self.duration.setValue(30); self.duration.setSuffix(' s')
         self.fps=QSpinBox(); self.fps.setRange(1,120); self.fps.setValue(30)
-        self.width=QSpinBox(); self.width.setRange(160,3840); self.width.setSingleStep(160); self.width.setValue(1920)
-        self.height=QSpinBox(); self.height.setRange(90,2160); self.height.setSingleStep(90); self.height.setValue(1080)
+        self.spin_width=QSpinBox(); self.spin_width.setRange(160,3840); self.spin_width.setSingleStep(160); self.spin_width.setValue(1920)
+        self.spin_height=QSpinBox(); self.spin_height.setRange(90,2160); self.spin_height.setSingleStep(90); self.spin_height.setValue(1080)
         self.audio_rate=QComboBox(); self.audio_rate.addItems(['44100','48000','96000']); self.audio_rate.setCurrentText('48000')
         self.keep_audio=QCheckBox('Mix audio from video sources'); self.keep_audio.setChecked(True)
         self.fade_edges=QCheckBox('Apply short anti-click audio fades'); self.fade_edges.setChecked(True)
-        for c,(label,w) in enumerate([('Duration',self.duration),('FPS',self.fps),('Width',self.width),('Height',self.height),('Audio Hz',self.audio_rate)]):
+        for c,(label,w) in enumerate([('Duration',self.duration),('FPS',self.fps),('Width',self.spin_width),('Height',self.spin_height),('Audio Hz',self.audio_rate)]):
             grid.addWidget(QLabel(label),0,c*2); grid.addWidget(w,0,c*2+1)
         grid.addWidget(self.keep_audio,1,0,1,3); grid.addWidget(self.fade_edges,1,3,1,3)
         root.addWidget(opts)
@@ -597,7 +605,7 @@ class ClipTimelineStudio(QWidget):
         path,_=QFileDialog.getSaveFileName(self,'Save timeline','groovebox-timeline.json','Groovebox timeline (*.json)')
         if not path:return
         try:
-            payload={'format':'groovebox-clip-timeline','version':1,'duration':self.duration.value(),'fps':self.fps.value(),'width':self.width.value(),'height':self.height.value(),'audio_rate':int(self.audio_rate.currentText()),'mix_video_audio':self.keep_audio.isChecked(),'anti_click_fades':self.fade_edges.isChecked(),'clips':self._records()}
+            payload={'format':'groovebox-clip-timeline','version':1,'duration':self.duration.value(),'fps':self.fps.value(),'width':self.spin_width.value(),'height':self.spin_height.value(),'audio_rate':int(self.audio_rate.currentText()),'mix_video_audio':self.keep_audio.isChecked(),'anti_click_fades':self.fade_edges.isChecked(),'clips':self._records()}
             __import__("safe_io").atomic_write_text(Path(path), json.dumps(payload,indent=2), encoding='utf-8'); self.status.setText('Timeline saved: '+path)
         except Exception as e: QMessageBox.warning(self,'Save timeline',str(e))
 
@@ -735,7 +743,7 @@ class ClipTimelineStudio(QWidget):
         if ext not in VIDEO_FORMATS and ext!='mpeg':     # no / unknown extension: take the one the chosen filter names
             import re as _re
             m=_re.search(r'\*\.(\w+)',flt or ''); path+='.'+((m.group(1).lower()) if m else 'mp4')
-        duration=float(self.duration.value()); fps=int(self.fps.value()); w=int(self.width.value()); h=int(self.height.value()); rate=int(self.audio_rate.currentText())
+        duration=float(self.duration.value()); fps=int(self.fps.value()); w=int(self.spin_width.value()); h=int(self.spin_height.value()); rate=int(self.audio_rate.currentText())
         if any(c['start']>=duration for c in clips):
             QMessageBox.warning(self,'Render timeline','A clip starts at or after the selected timeline duration. Increase duration or adjust its start.'); return
         snapshot={'clips':clips,'path':path,'duration':duration,'fps':fps,'width':w,'height':h,'rate':rate,

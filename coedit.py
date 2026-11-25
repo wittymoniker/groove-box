@@ -89,6 +89,14 @@ class CoEditSession:
             return False
 
     def _send_async(self, nodes: List[str], payload: Dict):
+        # Edit Together is explicitly represented in the global workload plan.
+        # It remains admitted (no waiting on the GUI/audio path); its existing
+        # async transport and bounded section-delta protocol do the backpressure.
+        try:
+            import global_intelligence as gi
+            gi.huff("edit_together", pending=len(nodes))
+        except Exception:
+            pass
         def run():
             for n in nodes:
                 if n != self.svc.node_id:

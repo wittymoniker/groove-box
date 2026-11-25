@@ -1,0 +1,6 @@
+MATGROOVEBOX R131 — SUDO ROOT OWNERSHIP / SUID REPAIR
+Date: 2026-11-20
+Base: user-supplied MATGROOVEBOX.zip with R130 and R129 consolidated lineage
+Change: final initramfs stamping now enforces /usr/bin/sudo owner 0:0, mode 4755, and verifies both before packing.
+Validation: shell syntax and R131 static regression test passed.
+No claim of ISO rebuild, physical boot, or hardware validation.

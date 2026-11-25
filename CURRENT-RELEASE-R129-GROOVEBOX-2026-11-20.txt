@@ -1,0 +1,3 @@
+Mathematician's Groovebox / sOS — R129
+Consolidated threading and sCode scratch-buffer lease enhancement plus five-ISO/seven-partition signed boot-source selection repair.
+See RELEASE-R129-CONSOLIDATED-THREADING-SCODE-ISO-20261120.md.

@@ -1,0 +1,5 @@
+Groovebox R28.4.50 HF4 — BOOT STABILITY — 2026-10-26
+
+Current source archive: Groovebox-R28.4.50-HF4-BOOT-STABILITY-WASMER-TABLETIME-20261026.zip
+Fixes: default Intel HDA boot parameter for live/install/sCode/safe/recovery and installed-disk paths; preserves CRC32C installer/initramfs fix; includes the Wasmer Tabletime v35.22zt deploy repository with anonymous post browsing blocked.
+Status: source checks only; no physical ISO boot test claimed.

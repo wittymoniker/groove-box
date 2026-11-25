@@ -1,0 +1,5 @@
+Mathematician's Groovebox / sOS R28.4.39 — Linear-Hz EQ + convolution default
+
+EQ default frequencies are linearly spaced from 10 Hz to 24 kHz. The default pole count is B(N)=max(2,min(128,130-N)) for 2..128 active instruments, as a reset/default policy only. Existing saved custom topologies are not forcibly rewritten.
+
+The ISO builder profile is included and its shell/Python syntax and selected preflight verifiers are checked. This release package does NOT contain a newly built ISO: this execution environment lacks the required runtime-cache, runtime-base/kernel foundation, and Docker/Podman engine. Do not describe this package as a verified bootable ISO.

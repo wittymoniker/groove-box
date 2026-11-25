@@ -1,0 +1,4 @@
+Current release: R28.4.20
+Date: 2026-10-23
+Focus: real-time audio meter isolation and maintainability cleanup.
+The callback no longer calculates peak/RMS levels or peak-hold decay. Those calculations run on the dedicated bounded analysis worker. Meter failures are nonfatal. Root and active ISO overlay runtime copies are synchronized.

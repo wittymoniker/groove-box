@@ -12,6 +12,9 @@ import re
 
 
 _SYS_MOUNTS = ("/", "/boot", "/boot/efi", "/home", "/usr", "/opt", "/var")
+# Where a live system (the sOS ISO on a USB stick) mounts its boot medium: that stick is a system disk.
+_LIVE_MEDIA = ("/run/live/medium", "/lib/live/mount/medium", "/cdrom", "/run/initramfs/live", "/run/archiso/bootmnt",
+               "/run/sos/medium", "/media/sos-medium")
 
 
 def _read(path: str) -> str:
@@ -23,11 +26,41 @@ def _read(path: str) -> str:
 
 
 def _disk_of(dev: str) -> str:
-    """Whole-disk name for a partition (/dev/nvme0n1p2 -> /dev/nvme0n1)."""
+    """Whole-disk name for a device (/dev/nvme0n1p2 → /dev/nvme0n1, /dev/sdb1 → /dev/sdb, /dev/nvme0n1 → itself).
+
+    sysfs first (a partition's directory sits inside its disk's directory); the name rules are the fallback. The old
+    rules stripped the trailing digits of whole-disk names too (/dev/nvme0n1 → /dev/nvme0n, /dev/mmcblk0 →
+    /dev/mmcblk)."""
     dev = str(dev or "").strip()
-    dev = re.sub(r"p\d+$", "", dev)          # nvme / mmc
-    dev = re.sub(r"\d+$", "", dev)           # sdX1
-    return dev
+    name = os.path.basename(dev)
+    try:
+        sysd = os.path.realpath(os.path.join("/sys/class/block", name))
+        if os.path.exists(os.path.join(sysd, "partition")):
+            return "/dev/" + os.path.basename(os.path.dirname(sysd))
+        if os.path.isdir(sysd):
+            return "/dev/" + name
+    except Exception:
+        pass
+    if re.match(r"^(nvme\d+n\d+|mmcblk\d+|loop\d+|md\d+|nbd\d+)p\d+$", name):
+        return "/dev/" + re.sub(r"p\d+$", "", name)
+    if re.match(r"^(nvme\d+n\d+|mmcblk\d+|loop\d+|md\d+|nbd\d+)$", name):
+        return "/dev/" + name
+    return "/dev/" + re.sub(r"\d+$", "", name)
+
+
+def _slaves(disk_or_dm: str) -> set:
+    """Physical disks under a device-mapper / md device (LVM, LUKS, RAID)."""
+    out = set()
+    name = os.path.basename(disk_or_dm)
+    try:
+        real = os.path.realpath("/dev/" + name) if not name.startswith("dm-") else "/dev/" + name
+        base = os.path.basename(real)
+        for sl in os.listdir(os.path.join("/sys/class/block", base, "slaves")):
+            out.add(_disk_of("/dev/" + sl))
+            out |= _slaves(sl)
+    except Exception:
+        pass
+    return out
 
 
 def system_disks() -> set:
@@ -48,9 +81,20 @@ def system_disks() -> set:
             continue
         tail = line.split(" - ", 1)[1].split()
         src = tail[1] if len(tail) > 1 else ""
-        if mount in _SYS_MOUNTS or mount.startswith("/boot"):
+        live_medium = mount in _LIVE_MEDIA or mount.startswith("/run/live/") or mount.startswith("/lib/live/")
+        if mount in _SYS_MOUNTS or mount.startswith("/boot") or live_medium:
             if src.startswith("/dev/"):
                 disks.add(_disk_of(src))
+                disks |= _slaves(src)
+    # The disk(s) holding active swap are system disks too.
+    try:
+        with open("/proc/swaps", "r", encoding="utf-8", errors="replace") as f:
+            for ln in f.readlines()[1:]:
+                src = ln.split()[0] if ln.split() else ""
+                if src.startswith("/dev/"):
+                    disks.add(_disk_of(src)); disks |= _slaves(src)
+    except Exception:
+        pass
     # Fallback names if mountinfo was empty.
     if not disks:
         for name in ("nvme0n1", "sda", "vda", "mmcblk0"):
@@ -60,9 +104,16 @@ def system_disks() -> set:
 
 
 def is_removable(dev: str) -> bool:
+    """USB / SD / MMC media: the removable flag, or a USB / MMC transport (many USB SSDs and card readers report
+    removable=0 but are hot-pluggable)."""
     disk = os.path.basename(_disk_of(dev))
-    flag = _read(os.path.join("/sys/class/block", disk, "removable"))
-    return flag == "1"
+    if _read(os.path.join("/sys/class/block", disk, "removable")) == "1":
+        return True
+    try:
+        path = os.path.realpath(os.path.join("/sys/class/block", disk))
+        return "/usb" in path or disk.startswith("mmcblk") and "/mmc_host/" in path
+    except Exception:
+        return False
 
 
 def assert_safe_target(dev: str) -> str:

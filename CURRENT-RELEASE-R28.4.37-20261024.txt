@@ -1,0 +1,2 @@
+R28.4.37 FAST GAME-READY ISO BUILDER
+Primary deliverable: Game-Ready ISO build chain with gzip -1n fast initramfs packing. A finished ISO is not included because runtime-cache and runtime-base kernel inputs are absent in this build environment.

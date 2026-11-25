@@ -87,10 +87,17 @@ def plan_burn(iso: str, device: str, tool: Optional[str] = None, speed: int = 0)
     return [tool, "-v", f"dev={device}", "-dao", "-eject", *sp, iso]
 
 
-def _run_stream(cmd: List[str], log: Log, progress: Progress, phase: str, cwd=None, env=None, timeout=None) -> int:
+def _run_stream(cmd: List[str], log: Log, progress: Progress, phase: str, cwd=None, env=None, timeout=None,
+                stdin_text: Optional[str] = None) -> int:
     _emit(log, "$ " + " ".join(cmd))
     p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.PIPE if stdin_text is not None else None,
                          text=True, bufsize=1, errors="replace")
+    if stdin_text is not None:
+        try:
+            p.stdin.write(stdin_text); p.stdin.close()       # sudo -S password; never logged
+        except Exception:
+            pass
     t0 = time.monotonic(); last = -1
     assert p.stdout is not None
     for raw in iter(p.stdout.readline, ""):
@@ -173,17 +180,68 @@ def iso_out_dir() -> Path:
     return p
 
 
+def _elevate(cmd: List[str], extra_env: List[str]) -> List[str]:
+    if os.geteuid() == 0:
+        return cmd
+    pre = __import__("sos_tools").root_prefix()      # R132: sudo first (sOS has no polkit session)
+    if not pre:
+        return cmd
+    return pre + ["env", *extra_env, f"HOME={Path.home()}", f"PATH={os.environ.get('PATH', '')}"] + cmd
+
+
+def plan_self_remaster(root: Path = APP_ROOT, check: bool = False, copies: int = 1) -> List[str]:
+    """R137: rebuild the ISO on this Groovebox from its own previous image (offline)."""
+    script = Path(root) / "BUILD_ISO" / "RUN_ME_SELF_REMASTER.sh"
+    if not script.is_file():
+        raise FileNotFoundError("BUILD_ISO/RUN_ME_SELF_REMASTER.sh is not here yet — update from the "
+                                "MATH_GROOVEBOX_V3 archive first (it carries BUILD_ISO)")
+    cmd = ["bash", str(script)] + (["--check"] if check else ["--copies", str(max(1, int(copies)))])
+    return _elevate(cmd, ["GROOVEBOX_SECURE_BOOT=0", f"GROOVEBOX_REMASTER_COPIES={max(1, int(copies))}"])
+
+
+def builder_readiness(root: Path = APP_ROOT, log: Log = None, progress: Progress = None) -> Dict:
+    """R137: which ISO rebuild paths can run here (self-remaster offline / zero-state full)."""
+    out = {"self_remaster": False, "zero_state": False}
+    try:
+        out["self_remaster"] = _run_stream(plan_self_remaster(root, check=True), log, progress, "checking self-remaster",
+                                           cwd=str(root), timeout=600) == 0
+    except Exception as exc:
+        _emit(log, f"self-remaster: {exc}")
+    zs = Path(root) / "BUILD_ISO" / "RUN_ME_ZERO_STATE.sh"
+    if zs.is_file():
+        out["zero_state"] = _run_stream(["bash", str(zs), "--check-host"], log, progress, "checking zero-state host",
+                                        cwd=str(root), timeout=900) == 0
+    out["ok"] = out["self_remaster"] or out["zero_state"]
+    out["message"] = ("offline self-remaster ready" if out["self_remaster"] else "self-remaster not ready") + " · " + \
+                     ("full zero-state build ready" if out["zero_state"] else "full zero-state needs internet + Docker/Podman + build tools")
+    return out
+
+
+def build_self_remaster_iso(root: Path = APP_ROOT, log: Log = None, progress: Progress = None, copies: int = 1) -> Dict:
+    t0 = time.time()
+    env = dict(os.environ, GROOVEBOX_SECURE_BOOT="0")
+    rc = _run_stream(plan_self_remaster(root, copies=copies), log, progress, "remastering", cwd=str(root), env=env,
+                     timeout=4 * 3600)
+    if rc != 0:
+        return {"ok": False, "iso": "", "message": f"self-remaster exited {rc} (see log)"}
+    try:
+        from operation_station_transfer import find_finished_iso
+        iso = find_finished_iso(Path(root))
+    except Exception:
+        iso = None
+    if iso is None or os.path.getmtime(iso) < t0 - 5:
+        return {"ok": False, "iso": "", "message": "self-remaster finished but no new ISO was found"}
+    return {"ok": True, "iso": str(iso), "message": "bootable ISO rebuilt on this Groovebox"}
+
+
 def plan_bootable(root: Path = APP_ROOT) -> List[str]:
     script = Path(root) / "BUILD_ISO" / "RUN_ME_ZERO_STATE.sh"
     if not script.is_file():
         raise FileNotFoundError("BUILD_ISO/RUN_ME_ZERO_STATE.sh is not in this installation")
     cmd = ["bash", str(script)]
     if os.geteuid() != 0:
-        if __import__("sos_tools").which("pkexec"):
-            # pkexec drops the environment; pass the answers the builder would otherwise prompt for
-            cmd = ["pkexec", "env", "GROOVEBOX_SECURE_BOOT=0", f"HOME={Path.home()}", f"PATH={os.environ.get('PATH', '')}"] + cmd
-        elif __import__("sos_tools").which("sudo"):
-            cmd = ["sudo", "-n", "env", "GROOVEBOX_SECURE_BOOT=0"] + cmd
+        # pkexec / sudo drop the environment; pass the answers the builder would otherwise prompt for
+        cmd = _elevate(cmd, ["GROOVEBOX_SECURE_BOOT=0"])
     return cmd
 
 
@@ -202,6 +260,114 @@ def build_bootable_iso(root: Path = APP_ROOT, log: Log = None, progress: Progres
     if iso is None or os.path.getmtime(iso) < t0 - 5:
         return {"ok": False, "message": "builder finished but no new ISO was found", "iso": ""}
     return {"ok": True, "message": "bootable ISO built", "iso": str(iso)}
+
+
+# ------------------------------------------------------------------ R132: full build from inside sOS
+# The booted ISO runs from RAM and has no polkit session, so the old "Full zero-state build" (pkexec, build in
+# the live root) could not work there. Now: build in a folder on a real Linux-formatted drive, with sudo
+# (password asked in the GUI), Secure Boot optional, the container store on that drive too.
+FULL_BUILD_MIN_GB = 30
+_LINUX_FS = {"ext2/ext3", "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "zfs", "bcachefs"}
+_TREE_SKIP = {"__pycache__", ".pytest_cache", "dist", "build_tmp", "runtime-base", ".git"}
+
+
+def fs_type(path) -> str:
+    try:
+        r = subprocess.run(["stat", "-f", "-c", "%T", str(path)], capture_output=True, text=True, timeout=10)
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def build_workspace_check(folder) -> Dict:
+    """Can a full ISO build run in this folder? Needs a Linux filesystem (symlinks, owners, device nodes) and space."""
+    f = Path(folder).expanduser()
+    if not f.is_dir():
+        return {"ok": False, "message": f"{f} is not a folder"}
+    fs = fs_type(f)
+    free_gb = shutil.disk_usage(f).free / 1e9
+    if fs in ("tmpfs", "ramfs", "overlayfs", "overlay", "squashfs"):
+        return {"ok": False, "fs": fs, "free_gb": free_gb,
+                "message": f"{f} is in RAM ({fs}). Pick a folder on an internal SSD or a USB drive formatted ext4."}
+    if fs and fs not in _LINUX_FS:
+        return {"ok": False, "fs": fs, "free_gb": free_gb,
+                "message": f"{f} is on {fs}. The build needs a Linux filesystem (ext4 / btrfs / xfs) for symlinks "
+                           "and file owners — format a drive as ext4 in Drives, or pick another folder."}
+    if free_gb < FULL_BUILD_MIN_GB:
+        return {"ok": False, "fs": fs, "free_gb": free_gb,
+                "message": f"{f} has {free_gb:.0f} GB free; a full build needs about {FULL_BUILD_MIN_GB} GB."}
+    return {"ok": True, "fs": fs, "free_gb": free_gb, "message": f"{f}: {fs or 'filesystem ?'} · {free_gb:.0f} GB free"}
+
+
+def prepare_full_build(folder, root: Path = APP_ROOT, log: Log = None) -> Path:
+    """Copy this source tree (app + BUILD_ISO) into <folder>/MATH-GROOVEBOX_v3 and write the container store config."""
+    folder = Path(folder).expanduser()
+    tree = folder / "MATH-GROOVEBOX_v3"
+    # R132.12: build from the newest full source. An installed sOS app folder has no BUILD_ISO; the boot-stage updater
+    # keeps the newest applied source (with BUILD_ISO) in /var/lib/groovebox/source — use that, then lay this running
+    # app's own files over it so the ISO is never older than what is running now.
+    running = Path(root)
+    if not (running / "BUILD_ISO").is_dir():
+        try:
+            kept = __import__("self_update").kept_full_source()
+        except Exception:
+            kept = None
+        if kept is None:
+            raise RuntimeError("No full source with BUILD_ISO here. Send matgroovebox.zip (phone ▸ Send update), then "
+                               "⏻ Install at next boot — the boot updater keeps the full source for the ISO builder.")
+        _emit(log, f"full source: {kept} (newest applied update) + this running app's files")
+        shutil.copytree(str(kept), str(tree), dirs_exist_ok=True, symlinks=True,
+                        ignore=lambda d, names: [n for n in names if n in _TREE_SKIP])
+        root = running
+    _emit(log, f"copying the source tree to {tree} …")
+    shutil.copytree(str(root), str(tree), dirs_exist_ok=True, symlinks=True,
+                    ignore=lambda d, names: [n for n in names if n in _TREE_SKIP])
+    store = folder / "containers-storage"; store.mkdir(exist_ok=True)
+    (folder / "tmp").mkdir(exist_ok=True)
+    (folder / "containers-storage.conf").write_text(
+        '[storage]\ndriver = "overlay"\n' f'graphroot = "{store}"\nrunroot = "/run/containers/storage"\n', encoding="utf-8")
+    return tree
+
+
+def plan_full_build(tree, folder, secure_boot=False, sudo_mode: Optional[str] = None) -> List[str]:
+    folder = Path(folder).expanduser()
+    envs = [f"GROOVEBOX_SECURE_BOOT={1 if secure_boot else 0}", "GROOVEBOX_LOW_DISK=1",
+            f"TMPDIR={folder / 'tmp'}", f"CONTAINERS_STORAGE_CONF={folder / 'containers-storage.conf'}",
+            f"HOME={Path.home()}", f"PATH={os.environ.get('PATH', '/usr/bin:/bin')}:/usr/sbin:/sbin"]
+    script = ("bash BUILD_ISO/ensure_host_build_deps_v35_22zt.sh && exec bash BUILD_GROOVEBOX_APPLIANCE_ISO.sh")
+    body = ["env", *envs, "bash", "-c", script]
+    if os.geteuid() == 0:
+        return body
+    if sudo_mode == "cached":
+        return ["sudo", "-n", "--"] + body
+    return ["sudo", "-S", "-p", "", "--"] + body
+
+
+def build_full_iso(folder, secure_boot=False, password: Optional[str] = None, root: Path = APP_ROOT,
+                   log: Log = None, progress: Progress = None) -> Dict:
+    chk = build_workspace_check(folder)
+    if not chk["ok"]:
+        return {"ok": False, "iso": "", "message": chk["message"]}
+    t0 = time.time()
+    tree = prepare_full_build(folder, root, log)
+    mode = None
+    try:
+        import console_shell
+        mode = console_shell.sudo_mode()
+    except Exception:
+        pass
+    cmd = plan_full_build(tree, folder, secure_boot, mode)
+    stdin = (password + "\n") if (cmd[:2] == ["sudo", "-S"] and password is not None) else None
+    rc = _run_stream(cmd, log, progress, "building", cwd=str(tree), timeout=6 * 3600, stdin_text=stdin)
+    if rc != 0:
+        return {"ok": False, "iso": "", "message": f"full build exited {rc} (see log). It needs internet; the first "
+                                                 "run installs the build tools (podman, compilers) with apt."}
+    isos = sorted((tree / "BUILD_ISO" / "dist").glob("*GAME-READY*.iso"), key=lambda p: p.stat().st_mtime)
+    isos = [p for p in isos if p.stat().st_mtime >= t0 - 5]
+    if not isos:
+        return {"ok": False, "iso": "", "message": "build finished but no new ISO was found"}
+    return {"ok": True, "iso": str(isos[-1]), "all": [str(p) for p in isos],
+            "message": f"{len(isos)} ISO(s) built in {tree / 'BUILD_ISO' / 'dist'}"}
 
 
 _SRC_SKIP = {"__pycache__", ".git", ".pytest_cache", "exports", "renders", "projects", "samples", "user_data",

@@ -1,0 +1,5 @@
+R28.4.16 — Trigger All control cleanup (2026-10-23)
+
+The separate Trigger All volume slider has been removed. Trigger All uses its fixed baseline hit level; system output volume remains controlled by the main-window System Volume widget. Recording and playback paths are unchanged. Performance no longer presents a duplicate hardware-volume control.
+
+Validation: 17 focused tests passed. No physical hardware test, full ISO boot, or live deployment was performed.

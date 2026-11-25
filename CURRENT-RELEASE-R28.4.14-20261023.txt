@@ -1,0 +1,3 @@
+Mathematician's Groovebox R28.4.14 — 2026-10-23
+Focus: scrollable Mathematical Composition Lab and fully deterministic canonical-only probability decisions.
+Validation: see VALIDATION-R28.4.14-20261023.txt. Physical hardware and full ISO build/boot remain unverified.

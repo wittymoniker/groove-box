@@ -1,0 +1,5 @@
+R28.4.17 — Root/overlay playback synchronization repair (20261023)
+
+The root application and v35.22zz ISO overlay now carry identical performance.py source, satisfying the root/overlay playback sync contract. R28.4.16 Trigger All volume-control removal is retained.
+
+R23b verifier passed. No physical hardware test, full ISO boot, or live deployment was performed.

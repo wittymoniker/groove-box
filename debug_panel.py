@@ -169,7 +169,7 @@ def open_debug_window(host=None):
     tabs = QTabWidget(); lay.addWidget(tabs, 1)
     views = {}
     for name in ("Overview", "Errors", "Freezes (stalls)", "Audio check"):
-        t = QTextEdit(); t.setReadOnly(True); t.setStyleSheet("font-family: monospace; font-size: 9pt;")
+        t = QTextEdit(); t.setReadOnly(True); t.setStyleSheet("font-family: Consolas; font-size: 9pt;")
         tabs.addTab(t, name); views[name] = t
 
     def refresh():

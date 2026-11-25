@@ -1,0 +1,5 @@
+Groovebox R28.4.50+HF3 — zero-state runner entry-point packaging repair — 2026-10-25
+Base source: R28.4.50 HF2 corrected volume-verifier candidate.
+Packaging fix: keep the full builder at BUILD_ISO/RUN_ME_ZERO_STATE.sh and add a project-root RUN_ME_ZERO_STATE.sh convenience launcher. Both entry points are stored with executable permissions in this archive; the root launcher forwards to the maintained BUILD_ISO entry point.
+Existing content: Fractal Seed, deterministic Composition Lab, 72% fresh Master Volume, persisted explicit 0% volume, corrected R23h/R23j verifier contracts, CRC32C/ext4 source lineage.
+Validation scope: archive contains both entry points, entrypoint modes are 0755, and bash -n succeeds. The builder was not executed to build an ISO. No fresh ISO boot, SSD install, terminal, speaker, or microphone hardware result is claimed.
